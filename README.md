@@ -153,8 +153,11 @@ something else. Every run's `io.random` draws from `options.random_seed`, so a
 temp name drawn from it is the same name in every run.
 
 `corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
-draws, and `corpus.encode` builds a whole Smith input from a list of draws at
-compile time. `Source` is the one source of random decisions; for now it is a
+draws, `corpus.entries` a whole fuzz corpus of them, and `corpus.encode` a whole
+Smith input from a list of draws, all at compile time. `corpus.repeat("ab", n)`
+is `"ab"` written n times, the array product Zig 0.17 dropped: a static,
+0-terminated constant like a literal, for any n without raising the eval branch
+quota. `Source` is the one source of random decisions; for now it is a
 seeded generator whose draws are fixed per seed on every target.
 
 ## Scope

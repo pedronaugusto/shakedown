@@ -21,8 +21,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `alloc.NoResize`, an allocator that refuses every resize and remap, so the
   allocation count `std.testing.checkAllAllocationFailures` depends on repeats
   from run to run.
-- `corpus.entry` and `corpus.encode`, which build `std.testing.Smith` inputs at
-  compile time.
+- `corpus.entry`, `corpus.entries` and `corpus.encode`, which build
+  `std.testing.Smith` inputs at compile time, and `corpus.repeat`, text written
+  any number of times as a static constant.
 - `Source`, a seeded source of random decisions whose draws are fixed per seed.
 - `FaultIo`: an `Io` that counts, traces and faults every slot and operation by
   plan, with paths for opened files and directories, seeded `io.random`, an

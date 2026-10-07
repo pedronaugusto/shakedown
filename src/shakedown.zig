@@ -11,7 +11,8 @@ pub const Overrides = @import("layer.zig").Overrides;
 pub const Clock = @import("Clock.zig");
 /// Allocators for tests: `Counting`, `Quarantine` and `NoResize`.
 pub const alloc = @import("alloc.zig");
-/// Fuzz corpus entries in `std.testing.Smith`'s input format.
+/// Test inputs built at compile time: fuzz corpus entries in
+/// `std.testing.Smith`'s input format, and repeated text.
 pub const corpus = @import("corpus.zig");
 /// The one source of random decisions in a test.
 pub const Source = @import("Source.zig");
