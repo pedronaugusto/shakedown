@@ -110,9 +110,10 @@ test "short reads and writes move at most n bytes, and short(0) moves none" {
     try testing.expectEqualStrings("01234", b[0..5]);
     try testing.expectEqual(@as(usize, 0), try file.readPositional(io, &.{&b}, 0));
     try testing.expectEqual(@as(usize, 12), try file.readPositional(io, &.{&b}, 4));
-    // A header, two buffers and a splatted pattern, cut to seven bytes.
-    const n = try io.vtable.fileWritePositional(io.userdata, file, "HD", &.{ "ab", "cd", "x" }, 4, 0);
-    try testing.expectEqual(@as(usize, 7), n);
+    // Ten bytes cut to seven. One buffer: Windows writes only the first of
+    // several; the cutting of headers, buffers and splats is tested in
+    // FaultIo.zig.
+    try testing.expectEqual(@as(usize, 7), try file.writePositional(io, &.{"HDabcdxxxx"}, 0));
     var check: [16]u8 = undefined;
     _ = try tmp.dir.readFile(testing.io, "data", &check);
     try testing.expectEqualStrings("HDabcdx789abcdef", &check);
@@ -180,7 +181,8 @@ test "a delay sleeps on the base, which a Clock makes virtual" {
     defer fio.deinit();
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
-    const file = try tmp.dir.createFile(testing.io, "f", .{});
+    // Readable: Windows will not stat a file opened only for writing.
+    const file = try tmp.dir.createFile(testing.io, "f", .{ .read = true });
     defer file.close(testing.io);
     var task = try fio.io().concurrent(statFile, .{ fio.io(), file });
     try clock.awaitArmed(1, .fromSeconds(60));
