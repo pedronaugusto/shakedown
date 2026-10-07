@@ -170,10 +170,18 @@ memory with `madvise` and `mprotect` on Linux, macOS and the BSDs, and with a
 decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
 `Quarantine.supported` says which.
 
+## Built with
+
+- [Zig](https://ziglang.org) 0.17.0 and its standard library; nothing else is
+  linked into the module.
+- [preflight](https://github.com/pedronaugusto/preflight) runs the source checks,
+  the tests and CI, fetched only in shakedown's own tree.
+
 ## Testing
 
 `zig build test` runs the unit suite, the quarantine death tests and the
-example. The `everyFault` tests save a file three ways: through a temp file and
+example. A probe base checks that each slot of an empty `Layer` reaches the same
+slot of its base, once and with the base's userdata. The `everyFault` tests save a file three ways: through a temp file and
 a rename, which survives every single fault; in place, which one faulted run
 catches losing the old save; and with a leak on an error path, which an allocator check
 catches. The death tests run in child processes: a use after free and a one-byte
@@ -186,7 +194,7 @@ them.
 
 [CI](.github/workflows/ci.yml) runs the source checks and the Linux Debug suite
 on every push it is asked for, and before a merge the Debug suite on macOS and
-Windows as well. `zig build check` cross-compiles for `x86_64-linux-gnu`,
+Windows as well, plus the Linux Debug suite on Zig master, which never blocks. `zig build check` cross-compiles for `x86_64-linux-gnu`,
 `aarch64-linux-gnu`, `x86_64-linux-musl`, `x86_64-windows-gnu`,
 `aarch64-windows-gnu`, `x86_64-macos` and `aarch64-macos`.
 
