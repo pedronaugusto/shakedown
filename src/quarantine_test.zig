@@ -9,7 +9,7 @@ const Quarantine = @import("shakedown.zig").alloc.Quarantine;
 /// asking never faults: on POSIX a write from it into a pipe fails with
 /// EFAULT, on Windows `VirtualQuery` names its state and protection.
 fn readable(address: usize) !bool {
-    if (builtin.os.tag == .windows) return windowsReadable(address);
+    if (builtin.target.os.tag == .windows) return windowsReadable(address);
     const fds = try std.Io.Threaded.pipe2(.{});
     defer for (fds) |fd| {
         _ = std.posix.system.close(fd);

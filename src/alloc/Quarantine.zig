@@ -50,8 +50,8 @@ pub const Options = struct {
 const Range = struct { base: usize, len: usize };
 
 /// Whether this target quarantines; elsewhere blocks are plain pages.
-pub const supported = builtin.os.tag == .windows or have_mprotect;
-const have_mprotect = switch (builtin.os.tag) {
+pub const supported = builtin.target.os.tag == .windows or have_mprotect;
+const have_mprotect = switch (builtin.target.os.tag) {
     .linux, .macos, .ios, .tvos, .watchos, .visionos, .maccatalyst, .driverkit => true,
     .freebsd, .netbsd, .openbsd, .dragonfly, .illumos, .haiku => true,
     else => false,
@@ -163,7 +163,7 @@ fn lock(q: *Quarantine) void {
 
 /// Makes `[at, at + len)` inaccessible, keeping it reserved and resident.
 fn close(at: usize, len: usize) bool {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         var address: ?windows.PVOID = @ptrFromInt(at);
         var size: windows.SIZE_T = len;
         var old: windows.PAGE = undefined;
@@ -176,13 +176,13 @@ fn close(at: usize, len: usize) bool {
 /// Gives `[at, at + len)` back to the system and leaves it inaccessible
 /// and reserved, so no later mapping lands there.
 fn decommit(at: usize, len: usize) bool {
-    if (builtin.os.tag == .windows) {
+    if (builtin.target.os.tag == .windows) {
         var address: ?windows.PVOID = @ptrFromInt(at);
         var size: windows.SIZE_T = len;
         return windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), &size, .{ .DECOMMIT = true }) == .SUCCESS; // safe: the binding takes the base address as `*?*anyopaque`
     }
     const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // safe: `at` is a page boundary inside a mapping this allocator made
-    const advice = if (builtin.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
+    const advice = if (builtin.target.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
     // ziglint-ignore: Z026 pages not given back stay resident; the range is still closed below
     std.posix.madvise(start, len, advice) catch {};
     return close(at, len);

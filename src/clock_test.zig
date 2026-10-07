@@ -182,7 +182,7 @@ fn readWithin(io: Io, file: Io.File, timeout: Io.Timeout) Io.Batch.AwaitConcurre
 }
 
 test "a batch wait with a deadline times out on the clock, and completes when its read does" {
-    if (builtin.os.tag == .windows) return error.SkipZigTest; // a pipe read is not a pollable batch operation there
+    if (builtin.target.os.tag == .windows) return error.SkipZigTest; // a pipe read is not a pollable batch operation there
     var clock: Clock = .init(testing.io, .{});
     const io = clock.io();
     const fds = try Io.Threaded.pipe2(.{});
