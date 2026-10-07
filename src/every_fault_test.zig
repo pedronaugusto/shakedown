@@ -1,6 +1,7 @@
 //! `everyFault` from outside: a save that survives every single fault passes,
-//! and a save that does not, a leak on an error path and a run that
-//! depends on randomness are each caught.
+//! and a save that does not, a leak on an error path and a run whose calls
+//! depend on state outside its `Io` are each caught. A run that draws a
+//! name from `io.random` draws the same name in every run.
 const std = @import("std");
 const Io = std.Io;
 const testing = std.testing;
@@ -16,6 +17,12 @@ const Save = struct {
     fio: *FaultIo = undefined,
     /// The last buffer a run allocated, for the test to free what leaked.
     kept: ?[]u8 = null,
+    /// Runs set up so far.
+    runs: u32 = 0,
+    /// What this run drew from `io.random`, if it got that far.
+    drawn: ?[4]u8 = null,
+    /// What the clean run drew.
+    first: ?[4]u8 = null,
 
     const How = enum {
         /// Temp file, sync, rename: the old save survives any fault.
@@ -26,6 +33,9 @@ const Save = struct {
         leaky,
         /// As atomic, with a temp name drawn from `io.random`.
         random_name,
+        /// As atomic, with a temp name from how many runs came before:
+        /// state outside the `Io`, so each run makes different calls.
+        counted_name,
     };
 
     pub fn setUp(s: *Save, fio: *FaultIo) !void {
@@ -37,20 +47,27 @@ const Save = struct {
         s.counting = .init(testing.allocator);
         s.gpa = try fio.allocator(s.counting.allocator());
         s.fio = fio;
+        s.drawn = null;
+        s.runs += 1;
     }
 
     pub fn run(s: *Save, io: Io) !void {
         const contents = try s.gpa.dupe(u8, "new");
         s.kept = contents;
         switch (s.how) {
-            .atomic, .random_name => {
+            .atomic, .random_name, .counted_name => {
                 defer s.gpa.free(contents);
                 var name_buffer: [32]u8 = undefined;
-                const name = if (s.how == .random_name) name: {
-                    var bytes: [4]u8 = undefined;
-                    io.random(&bytes);
-                    break :name try std.mem.print(&name_buffer, "save.{x}", .{bytes});
-                } else "save.tmp";
+                const name = switch (s.how) {
+                    .random_name => name: {
+                        var bytes: [4]u8 = undefined;
+                        io.random(&bytes);
+                        s.drawn = bytes;
+                        break :name try std.mem.print(&name_buffer, "save.{x}", .{bytes});
+                    },
+                    .counted_name => try std.mem.print(&name_buffer, "save.{d}", .{s.runs}),
+                    .atomic, .in_place, .leaky => "save.tmp",
+                };
                 try writeSynced(io, s.dir, name, contents);
                 errdefer s.dir.deleteFile(testing.io, name) catch {};
                 try s.dir.rename(name, s.dir, "save", io);
@@ -85,6 +102,11 @@ const Save = struct {
             if (!std.mem.eql(u8, now, "old") and !std.mem.eql(u8, now, "new")) return error.SaveLost;
         }
         if (s.counting.live_bytes != 0) return error.Leaked;
+        if (s.drawn) |drawn| {
+            const first = s.first orelse drawn;
+            s.first = first;
+            if (!std.mem.eql(u8, &first, &drawn)) return error.DrawDiffered;
+        }
     }
 
     pub fn tearDown(s: *Save) void {
@@ -130,10 +152,26 @@ test "a buffer leaked on an error path is caught by an allocator check" {
     testing.allocator.free(save.kept.?);
 }
 
-test "a run that depends on io.random is refused as nondeterministic" {
-    var tmp = testing.tmpDir(.{ .iterate = true });
+test "a run that names its temp file from io.random draws the same name in every run" {
+    var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var save: Save = .{ .dir = tmp.dir, .how = .random_name };
+    const report = try shakedown.everyFault(testing.allocator, testing.io, &save, .{});
+    try testing.expect(report.runs > 2 * report.steps);
+
+    // The seed is the options', so another seed draws another name.
+    var other: Save = .{ .dir = tmp.dir, .how = .random_name };
+    _ = try shakedown.everyFault(testing.allocator, testing.io, &other, .{ .random_seed = 1 });
+    try testing.expect(!std.mem.eql(u8, &save.first.?, &other.first.?));
+    var again: Save = .{ .dir = tmp.dir, .how = .random_name };
+    _ = try shakedown.everyFault(testing.allocator, testing.io, &again, .{ .random_seed = 1 });
+    try testing.expectEqualSlices(u8, &other.first.?, &again.first.?);
+}
+
+test "a run whose calls depend on state outside its Io is refused as nondeterministic" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var save: Save = .{ .dir = tmp.dir, .how = .counted_name };
     var report: shakedown.EveryFaultReport = .{};
     defer report.deinit();
     try testing.expectError(error.Nondeterministic, shakedown.everyFault(testing.allocator, testing.io, &save, .{ .diagnostics = &report }));

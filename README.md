@@ -149,7 +149,8 @@ releases it, and `tearDown` follows every run whose `setUp` succeeded, a failing
 one too. Every faulted run must make the same calls as the clean run up to its
 fault, or `everyFault` fails as `Nondeterministic` and names the first record
 that differed. It therefore never reports a pass for a run that tested
-something else, such as a temp name drawn from `io.random`.
+something else. Every run's `io.random` draws from `options.random_seed`, so a
+temp name drawn from it is the same name in every run.
 
 `corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
 draws, and `corpus.encode` builds a whole Smith input from a list of draws at
@@ -185,16 +186,18 @@ decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
 
 `zig build test` runs the unit suite, the quarantine death tests and the
 example. A probe base checks that each slot of an empty `Layer` reaches the same
-slot of its base, once and with the base's userdata. The `everyFault` tests save a file three ways: through a temp file and
-a rename, which survives every single fault; in place, which one faulted run
-catches losing the old save; and with a leak on an error path, which an allocator check
-catches. The death tests run in child processes: a use after free and a one-byte
-overflow must kill them. The clock's stress test keeps 1,000 threads in timed
-waits while the clock moves 10,000 times from another thread, and checks that
-none hangs and none times out early; `-Dstress-threads=N` and `-Dstress-rounds=N`
-resize it. `zig build check` compiles everything without running it, and
-`zig build bench` runs the benchmarks by hand; CI compiles them and never times
-them.
+slot of its base, once and with the base's userdata. The `everyFault` tests save
+a file four ways: through a temp file and a rename, which survives every single
+fault, with a temp name drawn from `io.random` that is the same in every run; in
+place, which one faulted run catches losing the old save; with a leak on an
+error path, which an allocator check catches; and with a temp name counted
+outside the `Io`, which the determinism check refuses. The death tests run in
+child processes: a use after free and a one-byte overflow must kill them. The
+clock's stress test keeps 1,000 threads in timed waits while the clock moves
+10,000 times from another thread, and checks that none hangs and none times out
+early; `-Dstress-threads=N` and `-Dstress-rounds=N` resize it. `zig build check`
+compiles everything without running it, and `zig build bench` runs the
+benchmarks by hand; CI compiles them and never times them.
 
 [CI](.github/workflows/ci.yml) runs the source checks and the Linux Debug suite
 on every push it is asked for, and before a merge the Debug suite on macOS and

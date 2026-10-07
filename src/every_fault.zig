@@ -6,7 +6,8 @@
 //! faulted run must make the same calls as the clean run up to its step;
 //! one that does not fails the whole as `Nondeterministic`, naming the
 //! first record that differed, so a faulted run never silently tests the
-//! wrong call.
+//! wrong call. Every run's `io.random` draws from the same seed, so a
+//! name drawn from it is the same in every run.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -26,6 +27,11 @@ pub const EveryFaultOptions = struct {
     cancel: bool = true,
     /// `fail(OutOfMemory)` at every call through `FaultIo.allocator`.
     alloc: bool = true,
+    /// Every run's `io.random` and `randomSecure` draw from a generator
+    /// seeded with this, so a name drawn from them is the same name in
+    /// every run and the determinism check holds. A run never sees the
+    /// base's randomness.
+    random_seed: u64 = 0,
     /// A clean run longer than this is refused as `TooManySteps`.
     max_steps: u64 = 100_000,
     /// What a failing run's trace keeps for the report.
@@ -88,7 +94,7 @@ pub const EveryFaultReport = struct {
 /// `fio.allocator`.
 pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOptions) EveryFaultError!EveryFaultReport {
     var report: EveryFaultReport = .{};
-    const clean = FaultIo.init(gpa, base, .{ .trace = .all }) catch |err| return outOfMemory(err);
+    const clean = FaultIo.init(gpa, base, .{ .trace = .all, .random_seed = options.random_seed }) catch |err| return outOfMemory(err);
     defer clean.deinit();
     try once(gpa, ctx, clean, options, &report, null);
     report.steps = clean.steps().peek();
@@ -102,6 +108,7 @@ pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOpt
             const mode: IoTrace.Mode = if (options.trace == .off) .{ .last = 1 } else options.trace;
             const fio = FaultIo.init(gpa, base, .{
                 .trace = mode,
+                .random_seed = options.random_seed,
                 .plan = &.{.{ .at = .{ .step = record.step }, .fault = fault }},
             }) catch |err| return outOfMemory(err);
             defer fio.deinit();

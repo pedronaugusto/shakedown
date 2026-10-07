@@ -32,7 +32,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `FaultIo` is built on, for a package's own call types.
 - `everyFault`: every single fault at every step of an operation, with a check
   that every faulted run made the clean run's calls up to its fault. Each run is
-  checked before its `tearDown`, and `EveryFaultReport` frees its trace with the
-  allocator it was made with.
+  checked before its `tearDown`, every run draws `io.random` from the seed in its
+  options, and `EveryFaultReport` frees its trace with the allocator it was made
+  with.
 
 [Unreleased]: https://github.com/pedronaugusto/shakedown/commits/main
