@@ -1,0 +1,132 @@
+# shakedown
+
+shakedown is a set of test doubles for Zig code written against `std.Io`. A
+`Clock` moves time only when the test moves it, a `Layer` overrides some `Io`
+slots and forwards the rest, and two allocators count or quarantine memory.
+
+## Install
+
+Requires Zig 0.17.0. Fetch with `zig fetch --save
+git+https://github.com/pedronaugusto/shakedown`, mark the dependency `.lazy = true`
+in `build.zig.zon`, and add the `shakedown` module only to your test modules'
+imports. It is a test dependency: production code never imports it.
+
+## Usage
+
+[examples/usage.zig](examples/usage.zig) tests a retry loop that backs off one second, then two.
+The task sleeps on the clock, and the test lets exactly each backoff pass.
+
+<!-- BEGIN GENERATED zig build docs -- usage -->
+```zig
+const shakedown = @import("shakedown");
+
+var clock: shakedown.Clock = .init(init.io, .{});
+const io = clock.io();
+const start = Io.Timestamp.now(io, .awake);
+
+var attempts: std.atomic.Value(u32) = .init(0);
+var task = try io.concurrent(retry, .{ io, 3, &attempts });
+
+// Wait until the task sleeps, then let exactly its backoff pass.
+try clock.awaitArmed(1, .fromSeconds(10));
+clock.advance(.fromSeconds(1));
+try clock.awaitArmed(1, .fromSeconds(10));
+std.debug.assert(clock.advanceToNext().?.nanoseconds == 2 * std.time.ns_per_s);
+try task.await(io);
+
+std.debug.assert(attempts.load(.acquire) == 3);
+std.debug.assert(start.durationTo(.now(io, .awake)).nanoseconds == 3 * std.time.ns_per_s);
+
+// An allocator that counts, for a test that bounds what code allocates.
+var counting: shakedown.alloc.Counting = .init(std.heap.page_allocator);
+const gpa = counting.allocator();
+const bytes = try gpa.alloc(u8, 100);
+gpa.free(bytes);
+std.debug.assert(counting.peak_bytes == 100);
+std.debug.assert(counting.live_bytes == 0);
+```
+<!-- END GENERATED -->
+
+## Design
+
+Every double is an `Io` built with `Layer(State, overrides)`. A layer's
+userdata is its own `state`, and every slot it does not override is forwarded
+to its base `Io` with the base's own userdata. Doubles therefore keep their
+state in a value instead of a global, and they stack: a `Clock` over
+`std.testing.io`, a counting layer over the clock, or the other way round. The
+override set is computed from `Io.VTable`, so a slot a later Zig adds is
+forwarded with no change here. `io.vtable == &L.vtable` tells whether an `Io`
+is a layer of exactly type `L`, and `L.of(userdata)` recovers it inside an
+override.
+
+`Clock` owns `now`, `clockResolution` and `sleep`, the timed forms of
+`futexWait` and `batchAwaitConcurrent`, and the timeout of `netConnectIp`.
+Everything that waits on a timeout goes through those slots: `Io.sleep`,
+`Event.waitTimeout`, `Condition` and `Semaphore` timeouts, `Batch` waits and
+`operateTimeout`. The awake, boot and real clocks are kept apart. `advance`
+moves all three, `suspendFor` moves boot and real but not awake, as a machine
+that sleeps does, and `stepReal` moves real time alone, backwards too. The CPU
+clocks stay frozen unless `Options.cpu` hands them to the base. Timers fire in
+the order the clocks reach them, ties in the order they were armed.
+
+A waiter blocks on the base until its timer fires or its wait is woken, so the
+base must keep real time: `std.testing.io` or a `Threaded` of the test's own.
+A timer lives on the waiter's stack and the clock allocates nothing. A sleep
+waits on its own futex word, which only a firing sets. A timed futex wait
+re-checks its timer every `Options.recheck` of real time, 1 ms by default,
+because the base computes its own deadlines: a timeout reaches its waiter at
+most that late, and a wake from the code under test reaches it at once.
+`awaitArmed(n, limit)` blocks until `n` timers are armed. It is the barrier a
+test takes before `advance` when the waiter runs on another task.
+
+`alloc.Counting` counts allocations, frees, resizes, remaps and refusals, and
+the bytes live, at their peak and in total. Its counts are plain fields, so it
+serves one thread. `alloc.Quarantine` maps every allocation on its own pages and
+never hands an address out twice. A free returns the pages to the system and
+leaves the range reserved with no access, so a use after free faults at once.
+With `guard = .after` the block ends at an inaccessible page, so a one-byte
+overflow faults too. Resizes are refused unless the length stays the same, so a
+growth moves the block and the old range is quarantined. Each call is a system
+call: it is for soak runs and test suites, not for timing.
+
+`corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
+draws, and `corpus.encode` builds a whole Smith input from a list of draws at
+compile time. `Source` is the one source of random decisions; for now it is a
+seeded generator whose draws are fixed per seed on every target.
+
+## Scope
+
+- It does not simulate a scheduler, a file system or a network yet. Code that
+  waits on a `Clock` runs on real threads of the base `Io`.
+- It does not control time for code that bypasses `Io`: `std.Thread`, spin loops
+  on atomics and raw system calls see real time.
+- It does not detect data races. That is ThreadSanitizer's job.
+- It is not a test runner and sets no per-test timeouts.
+
+## Platforms
+
+`Clock`, `Layer`, `Counting` and `corpus` are portable Zig. `Quarantine` closes
+memory with `madvise` and `mprotect` on Linux, macOS and the BSDs, and with a
+decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
+`Quarantine.supported` says which.
+
+## Testing
+
+`zig build test` runs the unit suite, the quarantine death tests and the
+example. The death tests run in child processes: a use after free and a one-byte
+overflow must kill them. The clock's stress test keeps 1,000 threads in timed
+waits while the clock moves 10,000 times from another thread, and checks that
+none hangs and none times out early; `-Dstress-threads=N` and `-Dstress-rounds=N`
+resize it. `zig build check` compiles everything without running it, and
+`zig build bench` runs the benchmarks by hand; CI compiles them and never times
+them.
+
+[CI](.github/workflows/ci.yml) runs the source checks and the Linux Debug suite
+on every push it is asked for, and before a merge the Debug suite on macOS and
+Windows as well. `zig build check` cross-compiles for `x86_64-linux-gnu`,
+`aarch64-linux-gnu`, `x86_64-linux-musl`, `x86_64-windows-gnu`,
+`aarch64-windows-gnu`, `x86_64-macos` and `aarch64-macos`.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
