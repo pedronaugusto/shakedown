@@ -16,6 +16,102 @@ test "every vtable slot of an empty layer is a forwarder of its own" {
     }
 }
 
+/// A base that only counts which slot each call reached. It returns
+/// `undefined`: the forwarded result is discarded.
+const Probe = struct {
+    hits: [slot_names.len]u32 = @splat(0),
+
+    /// The userdata every forwarded call must carry: the probe's own.
+    var expected: ?*anyopaque = null;
+
+    const slot_names = @typeInfo(Io.VTable).@"struct".field_names;
+
+    const vtable: Io.VTable = blk: {
+        var table: Io.VTable = undefined;
+        for (slot_names, 0..) |name, i| @field(table, name) = slot(name, i);
+        break :blk table;
+    };
+
+    fn io(p: *Probe) Io {
+        return .{ .userdata = p, .vtable = &vtable };
+    }
+
+    fn hit(comptime ret: type, comptime index: usize, u: ?*anyopaque) ret {
+        // A forwarder that passed the layer's userdata would land here
+        // with an address that is not the probe's.
+        std.debug.assert(u == expected);
+        const p: *Probe = @ptrCast(@alignCast(u.?)); // safe: checked above to be the probe `Probe.io` handed out
+        p.hits[index] += 1;
+        return undefined;
+    }
+
+    fn slot(comptime name: []const u8, comptime i: usize) @FieldType(Io.VTable, name) {
+        const info = @typeInfo(@typeInfo(@FieldType(Io.VTable, name)).pointer.child).@"fn";
+        const ret = info.return_type.?;
+        const params = info.param_types;
+        return switch (params.len) {
+            1 => &struct {
+                fn f(u: ?*anyopaque) ret {
+                    return hit(ret, i, u);
+                }
+            }.f,
+            2 => &struct {
+                fn f(u: ?*anyopaque, _: params[1].?) ret {
+                    return hit(ret, i, u);
+                }
+            }.f,
+            3 => &struct {
+                fn f(u: ?*anyopaque, _: params[1].?, _: params[2].?) ret {
+                    return hit(ret, i, u);
+                }
+            }.f,
+            4 => &struct {
+                fn f(u: ?*anyopaque, _: params[1].?, _: params[2].?, _: params[3].?) ret {
+                    return hit(ret, i, u);
+                }
+            }.f,
+            5 => &struct {
+                fn f(u: ?*anyopaque, _: params[1].?, _: params[2].?, _: params[3].?, _: params[4].?) ret {
+                    return hit(ret, i, u);
+                }
+            }.f,
+            6 => &struct {
+                fn f(u: ?*anyopaque, _: params[1].?, _: params[2].?, _: params[3].?, _: params[4].?, _: params[5].?) ret {
+                    return hit(ret, i, u);
+                }
+            }.f,
+            7 => &struct {
+                fn f(u: ?*anyopaque, _: params[1].?, _: params[2].?, _: params[3].?, _: params[4].?, _: params[5].?, _: params[6].?) ret {
+                    return hit(ret, i, u);
+                }
+            }.f,
+            else => @compileError("Io.VTable." ++ name ++ " has more parameters than the probe takes"),
+        };
+    }
+};
+
+test "each slot of an empty layer reaches the same slot of its base, once" {
+    var probe: Probe = .{};
+    Probe.expected = &probe;
+    defer Probe.expected = null;
+    var layer: Empty = .init(probe.io(), .{});
+    const io = layer.io();
+    inline for (Probe.slot_names) |name| {
+        const Fn = @typeInfo(@FieldType(Io.VTable, name)).pointer.child;
+        // The arguments are never read: the probe only counts.
+        var args: std.meta.ArgsTuple(Fn) = undefined;
+        args[0] = io.userdata;
+        var result = @call(.auto, @field(io.vtable, name), args);
+        _ = &result;
+    }
+    for (Probe.slot_names, probe.hits) |name, hits| {
+        if (hits != 1) {
+            std.debug.print("Io.VTable.{s}: reached the base's slot {d} times\n", .{ name, hits });
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
 test "an empty layer behaves as its base" {
     var layer: Empty = .init(testing.io, .{});
     const io = layer.io();
