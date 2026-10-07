@@ -280,6 +280,26 @@ test "seeded randomness repeats, and differs between seeds" {
     try testing.expect(!std.mem.eql(u8, &draws[0], &draws[2]));
 }
 
+test "a seeded draw of any length is the start of a longer one" {
+    var long: [64]u8 = undefined;
+    {
+        const fio = try FaultIo.init(testing.allocator, testing.io, .{ .random_seed = 3 });
+        defer fio.deinit();
+        fio.io().random(&long);
+    }
+    for ([_]usize{ 1, 7, 8, 9, 13, 63 }) |len| {
+        const fio = try FaultIo.init(testing.allocator, testing.io, .{ .random_seed = 3 });
+        defer fio.deinit();
+        var short: [64]u8 = undefined;
+        fio.io().random(short[0..len]);
+        try testing.expectEqualSlices(u8, long[0..len], short[0..len]);
+    }
+    // Not one byte repeated over the whole draw: every byte was filled.
+    var seen: std.bit_set.Static(256) = .empty;
+    for (long) |b| seen.set(b);
+    try testing.expect(seen.count() > 32);
+}
+
 test "allocations go through the same plan, trace and counts" {
     const plan = [_]IoPlan.Entry{.{ .at = .{ .nth = .{ .call = .alloc, .n = 3 } }, .fault = .{ .fail = error.OutOfMemory } }};
     const fio = try FaultIo.init(testing.allocator, testing.io, .{ .plan = &plan, .trace = .all });

@@ -550,10 +550,17 @@ fn slow(f: *FaultIo, comptime name: []const u8, args: anytype) Return(name) {
     return result;
 }
 
+/// `buffer` from the seeded source, eight bytes a draw.
 fn fillRandom(f: *FaultIo, buffer: []u8) void {
     f.lock();
     defer f.unlock();
-    f.random.bytes(buffer);
+    var rest = buffer;
+    while (rest.len > 0) {
+        const word: [8]u8 = @bitCast(std.mem.nativeToLittle(u64, f.random.below(std.math.maxInt(u64))));
+        const n = @min(rest.len, 8);
+        @memcpy(rest[0..n], word[0..n]);
+        rest = rest[n..];
+    }
 }
 
 /// `err`, as the slot's return type gives it.

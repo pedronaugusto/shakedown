@@ -42,6 +42,10 @@ const rows = [_]Row{
     .{ .name = "alloc256/failing", .ops = 10_000_000, .run = allocFailing },
     .{ .name = "alloc256/faultio", .ops = 10_000_000, .run = allocFaultIo },
     .{ .name = "alloc4k/quarantine", .ops = 100_000, .run = allocQuarantine },
+    .{ .name = "random16/threaded", .ops = 1_000_000, .run = randomThreaded },
+    .{ .name = "random16/faultio", .ops = 1_000_000, .run = randomFaultIo },
+    .{ .name = "random16/faultio-seeded", .ops = 1_000_000, .run = randomFaultSeeded },
+    .{ .name = "everyfault/alloc16-random", .ops = 2_000, .run = everyFaultSweep },
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -194,4 +198,71 @@ fn allocQuarantine(ctx: *Context, ops: u64) anyerror!void {
     var quarantine: shakedown.alloc.Quarantine = .init(.{});
     defer quarantine.deinit();
     try allocLoop(ctx, quarantine.allocator(), ops, 4096);
+}
+
+// Randomness.
+
+fn randomLoop(ctx: *Context, io: Io, ops: u64) void {
+    var buffer: [16]u8 = undefined;
+    for (0..ops) |_| {
+        io.random(&buffer);
+        ctx.sink +%= std.mem.readInt(u64, buffer[0..8], .little);
+    }
+}
+
+fn randomThreaded(ctx: *Context, ops: u64) anyerror!void {
+    randomLoop(ctx, ctx.io, ops);
+}
+
+fn randomFaultIo(ctx: *Context, ops: u64) anyerror!void {
+    const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
+    defer fio.deinit();
+    randomLoop(ctx, fio.io(), ops);
+}
+
+fn randomFaultSeeded(ctx: *Context, ops: u64) anyerror!void {
+    const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false, .random_seed = 1 });
+    defer fio.deinit();
+    randomLoop(ctx, fio.io(), ops);
+}
+
+// everyFault.
+
+/// Sixteen allocations, each with a draw from `io.random`: one clean run
+/// and sixteen faulted ones a sweep.
+const Sweep = struct {
+    gpa: std.mem.Allocator = undefined,
+    sink: u64 = 0,
+
+    pub fn setUp(s: *Sweep, fio: *shakedown.FaultIo) !void {
+        s.gpa = try fio.allocator(std.heap.smp_allocator);
+    }
+
+    pub fn run(s: *Sweep, io: Io) !void {
+        for (0..16) |_| {
+            const block = try s.gpa.alloc(u8, 64);
+            defer s.gpa.free(block);
+            io.random(block[0..8]);
+            s.sink +%= block[0];
+        }
+    }
+
+    pub fn check(s: *Sweep, io: Io, result: anyerror!void, injected: ?shakedown.Injected) !void {
+        _ = s;
+        _ = io;
+        if (injected == null) try result;
+    }
+
+    pub fn tearDown(s: *Sweep) void {
+        _ = s;
+    }
+};
+
+fn everyFaultSweep(ctx: *Context, ops: u64) anyerror!void {
+    var sweep: Sweep = .{};
+    for (0..ops) |_| {
+        const report = try shakedown.everyFault(ctx.gpa, ctx.io, &sweep, .{});
+        ctx.sink +%= report.runs;
+    }
+    ctx.sink +%= sweep.sink;
 }
