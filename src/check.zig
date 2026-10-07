@@ -18,6 +18,7 @@ const Source = @import("Source.zig");
 const Tape = Source.Tape;
 const shrinker = @import("shrink.zig");
 const corpus = @import("corpus.zig");
+const Sim = @import("Sim.zig");
 
 /// One run of a property's body.
 pub const Case = struct {
@@ -33,6 +34,18 @@ pub const Case = struct {
         const notes = &(c.runner.notes orelse return);
         // ziglint-ignore: Z026 a note that cannot be kept is lost; the failure itself is still reported
         notes.print(c.runner.gpa, "    " ++ fmt ++ "\n", args) catch {};
+    }
+
+    /// A simulation whose every decision comes from this case's source, so
+    /// its schedules, faults and timings shrink with the case's inputs. It
+    /// is torn down when the case ends.
+    pub fn sim(c: *Case, options: Sim.Options) Sim.InitError!*Sim {
+        var with = options;
+        with.source = c.source;
+        try c.runner.sims.ensureUnusedCapacity(c.runner.gpa, 1);
+        const s = try Sim.init(c.runner.gpa, with);
+        c.runner.sims.appendAssumeCapacity(s);
+        return s;
     }
 };
 
@@ -195,6 +208,7 @@ const Runner = struct {
     source: Source,
     arena: std.heap.ArenaAllocator,
     body: struct { ctx: *anyopaque, run: *const fn (*anyopaque, *Case) anyerror!void } = undefined,
+    sims: std.ArrayList(*Sim) = .empty,
     notes: ?std.ArrayList(u8) = null,
     /// The final run's error return trace, taken before the error is
     /// handled and its frames are let go.
@@ -220,6 +234,7 @@ const Runner = struct {
     fn deinit(r: *Runner) void {
         r.source.deinit();
         r.arena.deinit();
+        r.sims.deinit(r.gpa);
         if (r.notes) |*n| n.deinit(r.gpa);
         r.* = undefined;
     }
@@ -232,6 +247,8 @@ const Runner = struct {
         if (@errorReturnTrace()) |t| t.index = 0;
         const result = r.body.run(r.body.ctx, &c);
         if (r.notes != null) if (result) |_| {} else |_| r.keepTrace();
+        for (r.sims.items) |s| s.deinit();
+        r.sims.clearRetainingCapacity();
         if (r.source.overrun()) return .discard;
         result catch |err| return switch (err) {
             error.Unsatisfiable => .discard,

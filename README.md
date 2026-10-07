@@ -1,10 +1,14 @@
 # shakedown
 
-shakedown is a set of test doubles for Zig code written against `std.Io`. A
-`Clock` moves time only when the test moves it, a `FaultIo` counts, traces and
-fails any `Io` call by plan, `everyFault` injects every single fault at every
-step of an operation, a `Layer` overrides some `Io` slots and forwards the rest,
-and three allocators count memory, quarantine it, or refuse to resize it.
+shakedown tests Zig code written against `std.Io`. A `Sim` is a simulated `Io`
+that runs the code's tasks one at a time and owns their time, so one seed
+reproduces a whole run, schedule included. `check` runs a property over many
+generated cases and shrinks a failure to its smallest form, schedules included.
+The rest are test doubles: a `Clock` moves time only when the test moves it,
+a `FaultIo` counts, traces and fails any `Io` call by plan, `everyFault`
+injects every single fault at every step of an operation, a `Layer` overrides
+some `Io` slots and forwards the rest, and three allocators count memory,
+quarantine it, or refuse to resize it.
 
 ## Install
 
@@ -17,7 +21,10 @@ imports. It is a test dependency: production code never imports it.
 
 [examples/usage.zig](examples/usage.zig) tests a retry loop that backs off one second, then two.
 The task sleeps on the clock, and the test lets exactly each backoff pass. A
-`FaultIo` then fails the first sync of a file whose path ends in `.lock`.
+`FaultIo` then fails the first sync of a file whose path ends in `.lock`. The
+same retry then runs on a simulation, where time jumps to each timer with no
+one moving it, and `check` runs a property, that a number printed and parsed
+back is the same number, over a hundred cases.
 
 <!-- BEGIN GENERATED zig build docs -- usage -->
 ```zig
@@ -63,6 +70,19 @@ const lock = try dir.createFile(fio.io(), "HEAD.lock", .{});
 defer lock.close(fio.io());
 if (lock.sync(fio.io())) |_| unreachable else |err| std.debug.assert(err == error.InputOutput);
 std.debug.assert(fio.count(.fileSync) == 1);
+
+// The retry on a simulation: its tasks, its sleeps and its every
+// choice are the simulation's, so no test thread moves time.
+const sim = try shakedown.Sim.init(init.gpa, .{ .seed = 1 });
+defer sim.deinit();
+var tries: std.atomic.Value(u32) = .init(0);
+const began = sim.now(.awake);
+std.debug.assert(sim.run(retry, .{ sim.io(), 3, &tries }) == .finished);
+std.debug.assert(began.durationTo(sim.now(.awake)).nanoseconds == 3 * std.time.ns_per_s);
+
+// A property over a hundred cases. It holds, so `check` returns; one
+// that failed would be shrunk, and printed with the tape that replays it.
+try shakedown.check(init.gpa, {}, roundTrip, .{ .cases = 100 });
 ```
 <!-- END GENERATED -->
 
@@ -152,31 +172,108 @@ that differed. It therefore never reports a pass for a run that tested
 something else. Every run's `io.random` draws from `options.random_seed`, so a
 temp name drawn from it is the same name in every run.
 
+### Properties
+
+Every random decision draws from a `Source`, as an integer below a bound, and a
+recording source keeps each one on its tape. A choice of 0 is always the
+simplest: 0, `false`, the first enum field, the end of a list, no fault, the
+first task. The generators in `gen` are laid out so that smaller choices make
+simpler values: integers shrink toward 0 with the positive side first, ranges
+toward the end nearest 0, lists toward empty, and `any(T)` draws any value of a
+type by reflection. A number is one choice. When drawing, about one number in
+five is an edge (0, ±1, the type's extremes, powers of two and their
+neighbours; ±0, infinities, NaN and the subnormals for floats), and the rest
+spread over magnitudes, small as often as large. Only the drawing leans: the
+choice recorded is the value, so an edge shrinks toward its neighbours like
+any other.
+
+`check(gpa, ctx, body, options)` runs the committed regressions, then
+`options.cases` fresh cases, each from its own seed mixed from the run's.
+Collections grow over the first half of the cases, so the first failure found is
+a small one when a small one exists. A failing case's tape is shrunk: whole
+spans (one generator call each) deleted, runs of choices deleted, spans zeroed,
+each choice binary-searched down, spans replaced by the spans inside them, equal
+siblings sorted, two choices lowered together, value moved from one choice to a
+later one, and a deletion paired with a neighbour pushed to compensate. An edit
+is kept only when its replay fails the same way and draws a tape shorter, or as
+long and smaller choice by choice. The minimal tape is replayed once more for
+its notes (`Case.note`) and its error return trace, and printed with the line
+that replays it: `SHAKEDOWN_TAPE=<tape>`, or the tape added to
+`options.regressions`. `SHAKEDOWN_SEED` and `SHAKEDOWN_CASES` override the seed
+and the count. Under `zig build test --fuzz` the same property runs on the
+fuzzer's input instead, with the regressions as its corpus, and a failure it
+finds prints as a tape. `corpus.fromTape` turns any tape into such an input.
+
+### Simulation
+
+`Sim` is one simulated `Io`. Its tasks run one at a time, on fibers of their own
+(std's context switch on x86_64 and aarch64, Win32 fibers on Windows) or on
+threads that pass a baton, and switch only at `Io` calls. When the running task
+blocks, the schedule picks the next ready one: the first ready (`fifo`), any
+(`random`), or by probabilistic concurrency testing (`pct`). When none is
+ready, time moves to the earliest timer. Every futex-based primitive in std
+(`Mutex`, `Condition`, `Event`, `Queue`, `Semaphore`, `RwLock`), `async`,
+`concurrent`, groups, `Select`, cancelation with its protection and `recancel`,
+sleeps and timeouts, and `random` run on it unchanged. Where std allows more
+than one behaviour the simulation draws one: whether `async` runs the function
+at once or starts a task, a spurious futex wake (1% by default), a wake and a
+cancel landing together (reporting the cancel hands the wake on to the next
+waiter), and, with `yield_per_million`, a switch at any call. Each draw is made
+only when there is a choice, so a tape holds only decisions that could have
+gone another way, and a `Case`'s simulation (`Case.sim`) shrinks its schedule
+with the case's inputs.
+
+A run ends `finished`, `failed` with the root task's error, `deadlock` with a
+report of every task still waiting (what it waits on, where it was started and
+its stack), at a step or time limit, or `stuck`: a watchdog thread notices a
+task that makes no `Io` call for ten seconds of real time and ends the run at
+its next call, or aborts the process with the report printed when that call
+never comes. `start`, `step`, `runFor` and `runUntil` drive a run a step or a
+frame at a time, and `at` starts a task at an instant, for input replay.
+`Options.faults` puts a `FaultIo` outermost, drawing its chances from the same
+source. `allocator()` lays memory out the same way in every run of a seed, from
+a region at a fixed address, so maps keyed by pointer iterate alike;
+`expectDeterministic` runs a body twice from one seed and names the first call,
+or the first step whose state checksum, differs. `conformance.run` checks any
+`Io` against std's guarantees: the simulation, std's threaded `Io`, a `Layer`
+and a `FaultIo` all pass it. `pub const panic = shakedown.panic;` in a test's
+root prints the seed, the tape and the last calls of the simulation a task
+panicked in.
+
+Once a run's tasks exist, a step allocates nothing: timers, futex waits and run
+queue slots live in the tasks, and a task that ended is kept, with its stack,
+for the next.
+
 `corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
 draws, `corpus.entries` a whole fuzz corpus of them, and `corpus.encode` a whole
 Smith input from a list of draws, all at compile time. `corpus.repeat("ab", n)`
 is `"ab"` written n times, the array product Zig 0.17 dropped: a static,
 0-terminated constant like a literal, for any n without raising the eval branch
-quota. `Source` is the one source of random decisions; for now it is a
-seeded generator whose draws are fixed per seed on every target.
+quota.
 
 ## Scope
 
-- It does not simulate a scheduler, a file system or a network yet. Code that
-  waits on a `Clock` runs on real threads of the base `Io`, and `everyFault`
-  over several tasks on a threaded base is refused as nondeterministic.
-- It does not shrink a failing run yet.
-- It does not control time for code that bypasses `Io`: `std.Thread`, spin loops
-  on atomics and raw system calls see real time.
+- The simulation does not simulate a file system, a network or processes yet:
+  those calls fail with `error.Unexpected`, except writes to stdout and stderr,
+  which reach them.
+- It does not reach code that bypasses `Io`: `std.Thread`, spin loops on atomics
+  and raw system calls run for real, and a task waiting on them waits in real
+  time. Switches happen only at `Io` calls, so a race between two calls is not
+  seen.
 - It does not detect data races. That is ThreadSanitizer's job.
 - It is not a test runner and sets no per-test timeouts.
 
 ## Platforms
 
-`Clock`, `Layer`, `FaultIo`, `everyFault`, `Counting`, `NoResize` and `corpus` are portable Zig. `Quarantine` closes
-memory with `madvise` and `mprotect` on Linux, macOS and the BSDs, and with a
-decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
-`Quarantine.supported` says which.
+`Clock`, `Layer`, `FaultIo`, `everyFault`, `check`, `Counting`, `NoResize` and
+`corpus` are portable Zig. A `Sim` runs its tasks on fibers on x86_64 and aarch64
+outside Windows, on Win32 fibers on Windows, and on threads elsewhere; the
+threads executor runs wherever threads do, and gives the same run of a seed.
+Each fiber's stack has an inaccessible guard page below it. The simulation's
+fixed-address allocator reserves its region with `mmap` or `NtAllocateVirtualMemory`.
+`Quarantine` closes memory with `madvise` and `mprotect` on Linux, macOS and the
+BSDs, and with a decommit on Windows. Elsewhere it hands out plain pages and
+quarantines nothing; `Quarantine.supported` says which.
 
 ## Built with
 
@@ -187,18 +284,34 @@ decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
 
 ## Testing
 
-`zig build test` runs the unit suite, the quarantine death tests and the
-example. A probe base checks that each slot of an empty `Layer` reaches the same
-slot of its base, once and with the base's userdata. The `everyFault` tests save
-a file four ways: through a temp file and a rename, which survives every single
-fault, with a temp name drawn from `io.random` that is the same in every run; in
+`zig build test` runs the unit suite, two death tests and the example. The
+conformance checks run on std's threaded `Io`, through an empty `Layer` and an
+empty `FaultIo`, and on simulations on both executors, all three schedules and
+eight seeds. A thousand seeds of that workload each repeat their run, and a
+digest of their trace hashes is fixed in the test, so a change to what a
+simulation decides, or in what order, fails until it is made on purpose; twenty
+seeds give the same run on fibers and on threads. Four planted bugs must be
+found and shrunk to a few choices: Zig 0.16's condition, which loses a cancel
+to a wake; an inbox that loses a wake-up between a check and a reset; a
+lock-free stack with an ABA; and work started with `async` and awaited through a
+queue it fills, which deadlocks when `async` runs at once. The fixed versions
+pass. Ten problems of the shrinking challenge (github.com/jlink/shrinking-challenge)
+must shrink, from each of nine seeds, to their canonical minimum (`bound5` to
+its size, two one-element lists). A counting allocator shows a run allocates
+nothing per step once its tasks exist.
+
+A probe base checks that each slot of an empty `Layer` reaches the same slot of
+its base, once and with the base's userdata. The `everyFault` tests save a file
+four ways: through a temp file and a rename, which survives every single fault,
+with a temp name drawn from `io.random` that is the same in every run; in
 place, which one faulted run catches losing the old save; with a leak on an
 error path, which an allocator check catches; and with a temp name counted
 outside the `Io`, which the determinism check refuses. The death tests run in
-child processes: a use after free and a one-byte overflow must kill them. The
-clock's stress test keeps 1,000 threads in timed waits while the clock moves
-10,000 times from another thread, and checks that none hangs and none times out
-early; `-Dstress-threads=N` and `-Dstress-rounds=N` resize it. `zig build check`
+child processes: a use after free and a one-byte overflow on a quarantine, and
+a simulated task overflowing its stack, must kill them. The clock's stress test
+keeps 1,000 threads in timed waits while the clock moves 10,000 times from
+another thread, and checks that none hangs and none times out early;
+`-Dstress-threads=N` and `-Dstress-rounds=N` resize it. `zig build check`
 compiles everything without running it, and `zig build bench` runs the
 benchmarks by hand; CI compiles them and never times them.
 

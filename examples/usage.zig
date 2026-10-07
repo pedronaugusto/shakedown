@@ -1,6 +1,8 @@
 //! A retry loop with backoff, tested without waiting: the code under test
 //! sleeps on a `shakedown.Clock`, and the test moves the clock. Then an
-//! allocator that counts, and a `FaultIo` that fails one sync by its path.
+//! allocator that counts, a `FaultIo` that fails one sync by its path, the
+//! retry again on a `Sim`, where time jumps to each timer by itself, and a
+//! property `check` runs over a hundred cases.
 //!
 //! `zig build examples` builds AND runs this; `zig build docs -- usage`
 //! extracts the region between the usage markers into README.md, so the
@@ -20,6 +22,14 @@ fn retry(io: Io, tries: u32, attempts: *std.atomic.Value(u32)) error{ GaveUp, Ca
         backoff = .fromNanoseconds(backoff.nanoseconds * 2);
     }
     return error.GaveUp;
+}
+
+/// The property: a number printed and parsed back is the same number.
+fn roundTrip(_: void, c: *shakedown.Case) !void {
+    const x = shakedown.gen.int(c.source, u64);
+    var buffer: [20]u8 = undefined;
+    const text = try std.mem.print(&buffer, "{d}", .{x});
+    if (try std.fmt.parseUnsigned(u64, text, 10) != x) return error.RoundTrip;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -65,6 +75,19 @@ pub fn main(init: std.process.Init) !void {
     defer lock.close(fio.io());
     if (lock.sync(fio.io())) |_| unreachable else |err| std.debug.assert(err == error.InputOutput);
     std.debug.assert(fio.count(.fileSync) == 1);
+
+    // The retry on a simulation: its tasks, its sleeps and its every
+    // choice are the simulation's, so no test thread moves time.
+    const sim = try shakedown.Sim.init(init.gpa, .{ .seed = 1 });
+    defer sim.deinit();
+    var tries: std.atomic.Value(u32) = .init(0);
+    const began = sim.now(.awake);
+    std.debug.assert(sim.run(retry, .{ sim.io(), 3, &tries }) == .finished);
+    std.debug.assert(began.durationTo(sim.now(.awake)).nanoseconds == 3 * std.time.ns_per_s);
+
+    // A property over a hundred cases. It holds, so `check` returns; one
+    // that failed would be shrunk, and printed with the tape that replays it.
+    try shakedown.check(init.gpa, {}, roundTrip, .{ .cases = 100 });
 
     // --- README:usage ---
 }

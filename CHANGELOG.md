@@ -22,15 +22,46 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   allocation count `std.testing.checkAllAllocationFailures` depends on repeats
   from run to run.
 - `corpus.entry`, `corpus.entries` and `corpus.encode`, which build
-  `std.testing.Smith` inputs at compile time, and `corpus.repeat`, text written
-  any number of times as a static constant.
-- `Source`, a seeded source of random decisions whose draws are fixed per seed.
+  `std.testing.Smith` inputs at compile time, `corpus.fromTape`, which turns a
+  recorded tape into one, and `corpus.repeat`, text written any number of times
+  as a static constant.
+- `Source`, the one source of random decisions: a seeded generator whose draws
+  are fixed per seed, a recorded tape replayed, or the fuzzer's input. A
+  recording source keeps every draw, with its bound, on a tape grouped into the
+  spans `begin` and `end` mark; a choice of 0 is always the simplest.
+  `integer` draws edges and small values more often, and `more` decides one
+  more element of a list.
+- `gen`: integers, ranges, floats, booleans, enums, `oneOf`, `weighted`,
+  slices, strings (ASCII, UTF-8 or bytes), `any` value of a type by reflection,
+  and `filter`, each laid out so that a smaller tape is a simpler value.
+- `check`: a property run over the committed regressions and then seeded
+  cases, its failures shrunk on the tape and printed with the tape that
+  replays them, its notes and its error return trace; `SHAKEDOWN_TAPE`,
+  `SHAKEDOWN_SEED` and `SHAKEDOWN_CASES`; under `--fuzz`, the same property on
+  the fuzzer's input. `CheckOptions.diagnostics` takes the failure as a
+  `CheckReport` instead of printing it.
+- `Sim`: a simulated `Io` that runs tasks one at a time on fibers, Win32 fibers
+  or threads, with the `fifo`, `random` and `pct` schedules, virtual time that
+  moves to the next timer when every task waits, futexes, groups, select and
+  cancelation, every choice std leaves open drawn from one source, and outcomes
+  that name each waiting task of a deadlock with its stack. `start`, `step`,
+  `runFor`, `runUntil` and `at` drive it a frame at a time; `Options.faults`
+  puts a `FaultIo` outermost; `allocator` lays memory out alike in every run;
+  a watchdog ends a run whose task stops calling into it. `Case.sim` makes one
+  whose schedule shrinks with the case.
+- `expectDeterministic`, which runs a body twice from one seed and names the
+  first call, or the first step's state checksum, that differs.
+- `conformance`, std's `Io` guarantees as checks to run against any `Io`.
+- `panic`, a panic handler that prints the seed, tape and last calls of the
+  simulation a task panicked in.
 - `FaultIo`: an `Io` that counts, traces and faults every slot and operation by
   plan, with paths for opened files and directories, seeded `io.random`, an
   allocator under the same plan, and `beginForeign` and `endForeign` for a
   seam's own calls.
 - `Plan`, `Trace`, `Steps` and `Match`, the generic plan, trace and step counter
-  `FaultIo` is built on, for a package's own call types.
+  `FaultIo` is built on, for a package's own call types. A trace in `.window`
+  mode keeps the newest records and the rolling hash and nothing that grows
+  with the run.
 - `everyFault`: every single fault at every step of an operation, with a check
   that every faulted run made the clean run's calls up to its fault. Each run is
   checked before its `tearDown`, every run draws `io.random` from the seed in its

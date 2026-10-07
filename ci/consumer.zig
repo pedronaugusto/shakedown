@@ -8,5 +8,7 @@ pub fn main() void {
     _ = &shakedown.Clock.init;
     _ = &shakedown.Layer(struct { unused: u8 = 0 }, .{}).init;
     _ = &shakedown.alloc.Counting.init;
+    _ = &shakedown.Sim.init;
+    _ = &shakedown.Source.initRecording;
     _ = std;
 }

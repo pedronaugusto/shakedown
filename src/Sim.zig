@@ -1,0 +1,283 @@
+//! `Sim`: one simulated `Io` that owns time, tasks and randomness.
+//!
+//! Code written against `std.Io` runs on it unchanged. Its tasks run one at
+//! a time, switching only at `Io` calls, and every choice between legal
+//! behaviours is drawn from one seeded source: which ready task runs next,
+//! whether `async` starts a task or runs at once, a spurious futex wake, a
+//! wake and a cancel landing together. Time moves only when every task is
+//! waiting, straight to the next timer, so an hour of timeouts takes no
+//! real time, and one seed reproduces a whole run. With `Options.faults`,
+//! a `FaultIo` is the simulation's outermost part, drawing from the same
+//! source, so a schedule and its faults shrink together.
+//!
+//! What it cannot reach is what does not go through `Io`: `std.Thread`,
+//! spin loops on atomics, raw system calls, and data races between `Io`
+//! calls, which are ThreadSanitizer's. The file system, the network and
+//! processes are not simulated yet: those calls fail with
+//! `error.Unexpected`.
+//!
+//! A `Sim` must not move; `init` allocates it.
+const std = @import("std");
+const Io = std.Io;
+const Allocator = std.mem.Allocator;
+const Source = @import("Source.zig");
+const FaultIo = @import("FaultIo.zig");
+const Trace = @import("trace.zig").Trace;
+const Core = @import("sim/Core.zig");
+const calls = @import("sim/calls.zig");
+const Region = @import("sim/Region.zig");
+const options_mod = @import("sim/options.zig");
+
+const Sim = @This();
+
+pub const Options = options_mod.Options;
+pub const Executor = options_mod.Executor;
+pub const Schedule = options_mod.Schedule;
+pub const AsyncStart = options_mod.AsyncStart;
+pub const Outcome = options_mod.Outcome;
+pub const TaskReport = options_mod.TaskReport;
+/// One call, as the run's trace records it.
+pub const Event = options_mod.Event;
+
+/// Private: the allocator the simulation was made with.
+gpa: Allocator,
+/// Private: tasks, time, futexes.
+core: Core,
+/// Private: the source when the options name none.
+own_source: Source,
+/// Private: the fault part, when the options plan faults.
+fio: ?*FaultIo = null,
+/// Private: the memory `allocator` hands out, once asked for.
+region: ?Region = null,
+/// Private: the watchdog's thread and its stop word.
+watchdog: ?std.Thread = null,
+watchdog_stop: std.atomic.Value(u32) = .init(0),
+
+pub const InitError = error{ OutOfMemory, ExecutorUnavailable, FaultNotInErrorSet, FaultNotApplicable };
+
+pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
+    const s = try gpa.create(Sim);
+    errdefer gpa.destroy(s);
+    s.* = .{ .gpa = gpa, .core = undefined, .own_source = try .init(gpa, .{ .prng = options.seed }) };
+    errdefer s.own_source.deinit();
+    const drawn_from = options.source orelse &s.own_source;
+    s.core = try .init(gpa, options, drawn_from);
+    errdefer s.core.deinit();
+    if (options.faults.len > 0) s.fio = try FaultIo.init(gpa, s.coreIo(), .{ .plan = options.faults, .source = drawn_from });
+    s.core.outer = s.io();
+    return s;
+}
+
+/// Ends the simulation. Tasks still waiting are dropped where they stand,
+/// their `defer`s not run.
+pub fn deinit(s: *Sim) void {
+    if (s.watchdog) |thread| {
+        s.watchdog_stop.store(1, .release);
+        real().futexWake(u32, &s.watchdog_stop.raw, 1);
+        thread.join();
+    }
+    s.core.deinit();
+    if (s.fio) |f| f.deinit();
+    if (s.region) |*r| r.deinit();
+    s.own_source.deinit();
+    s.gpa.destroy(s);
+}
+
+/// The `Io` to hand the code under test.
+pub fn io(s: *Sim) Io {
+    if (s.fio) |f| return f.io();
+    return s.coreIo();
+}
+
+fn coreIo(s: *Sim) Io {
+    return .{ .userdata = &s.core, .vtable = &calls.vtable };
+}
+
+/// Runs `f(args)` as the root task until the run ends: every task ended,
+/// the root failed, a deadlock, a limit, or a stuck task. A simulation
+/// runs one root; later calls return the first outcome.
+pub fn run(s: *Sim, comptime f: anytype, args: std.meta.ArgsTuple(@TypeOf(f))) Outcome {
+    if (s.core.outcome) |o| return o;
+    s.startAt(f, args, @returnAddress()) catch |err| return .{ .failed = err };
+    return s.drive(.run, 0).?;
+}
+
+/// Starts `f(args)` as the root task without running it: `step`,
+/// `runFor` and `runUntil` then drive it. Its error, if it returns one,
+/// ends the run as `failed`.
+pub fn start(s: *Sim, comptime f: anytype, args: std.meta.ArgsTuple(@TypeOf(f))) Core.SpawnError!void {
+    return s.startAt(f, args, @returnAddress());
+}
+
+fn startAt(s: *Sim, comptime f: anytype, args: std.meta.ArgsTuple(@TypeOf(f)), spawned_at: usize) Core.SpawnError!void {
+    const Args = @TypeOf(args);
+    const Start = struct {
+        fn start(context: *const anyopaque, result: *anyopaque) void {
+            const a: *const Args = @ptrCast(@alignCast(context)); // safe: the core copied the arguments here
+            const err: *?anyerror = @ptrCast(@alignCast(result)); // safe: the root's result slot is sized and aligned for it
+            err.* = errorOf(@call(.auto, f, a.*));
+        }
+    };
+    const root = try s.core.spawn(.{ .root = Start.start }, std.mem.asBytes(&args), .of(Args), @sizeOf(?anyerror), .of(?anyerror), .ready);
+    root.spawned_at = spawned_at;
+}
+
+fn errorOf(value: anytype) ?anyerror {
+    return switch (@typeInfo(@TypeOf(value))) {
+        .error_union => if (value) |_| null else |err| err,
+        .error_set => value,
+        else => null,
+    };
+}
+
+/// Frame stepping: runs until `.awake` has moved by `d`. Null while tasks
+/// are still alive: waiting is not a deadlock while the test may still wake
+/// them. The outcome once every task has ended or a limit is reached.
+pub fn runFor(s: *Sim, d: Io.Duration) ?Outcome {
+    const now_ns = s.core.clocks[@backingInt(Core.Kept.awake)];
+    return s.drive(.until, now_ns +| Core.nanoseconds(d.nanoseconds));
+}
+
+/// `runFor` up to an instant on `.awake`.
+pub fn runUntil(s: *Sim, t: Io.Timestamp) ?Outcome {
+    return s.drive(.until, Core.nanoseconds(t.nanoseconds));
+}
+
+/// One scheduling step: the next ready task runs to its next blocking call,
+/// or time moves to the next timer. Null until the run ends; a deadlock
+/// ends it, since no step can be taken.
+pub fn step(s: *Sim) ?Outcome {
+    return s.drive(.step, 0);
+}
+
+fn drive(s: *Sim, mode: Core.Mode, until: i64) ?Outcome {
+    s.startWatchdog();
+    return s.core.drive(mode, until) catch |err| .{ .failed = err };
+}
+
+/// Calls `f(io, ctx)` on a task of its own once `.awake` reaches `t`: input
+/// replay, an event at a set time.
+pub fn at(s: *Sim, t: Io.Timestamp, ctx: *anyopaque, f: *const fn (io: Io, ctx: *anyopaque) void) error{ OutOfMemory, SystemResources }!void {
+    const when = Core.nanoseconds(t.nanoseconds);
+    const task = try s.core.spawn(.{ .at = .{ .ctx = ctx, .f = f } }, &.{}, .@"1", 0, .@"1", .parked);
+    task.spawned_at = @returnAddress();
+    if (when <= s.core.clocks[@backingInt(Core.Kept.awake)]) {
+        task.wait = .none;
+        s.core.makeReady(task);
+    } else s.core.arm(task, .awake, when);
+}
+
+/// What `which` reads now.
+pub fn now(s: *const Sim, which: Io.Clock) Io.Timestamp {
+    return s.core.now(which);
+}
+
+/// The source every decision of the run comes from.
+pub fn source(s: *Sim) *Source {
+    return s.core.source;
+}
+
+/// The run's trace: one record per call, hashed whatever it keeps.
+pub fn trace(s: *Sim) *Trace(Event) {
+    return &s.core.trace;
+}
+
+/// The fault part, when `Options.faults` planned any.
+pub fn faults(s: *Sim) ?*FaultIo {
+    return s.fio;
+}
+
+/// An allocator that lays memory out the same way in every run of a seed,
+/// from a region at a fixed address where the system allows one: code that
+/// keys a map by pointer then repeats. Not thread-safe, which a simulation
+/// does not need. Where no region can be had, the simulation's own
+/// allocator.
+pub fn allocator(s: *Sim) Allocator {
+    if (s.region == null) s.region = Region.init() catch return s.gpa;
+    return s.region.?.allocator();
+}
+
+/// Calls made so far.
+pub fn steps(s: *const Sim) u64 {
+    return s.core.steps;
+}
+
+// The watchdog.
+
+fn real() Io {
+    return Io.Threaded.global_single_threaded.io();
+}
+
+fn startWatchdog(s: *Sim) void {
+    if (s.watchdog != null or s.core.options.watchdog == null) return;
+    // ziglint-ignore: Z026 without its thread the watchdog is off; the run itself is unchanged
+    s.watchdog = std.Thread.spawn(.{ .stack_size = 64 * 1024 }, watch, .{s}) catch null;
+}
+
+/// Samples the running task and the call count. A task that makes no call
+/// for the watchdog's time is reported and the run marked stuck, which ends
+/// it at the task's next call; one that never makes one is reported again
+/// and the process aborted, since nothing else can stop it.
+fn watch(s: *Sim) void {
+    const limit = Core.nanoseconds(s.core.options.watchdog.?.nanoseconds);
+    const slice = @max(@divTrunc(limit, 8), std.time.ns_per_ms);
+    var last = s.core.calls.load(.monotonic);
+    var idle: i64 = 0;
+    while (s.watchdog_stop.load(.acquire) == 0) {
+        // ziglint-ignore: Z026 a wait cut short only samples sooner
+        real().futexWaitTimeout(u32, &s.watchdog_stop.raw, 0, .{ .duration = .{ .raw = .fromNanoseconds(slice), .clock = .awake } }) catch {};
+        const task = s.core.running.load(.monotonic);
+        const count = s.core.calls.load(.monotonic);
+        if (task == 0 or count != last) {
+            last = count;
+            idle = 0;
+            continue;
+        }
+        idle += slice;
+        if (idle >= limit and !s.core.stuck.load(.monotonic)) {
+            s.core.stuck.store(true, .monotonic);
+            say("shakedown: task {d} has run {d} ms without an Io call; the run ends as stuck at its next one\n", .{ task, @divTrunc(idle, std.time.ns_per_ms) });
+        }
+        if (idle >= 2 * limit) {
+            say("shakedown: task {d} has made no Io call for {d} ms and cannot be stopped; aborting\n", .{ task, @divTrunc(idle, std.time.ns_per_ms) });
+            std.process.abort();
+        }
+    }
+}
+
+fn say(comptime fmt: []const u8, args: anytype) void {
+    var buffer: [256]u8 = undefined;
+    const stderr = std.debug.lockStderr(&buffer).terminal();
+    defer std.debug.unlockStderr();
+    // ziglint-ignore: Z026 a message stderr cannot take is lost
+    stderr.writer.print(fmt, args) catch {};
+}
+
+// Panics.
+
+/// A panic handler that says, before std's, which simulation the panicking
+/// task ran in: its seed, its tape when it records one, and its last calls.
+/// Install it in the test's root: `pub const panic = shakedown.panic;`.
+pub const panic = std.debug.FullPanic(panicked);
+
+fn panicked(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    if (Core.running_core) |c| {
+        Core.running_core = null;
+        const s: *Sim = @fieldParentPtr("core", c);
+        s.describe();
+    }
+    std.debug.defaultPanic(msg, first_trace_addr);
+}
+
+fn describe(s: *Sim) void {
+    var buffer: [256]u8 = undefined;
+    const stderr = std.debug.lockStderr(&buffer).terminal();
+    defer std.debug.unlockStderr();
+    const w = stderr.writer;
+    w.print("shakedown: a task panicked in a simulation at step {d}", .{s.core.steps}) catch return;
+    if (s.core.options.source == null) w.print(", seed 0x{x}", .{s.core.options.seed}) catch return;
+    const t = s.core.source.tape();
+    if (t.choices.len > 0) w.print("; tape {f}", .{t}) catch return;
+    w.writeAll("\nlast calls:\n") catch return;
+    s.core.trace.format(w) catch return;
+}

@@ -46,6 +46,17 @@ const rows = [_]Row{
     .{ .name = "random16/faultio", .ops = 1_000_000, .run = randomFaultIo },
     .{ .name = "random16/faultio-seeded", .ops = 1_000_000, .run = randomFaultSeeded },
     .{ .name = "everyfault/alloc16-random", .ops = 2_000, .run = everyFaultSweep },
+    .{ .name = "sim/now", .ops = 10_000_000, .run = simNow },
+    .{ .name = "sim/switch-fibers", .ops = 1_000_000, .run = simSwitchFibers },
+    .{ .name = "sim/switch-threads", .ops = 20_000, .run = simSwitchThreads },
+    .{ .name = "sim/spawn-await", .ops = 1_000_000, .run = simSpawn },
+    .{ .name = "sim/contention-random", .ops = 100_000, .run = simContentionRandom },
+    .{ .name = "sim/contention-pct", .ops = 100_000, .run = simContentionPct },
+    .{ .name = "sim/timers", .ops = 100_000, .run = simTimers },
+    .{ .name = "sim/new", .ops = 10_000, .run = simNew },
+    .{ .name = "sim/replay", .ops = 100_000, .run = simReplay },
+    .{ .name = "check/sum-cases", .ops = 25_600, .run = checkCases },
+    .{ .name = "check/shrink-distinct", .ops = 20, .run = checkShrink },
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -265,4 +276,190 @@ fn everyFaultSweep(ctx: *Context, ops: u64) anyerror!void {
         ctx.sink +%= report.runs;
     }
     ctx.sink +%= sweep.sink;
+}
+
+// Simulation. Every row runs inside one `Sim`; ops counts calls, switches,
+// tasks, lock round trips or timer firings.
+
+fn simRun(ctx: *Context, options: shakedown.Sim.Options, comptime f: anytype, args: anytype) !void {
+    const sim = try shakedown.Sim.init(ctx.gpa, options);
+    defer sim.deinit();
+    switch (sim.run(f, args ++ .{sim.io()})) {
+        .finished => {},
+        else => return error.BenchFailed,
+    }
+    ctx.sink +%= sim.steps();
+}
+
+const quiet: shakedown.Sim.Options = .{ .schedule = .fifo, .spurious_wake_per_million = 0, .watchdog = null };
+
+fn nowCalls(ops: u64, io: Io) void {
+    var sum: i96 = 0;
+    for (0..ops) |_| sum +%= Io.Timestamp.now(io, .awake).nanoseconds;
+    std.mem.doNotOptimizeAway(sum);
+}
+
+fn simNow(ctx: *Context, ops: u64) anyerror!void {
+    try simRun(ctx, quiet, nowCalls, .{ops});
+}
+
+/// Two tasks hand a turn back and forth: ops switches.
+fn pingPong(ops: u64, io: Io) !void {
+    const Side = struct {
+        fn run(mine: *std.atomic.Value(u32), theirs: *std.atomic.Value(u32), rounds: u64, inner: Io) Io.Cancelable!void {
+            for (0..rounds) |_| {
+                while (mine.load(.acquire) == 0) try inner.futexWait(u32, &mine.raw, 0);
+                mine.store(0, .release);
+                theirs.store(1, .release);
+                inner.futexWake(u32, &theirs.raw, 1);
+            }
+        }
+    };
+    var a: std.atomic.Value(u32) = .init(1);
+    var b: std.atomic.Value(u32) = .init(0);
+    var other = try io.concurrent(Side.run, .{ &b, &a, ops / 2, io });
+    try Side.run(&a, &b, ops / 2, io);
+    try other.await(io);
+}
+
+fn simSwitchFibers(ctx: *Context, ops: u64) anyerror!void {
+    try simRun(ctx, quiet, pingPong, .{ops});
+}
+
+fn simSwitchThreads(ctx: *Context, ops: u64) anyerror!void {
+    var options = quiet;
+    options.executor = .threads;
+    try simRun(ctx, options, pingPong, .{ops});
+}
+
+fn square(x: u64) u64 {
+    return x *% x;
+}
+
+/// Start a task and await it, ops times: tasks come from the pool.
+fn spawnAwait(ops: u64, io: Io) !void {
+    var sum: u64 = 0;
+    for (0..ops) |i| {
+        var task = try io.concurrent(square, .{i});
+        sum +%= task.await(io);
+    }
+    std.mem.doNotOptimizeAway(sum);
+}
+
+fn simSpawn(ctx: *Context, ops: u64) anyerror!void {
+    try simRun(ctx, quiet, spawnAwait, .{ops});
+}
+
+/// A hundred tasks share one mutex, each taking it ops / 100 times and
+/// sleeping a nanosecond inside, so every hold is contended.
+fn contend(ops: u64, io: Io) !void {
+    const Shared = struct {
+        mutex: Io.Mutex = .init,
+        count: u64 = 0,
+
+        fn add(s: *@This(), times: u64, inner: Io) Io.Cancelable!void {
+            for (0..times) |_| {
+                try s.mutex.lock(inner);
+                defer s.mutex.unlock(inner);
+                try inner.sleep(.fromNanoseconds(1), .awake);
+                s.count += 1;
+            }
+        }
+    };
+    var shared: Shared = .{};
+    var group: Io.Group = .init;
+    for (0..100) |_| try group.concurrent(io, Shared.add, .{ &shared, ops / 100, io });
+    try group.await(io);
+    if (shared.count != ops / 100 * 100) return error.BenchFailed;
+}
+
+fn simContentionRandom(ctx: *Context, ops: u64) anyerror!void {
+    try simRun(ctx, .{ .watchdog = null }, contend, .{ops});
+}
+
+fn simContentionPct(ctx: *Context, ops: u64) anyerror!void {
+    try simRun(ctx, .{ .schedule = .{ .pct = .{} }, .watchdog = null }, contend, .{ops});
+}
+
+/// A thousand tasks sleeping up to an hour of virtual time, each ops /
+/// 1000 times.
+fn sleepers(ops: u64, io: Io) !void {
+    const Sleeper = struct {
+        fn run(seed: u64, times: u64, inner: Io) Io.Cancelable!void {
+            var prng: std.Random.DefaultPrng = .init(seed);
+            for (0..times) |_| try inner.sleep(.fromMilliseconds(prng.random().intRangeAtMost(i64, 1, 3_600_000)), .awake);
+        }
+    };
+    var group: Io.Group = .init;
+    for (0..1000) |i| try group.concurrent(io, Sleeper.run, .{ i, ops / 1000, io });
+    try group.await(io);
+}
+
+fn simTimers(ctx: *Context, ops: u64) anyerror!void {
+    try simRun(ctx, quiet, sleepers, .{ops});
+}
+
+fn nothing(_: Io) void {}
+
+/// A simulation made, run on one task and torn down, ops times: what each
+/// case of a property over a simulation pays before its body.
+fn simNew(ctx: *Context, ops: u64) anyerror!void {
+    for (0..ops) |_| try simRun(ctx, quiet, nothing, .{});
+}
+
+/// The contention workload recorded on a tape, then replayed from it.
+fn simReplay(ctx: *Context, ops: u64) anyerror!void {
+    var recording: shakedown.Source = try .initRecording(ctx.gpa, .{ .prng = 7 }, .{ .max_choices = 1 << 24 });
+    defer recording.deinit();
+    try simRun(ctx, .{ .source = &recording, .watchdog = null }, contend, .{ops});
+    var replay: shakedown.Source = try .init(ctx.gpa, .{ .replay = recording.tape().choices });
+    defer replay.deinit();
+    try simRun(ctx, .{ .source = &replay, .watchdog = null }, contend, .{ops});
+}
+
+// Properties.
+
+fn intElement(s: *shakedown.Source) i64 {
+    return shakedown.gen.int(s, i64);
+}
+
+/// The sum of a list does not depend on its order.
+fn sumCommutes(_: void, c: *shakedown.Case) !void {
+    const list = try shakedown.gen.slice(c.source, i64, intElement, c.gpa, .{});
+    var forward: i64 = 0;
+    for (list) |x| forward +%= x;
+    var backward: i64 = 0;
+    var i = list.len;
+    while (i > 0) {
+        i -= 1;
+        backward +%= list[i];
+    }
+    if (forward != backward) return error.BenchFailed;
+}
+
+fn checkCases(ctx: *Context, ops: u64) anyerror!void {
+    try shakedown.check(ctx.gpa, {}, sumCommutes, .{ .cases = @intCast(ops), .seed = 1 });
+}
+
+fn distinctBelowThree(_: void, c: *shakedown.Case) !void {
+    const list = try shakedown.gen.slice(c.source, i64, intElement, c.gpa, .{});
+    for (list, 0..) |a, i| for (list[i + 1 ..]) |b| if (a != b) for (list) |third| {
+        if (third != a and third != b) return error.ThreeDistinct;
+    };
+}
+
+/// A failing property found and shrunk to [0, 1, -1], ops times.
+fn checkShrink(ctx: *Context, ops: u64) anyerror!void {
+    for (0..ops) |seed| {
+        var report: shakedown.CheckReport = undefined;
+        shakedown.check(ctx.gpa, {}, distinctBelowThree, .{ .seed = seed, .diagnostics = &report }) catch |err| switch (err) {
+            error.PropertyFailed => {
+                ctx.sink +%= report.shrink_runs;
+                report.deinit();
+                continue;
+            },
+            else => return err,
+        };
+        return error.BenchFailed;
+    }
 }

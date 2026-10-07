@@ -1,10 +1,11 @@
 //! `Trace(Event)`: the record of what a run did, step by step.
 //!
-//! A trace keeps every record (`.all`), the last n (`.last`) or none
-//! (`.off`). Whatever it keeps, it hashes every record it is given into a
-//! rolling hash, so two runs can be compared in any mode, and outside
-//! `.off` it remembers the hash after each record, so `firstDifference`
-//! names the first record at which two runs part.
+//! A trace keeps every record (`.all`), the last n (`.last`, `.window`) or
+//! none (`.off`). Whatever it keeps, it hashes every record it is given
+//! into a rolling hash, so two runs can be compared in any mode. `.all`
+//! and `.last` also remember the hash after each record, so
+//! `firstDifference` names the first record at which two runs part;
+//! `.window` does not, so its memory stays bounded however long the run.
 //!
 //! Byte slices in an event (paths, names) are copied into the trace and
 //! interned on `append`, so a caller may pass temporaries; a path a run
@@ -29,11 +30,21 @@ pub fn Trace(comptime Event: type) type {
         arena: std.heap.ArenaAllocator,
         count: u64 = 0,
         rolling: u64 = seed,
+        /// Private: where the next record goes in `.last` and `.window`:
+        /// `count % n`, kept without dividing.
+        slot: u32 = 0,
 
         const Self = @This();
         const seed: u64 = 0x5348_414b_4544_4f57;
 
-        pub const Mode = union(enum) { off, all, last: u32 };
+        pub const Mode = union(enum) {
+            off,
+            all,
+            /// The newest n records, and the hash after every record.
+            last: u32,
+            /// The newest n records, and nothing that grows with the run.
+            window: u32,
+        };
 
         pub const Record = struct {
             step: u64,
@@ -46,7 +57,10 @@ pub fn Trace(comptime Event: type) type {
         };
 
         pub fn init(gpa: Allocator, mode: Mode) Self {
-            if (mode == .last) std.debug.assert(mode.last > 0);
+            switch (mode) {
+                .last, .window => |n| std.debug.assert(n > 0),
+                .off, .all => {},
+            }
             return .{ .gpa = gpa, .mode = mode, .arena = .init(gpa) };
         }
 
@@ -63,6 +77,7 @@ pub fn Trace(comptime Event: type) type {
             t.kept.clearRetainingCapacity();
             t.prefixes.clearRetainingCapacity();
             t.count = 0;
+            t.slot = 0;
             t.rolling = seed;
         }
 
@@ -75,19 +90,23 @@ pub fn Trace(comptime Event: type) type {
                 t.count += 1;
                 return;
             }
-            try t.prefixes.append(t.gpa, t.rolling);
-            errdefer _ = t.prefixes.pop();
+            const hashed = t.prefixed();
+            if (hashed) try t.prefixes.append(t.gpa, t.rolling);
+            errdefer if (hashed) {
+                _ = t.prefixes.pop();
+            };
             var kept = record;
             kept.event = try t.intern(Event, record.event);
             switch (t.mode) {
                 .off => unreachable, // unreachable: returned above
                 .all => try t.kept.append(t.gpa, kept),
-                .last => |n| {
+                .last, .window => |n| {
                     if (t.kept.items.len == 0) try t.kept.ensureTotalCapacityPrecise(t.gpa, 2 * @as(usize, n));
                     if (t.kept.items.len < 2 * @as(usize, n)) t.kept.items.len = 2 * @as(usize, n);
-                    const at: usize = @intCast(t.count % n);
+                    const at = t.slot;
                     t.kept.items[at] = kept;
                     t.kept.items[at + n] = kept;
+                    t.slot = if (at + 1 == n) 0 else at + 1;
                 },
             }
             t.count += 1;
@@ -100,7 +119,7 @@ pub fn Trace(comptime Event: type) type {
             return switch (t.mode) {
                 .off => &.{},
                 .all => t.kept.items,
-                .last => |n| if (t.count <= n)
+                .last, .window => |n| if (t.count <= n)
                     t.kept.items[0..@intCast(t.count)]
                 else
                     t.kept.items[@intCast(t.count % n)..][0..n],
@@ -117,17 +136,17 @@ pub fn Trace(comptime Event: type) type {
             return t.count;
         }
 
-        /// The rolling hash after record `index`, outside `.off`.
+        /// The rolling hash after record `index`, in `.all` and `.last`.
         pub fn hashAt(t: *const Self, index: u64) ?u64 {
-            if (t.mode == .off or index >= t.prefixes.items.len) return null;
+            if (!t.prefixed() or index >= t.prefixes.items.len) return null;
             return t.prefixes.items[@intCast(index)];
         }
 
         /// The first index at which `a` and `b` differ; null if one is a
-        /// prefix of the other. With `.off` on either side only the totals
-        /// are known, and any difference is reported at index 0.
+        /// prefix of the other. With `.off` or `.window` on either side only
+        /// the totals are known, and any difference is reported at index 0.
         pub fn firstDifference(a: *const Self, b: *const Self) ?u64 {
-            if (a.mode == .off or b.mode == .off) return if (a.count == b.count and a.rolling == b.rolling) null else 0;
+            if (!a.prefixed() or !b.prefixed()) return if (a.count == b.count and a.rolling == b.rolling) null else 0;
             const shorter = @min(a.prefixes.items.len, b.prefixes.items.len);
             // The prefix hashes agree up to the first difference and never
             // after it, so the first disagreement is a binary search away.
@@ -138,6 +157,10 @@ pub fn Trace(comptime Event: type) type {
                 if (a.prefixes.items[mid] == b.prefixes.items[mid]) lo = mid + 1 else hi = mid;
             }
             return if (lo == shorter) null else lo;
+        }
+
+        fn prefixed(t: *const Self) bool {
+            return t.mode == .all or t.mode == .last;
         }
 
         /// One line per kept record: step, task and event.
@@ -291,4 +314,22 @@ test "a trace formats one line per record" {
     try t.format(&out.writer);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out.written(), "\n"));
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "     0   0 "));
+}
+
+test "a window keeps the newest records and the hash, and nothing that grows" {
+    var window: TestTrace = .init(std.testing.allocator, .{ .window = 4 });
+    defer window.deinit();
+    var all: TestTrace = .init(std.testing.allocator, .all);
+    defer all.deinit();
+    for (0..1000) |i| {
+        const record: TestTrace.Record = .{ .step = i, .event = .{ .name = "x", .value = @intCast(i) } };
+        try window.append(record);
+        try all.append(record);
+    }
+    try std.testing.expectEqual(@as(usize, 0), window.prefixes.capacity);
+    try std.testing.expectEqual(@as(usize, 4), window.records().len);
+    try std.testing.expectEqual(@as(u64, 996), window.records()[0].step);
+    try std.testing.expectEqual(all.hash(), window.hash());
+    try std.testing.expectEqual(@as(?u64, null), window.hashAt(3));
+    try std.testing.expectEqual(@as(?u64, null), TestTrace.firstDifference(&window, &all));
 }

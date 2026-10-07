@@ -61,6 +61,20 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&b.addRunArtifact(fault).step);
     check_step.dependOn(&fault.step);
 
+    // A simulation's task that overflows its stack must die on the guard
+    // page below it, in a child as above.
+    const stack_fault = b.addExecutable(.{
+        .name = "stack-fault",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/testing/stack_fault.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "shakedown", .module = module }},
+        }),
+    });
+    test_step.dependOn(&b.addRunArtifact(stack_fault).step);
+    check_step.dependOn(&stack_fault.step);
+
     //=====================================================================
     // Example: built AND run against the module a consumer gets.
     // examples/usage.zig is also README.md's Usage block (zig build docs --

@@ -60,3 +60,19 @@ pub const CheckOptions = @import("check.zig").CheckOptions;
 pub const CheckError = @import("check.zig").CheckError;
 /// How a property failed: its minimal tape and its report.
 pub const CheckReport = @import("check.zig").CheckReport;
+/// One simulated `Io` that owns time, tasks and randomness.
+pub const Sim = @import("Sim.zig");
+/// One call into a `Sim`, as its trace records it.
+pub const SimEvent = Sim.Event;
+/// Two runs of one seed must make one run.
+pub const expectDeterministic = @import("determinism.zig").expectDeterministic;
+/// How `expectDeterministic` runs its body.
+pub const DeterminismOptions = @import("determinism.zig").DeterminismOptions;
+/// Where two runs of one seed parted.
+pub const DeterminismReport = @import("determinism.zig").DeterminismReport;
+/// Why `expectDeterministic` failed.
+pub const DeterminismError = @import("determinism.zig").DeterminismError;
+/// Every std.Io guarantee as a check, run against any Io.
+pub const conformance = @import("conformance.zig");
+/// A panic handler that names the simulation a panicking task ran in.
+pub const panic = Sim.panic;

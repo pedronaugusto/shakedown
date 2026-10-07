@@ -19,6 +19,12 @@ test {
     _ = @import("gen.zig");
     _ = @import("shrink.zig");
     _ = @import("check.zig");
+    _ = @import("Sim.zig");
+    _ = @import("sim/Core.zig");
+    _ = @import("sim/Region.zig");
+    _ = @import("sim/executor.zig");
+    _ = @import("conformance.zig");
+    _ = @import("determinism.zig");
     _ = @import("layer_test.zig");
     _ = @import("clock_test.zig");
     _ = @import("quarantine_test.zig");
@@ -27,4 +33,8 @@ test {
     _ = @import("every_fault_test.zig");
     _ = @import("check_test.zig");
     _ = @import("shrink_challenge_test.zig");
+    _ = @import("sim_test.zig");
+    _ = @import("sim_bugs_test.zig");
+    _ = @import("sim_determinism_test.zig");
+    _ = @import("conformance_test.zig");
 }

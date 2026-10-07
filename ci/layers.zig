@@ -10,6 +10,8 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/io_call.zig",
         "src/layer.zig",
         "src/match.zig",
+        "src/sim/executor.zig",
+        "src/sim/Region.zig",
         "src/Source.zig",
         "src/Steps.zig",
     } },
@@ -19,13 +21,25 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/shrink.zig",
         "src/trace.zig",
     } },
+    .{ .name = "simulation parts", .patterns = &.{
+        "src/sim/options.zig",
+    } },
+    .{ .name = "simulation core", .patterns = &.{
+        "src/sim/Core.zig",
+    } },
     .{ .name = "io layers", .patterns = &.{
         "src/Clock.zig",
         "src/FaultIo.zig",
+        "src/sim/calls.zig",
+    } },
+    .{ .name = "simulation", .patterns = &.{
+        "src/Sim.zig",
     } },
     .{ .name = "drivers and namespaces", .patterns = &.{
         "src/alloc.zig",
         "src/check.zig",
+        "src/conformance.zig",
+        "src/determinism.zig",
         "src/every_fault.zig",
     } },
     .{ .name = "public", .patterns = &.{
