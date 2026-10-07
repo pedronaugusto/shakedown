@@ -104,11 +104,10 @@ test "short reads and writes move at most n bytes, and short(0) moves none" {
     const io = fio.io();
     const file = try tmp.dir.openFile(io, "data", .{ .mode = .read_write });
     defer file.close(io);
-    var a: [4]u8 = undefined;
     var b: [12]u8 = undefined;
-    try testing.expectEqual(@as(usize, 5), try file.readPositional(io, &.{ &a, &b }, 0));
-    try testing.expectEqualStrings("0123", &a);
-    try testing.expectEqual(@as(u8, '4'), b[0]);
+    // One buffer: Windows reads only the first of several, short or not.
+    try testing.expectEqual(@as(usize, 5), try file.readPositional(io, &.{&b}, 0));
+    try testing.expectEqualStrings("01234", b[0..5]);
     try testing.expectEqual(@as(usize, 0), try file.readPositional(io, &.{&b}, 0));
     try testing.expectEqual(@as(usize, 12), try file.readPositional(io, &.{&b}, 4));
     // A header, two buffers and a splatted pattern, cut to seven bytes.
@@ -167,6 +166,13 @@ test "cancel lands at a cancelation point, and a concurrent call can be refused"
     try testing.expectEqual(@as(u64, 2), fio.count(.concurrent));
 }
 
+/// A stat whose result is not kept. A task's result aligned past 8 bytes, as
+/// `File.Stat` is, overruns its allocation in 0.17's `Threaded`, so the
+/// tasks here return nothing.
+fn statFile(io: Io, file: Io.File) Io.File.StatError!void {
+    _ = try file.stat(io);
+}
+
 test "a delay sleeps on the base, which a Clock makes virtual" {
     var clock: shakedown.Clock = .init(testing.io, .{});
     const plan = [_]IoPlan.Entry{.{ .at = .{ .nth = .{ .call = .fileStat, .n = 1 } }, .fault = .{ .delay = .fromSeconds(30) } }};
@@ -176,7 +182,7 @@ test "a delay sleeps on the base, which a Clock makes virtual" {
     defer tmp.cleanup();
     const file = try tmp.dir.createFile(testing.io, "f", .{});
     defer file.close(testing.io);
-    var task = try fio.io().concurrent(Io.File.stat, .{ file, fio.io() });
+    var task = try fio.io().concurrent(statFile, .{ fio.io(), file });
     try clock.awaitArmed(1, .fromSeconds(60));
     try testing.expectEqual(@as(?Io.Duration, .fromSeconds(30)), clock.advanceToNext());
     _ = try task.await(fio.io());

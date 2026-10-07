@@ -902,3 +902,35 @@ fn forget(f: *FaultIo, comptime name: []const u8, args: anytype) void {
     defer f.unlock();
     for (args[0]) |handle_owner| _ = f.paths.remove(handleId(handle_owner.handle));
 }
+
+test "a short read keeps the first n bytes of its buffers" {
+    var a: [4]u8 = undefined;
+    var b: [12]u8 = undefined;
+    var storage: [max_vectors][]u8 = undefined;
+    const cut = cutReads([]u8, &.{ &a, &b }, 5, &storage);
+    try std.testing.expectEqual(@as(usize, 2), cut.len);
+    try std.testing.expectEqual(@as(usize, 4), cut[0].len);
+    try std.testing.expectEqual(@as(usize, 1), cut[1].len);
+    try std.testing.expectEqual(@as(usize, 3), cutReads([]u8, &.{ &a, &b }, 3, &storage)[0].len);
+}
+
+test "a short write keeps the first n bytes of header, buffers and splat" {
+    var storage: [max_vectors][]const u8 = undefined;
+    // "HD" ++ "ab" ++ "cd" ++ "x" * 4, cut to 7: HD ab cd x.
+    var cut = cutWrite("HD", &.{ "ab", "cd", "x" }, 4, 7, &storage);
+    try std.testing.expectEqualStrings("HD", cut.header);
+    try std.testing.expectEqual(@as(usize, 3), cut.data.len);
+    try std.testing.expectEqual(@as(usize, 1), cut.splat);
+    // Inside the header.
+    cut = cutWrite("HEADER", &.{"body"}, 1, 3, &storage);
+    try std.testing.expectEqualStrings("HEA", cut.header);
+    try std.testing.expectEqualStrings("", cut.data[0]);
+    // A pattern splatted ten times, cut to two and a half repeats.
+    cut = cutWrite("", &.{"ab"}, 10, 5, &storage);
+    try std.testing.expectEqualStrings("ab", cut.data[0]);
+    try std.testing.expectEqual(@as(usize, 2), cut.splat);
+    // A pattern longer than what is left is cut once.
+    cut = cutWrite("", &.{"abcdef"}, 3, 4, &storage);
+    try std.testing.expectEqualStrings("abcd", cut.data[0]);
+    try std.testing.expectEqual(@as(usize, 1), cut.splat);
+}
