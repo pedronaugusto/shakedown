@@ -18,6 +18,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   their peak and in total.
 - `alloc.Quarantine`, an allocator that never hands out an address twice and can
   end each block at an inaccessible page.
+- `alloc.NoResize`, an allocator that refuses every resize and remap, so the
+  allocation count `std.testing.checkAllAllocationFailures` depends on repeats
+  from run to run.
 - `corpus.entry` and `corpus.encode`, which build `std.testing.Smith` inputs at
   compile time.
 - `Source`, a seeded source of random decisions whose draws are fixed per seed.

@@ -6,6 +6,7 @@ test {
     _ = @import("Clock.zig");
     _ = @import("alloc/Counting.zig");
     _ = @import("alloc/Quarantine.zig");
+    _ = @import("alloc/NoResize.zig");
     _ = @import("corpus.zig");
     _ = @import("Source.zig");
     _ = @import("Steps.zig");
@@ -18,6 +19,7 @@ test {
     _ = @import("layer_test.zig");
     _ = @import("clock_test.zig");
     _ = @import("quarantine_test.zig");
+    _ = @import("no_resize_test.zig");
     _ = @import("fault_test.zig");
     _ = @import("every_fault_test.zig");
 }

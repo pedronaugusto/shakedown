@@ -3,8 +3,8 @@
 shakedown is a set of test doubles for Zig code written against `std.Io`. A
 `Clock` moves time only when the test moves it, a `FaultIo` counts, traces and
 fails any `Io` call by plan, `everyFault` injects every single fault at every
-step of an operation, a `Layer` overrides some `Io` slots and forwards the rest, and two
-allocators count or quarantine memory.
+step of an operation, a `Layer` overrides some `Io` slots and forwards the rest,
+and three allocators count memory, quarantine it, or refuse to resize it.
 
 ## Install
 
@@ -107,7 +107,11 @@ leaves the range reserved with no access, so a use after free faults at once.
 With `guard = .after` the block ends at an inaccessible page, so a one-byte
 overflow faults too. Resizes are refused unless the length stays the same, so a
 growth moves the block and the old range is quarantined. Each call is a system
-call: it is for soak runs and test suites, not for timing.
+call: it is for soak runs and test suites, not for timing. `alloc.NoResize`
+refuses every resize and remap, so each growth is an allocation in every run.
+`std.testing.checkAllAllocationFailures` counts a first run's allocations and
+then fails each in turn; over `std.testing.allocator` alone, a growth is a resize
+in place in one run and an allocation in another, and the count moves.
 
 `FaultIo` wraps every `Io` slot and every `operate` operation, by code generated
 from `Io.VTable` and `Io.Operation`, and forwards each call to its base. Each
@@ -165,7 +169,7 @@ seeded generator whose draws are fixed per seed on every target.
 
 ## Platforms
 
-`Clock`, `Layer`, `FaultIo`, `everyFault`, `Counting` and `corpus` are portable Zig. `Quarantine` closes
+`Clock`, `Layer`, `FaultIo`, `everyFault`, `Counting`, `NoResize` and `corpus` are portable Zig. `Quarantine` closes
 memory with `madvise` and `mprotect` on Linux, macOS and the BSDs, and with a
 decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
 `Quarantine.supported` says which.

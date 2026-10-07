@@ -9,7 +9,7 @@ pub const Layer = @import("layer.zig").Layer;
 pub const Overrides = @import("layer.zig").Overrides;
 /// A manual clock over a base `Io`: time moves only when the test moves it.
 pub const Clock = @import("Clock.zig");
-/// Allocators for tests: `Counting` and `Quarantine`.
+/// Allocators for tests: `Counting`, `Quarantine` and `NoResize`.
 pub const alloc = @import("alloc.zig");
 /// Fuzz corpus entries in `std.testing.Smith`'s input format.
 pub const corpus = @import("corpus.zig");
