@@ -1,5 +1,6 @@
 //! A retry loop with backoff, tested without waiting: the code under test
-//! sleeps on a `shakedown.Clock`, and the test moves the clock.
+//! sleeps on a `shakedown.Clock`, and the test moves the clock. Then an
+//! allocator that counts, and a `FaultIo` that fails one sync by its path.
 //!
 //! `zig build examples` builds AND runs this; `zig build docs -- usage`
 //! extracts the region between the usage markers into README.md, so the
@@ -48,6 +49,20 @@ pub fn main(init: std.process.Init) !void {
     gpa.free(bytes);
     std.debug.assert(counting.peak_bytes == 100);
     std.debug.assert(counting.live_bytes == 0);
+
+    // Fail the first sync of a file whose path ends in ".lock", and count
+    // every call on the way.
+    const dir = try Io.Dir.cwd().createDirPathOpen(init.io, ".zig-cache/shakedown-example", .{});
+    defer dir.close(init.io);
+    const fio = try shakedown.FaultIo.init(init.gpa, init.io, .{ .plan = &.{.{
+        .at = .{ .nth = .{ .call = .fileSync, .n = 1, .path = .{ .suffix = ".lock" } } },
+        .fault = .{ .fail = error.InputOutput },
+    }} });
+    defer fio.deinit();
+    const lock = try dir.createFile(fio.io(), "HEAD.lock", .{});
+    defer lock.close(fio.io());
+    if (lock.sync(fio.io())) |_| unreachable else |err| std.debug.assert(err == error.InputOutput);
+    std.debug.assert(fio.count(.fileSync) == 1);
 
     // --- README:usage ---
 }

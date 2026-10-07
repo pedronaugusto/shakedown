@@ -20,5 +20,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `corpus.entry` and `corpus.encode`, which build `std.testing.Smith` inputs at
   compile time.
 - `Source`, a seeded source of random decisions whose draws are fixed per seed.
+- `FaultIo`: an `Io` that counts, traces and faults every slot and operation by
+  plan, with paths for opened files and directories, seeded `io.random`, an
+  allocator under the same plan, and `beginForeign` and `endForeign` for a
+  seam's own calls.
+- `Plan`, `Trace`, `Steps` and `Match`, the generic plan, trace and step counter
+  `FaultIo` is built on, for a package's own call types.
+- `sweep`: every single fault at every step of an operation, with a check that
+  every faulted run made the clean run's calls up to its fault.
 
 [Unreleased]: https://github.com/pedronaugusto/shakedown/commits/main

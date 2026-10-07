@@ -34,9 +34,13 @@ const rows = [_]Row{
     .{ .name = "pread4k/threaded", .ops = 1_000_000, .run = preadThreaded },
     .{ .name = "pread4k/layer", .ops = 1_000_000, .run = preadLayer },
     .{ .name = "pread4k/clock", .ops = 1_000_000, .run = preadClock },
+    .{ .name = "pread4k/faultio-empty", .ops = 1_000_000, .run = preadFaultEmpty },
+    .{ .name = "pread4k/faultio-trace", .ops = 1_000_000, .run = preadFaultTrace },
+    .{ .name = "pread4k/faultio-plan16", .ops = 1_000_000, .run = preadFaultPlan },
     .{ .name = "alloc256/raw", .ops = 10_000_000, .run = allocRaw },
     .{ .name = "alloc256/counting", .ops = 10_000_000, .run = allocCounting },
     .{ .name = "alloc256/failing", .ops = 10_000_000, .run = allocFailing },
+    .{ .name = "alloc256/faultio", .ops = 10_000_000, .run = allocFaultIo },
     .{ .name = "alloc4k/quarantine", .ops = 100_000, .run = allocQuarantine },
 };
 
@@ -132,6 +136,30 @@ fn preadClock(ctx: *Context, ops: u64) anyerror!void {
     try preadLoop(ctx, clock.io(), ops);
 }
 
+fn preadFault(ctx: *Context, ops: u64, options: shakedown.FaultIo.Options) !void {
+    const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, options);
+    defer fio.deinit();
+    try preadLoop(ctx, fio.io(), ops);
+}
+
+fn preadFaultEmpty(ctx: *Context, ops: u64) anyerror!void {
+    try preadFault(ctx, ops, .{ .track_paths = false });
+}
+
+fn preadFaultTrace(ctx: *Context, ops: u64) anyerror!void {
+    try preadFault(ctx, ops, .{ .track_paths = false, .trace = .all });
+}
+
+fn preadFaultPlan(ctx: *Context, ops: u64) anyerror!void {
+    // Sixteen entries that never fire: each waits for a call no read makes.
+    var entries: [16]shakedown.IoPlan.Entry = undefined;
+    for (&entries, 0..) |*e, i| e.* = .{
+        .at = .{ .nth = .{ .call = .dirDeleteFile, .n = @intCast(i + 1) } },
+        .fault = .{ .fail = error.AccessDenied },
+    };
+    try preadFault(ctx, ops, .{ .track_paths = false, .plan = &entries });
+}
+
 // Allocation.
 
 fn allocLoop(ctx: *Context, gpa: std.mem.Allocator, ops: u64, len: usize) !void {
@@ -154,6 +182,12 @@ fn allocCounting(ctx: *Context, ops: u64) anyerror!void {
 fn allocFailing(ctx: *Context, ops: u64) anyerror!void {
     var failing: std.testing.FailingAllocator = .init(std.heap.smp_allocator, .{});
     try allocLoop(ctx, failing.allocator(), ops, 256);
+}
+
+fn allocFaultIo(ctx: *Context, ops: u64) anyerror!void {
+    const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
+    defer fio.deinit();
+    try allocLoop(ctx, fio.allocator(std.heap.smp_allocator), ops, 256);
 }
 
 fn allocQuarantine(ctx: *Context, ops: u64) anyerror!void {

@@ -15,3 +15,30 @@ pub const alloc = @import("alloc.zig");
 pub const corpus = @import("corpus.zig");
 /// The one source of random decisions in a test.
 pub const Source = @import("Source.zig");
+/// The step counter one run's plans and traces share.
+pub const Steps = @import("Steps.zig");
+/// A test on a call's subject path.
+pub const Match = @import("match.zig").Match;
+/// When calls fail, as data: entries of a trigger and a fault.
+pub const Plan = @import("plan.zig").Plan;
+/// The record of what a run did, step by step, with a rolling hash.
+pub const Trace = @import("trace.zig").Trace;
+/// Every `Io` call `FaultIo` can count, trace and fault.
+pub const IoCall = @import("io_call.zig").IoCall;
+/// What `FaultIo` can do to a call.
+pub const IoFault = @import("io_call.zig").IoFault;
+/// One call through `FaultIo`, as its trace records it.
+pub const IoEvent = @import("io_call.zig").IoEvent;
+/// `Plan` over `Io` calls.
+pub const IoPlan = FaultIo.IoPlan;
+/// `Trace` of `Io` calls.
+pub const IoTrace = FaultIo.IoTrace;
+/// An `Io` that counts, traces and faults every call it forwards.
+pub const FaultIo = @import("FaultIo.zig");
+/// Every single fault at every step of an operation, with a determinism check.
+pub const sweep = @import("sweep.zig").sweep;
+pub const SweepOptions = @import("sweep.zig").SweepOptions;
+pub const SweepError = @import("sweep.zig").SweepError;
+pub const SweepReport = @import("sweep.zig").SweepReport;
+/// The fault a sweep's run injected, and where.
+pub const Injected = @import("sweep.zig").Injected;

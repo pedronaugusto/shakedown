@@ -6,14 +6,23 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/alloc/Counting.zig",
         "src/alloc/Quarantine.zig",
         "src/corpus.zig",
+        "src/io_call.zig",
         "src/layer.zig",
+        "src/match.zig",
         "src/Source.zig",
+        "src/Steps.zig",
     } },
-    .{ .name = "time", .patterns = &.{
+    .{ .name = "vocabulary", .patterns = &.{
+        "src/plan.zig",
+        "src/trace.zig",
+    } },
+    .{ .name = "io layers", .patterns = &.{
         "src/Clock.zig",
+        "src/FaultIo.zig",
     } },
-    .{ .name = "namespaces", .patterns = &.{
+    .{ .name = "drivers and namespaces", .patterns = &.{
         "src/alloc.zig",
+        "src/sweep.zig",
     } },
     .{ .name = "public", .patterns = &.{
         "src/shakedown.zig",

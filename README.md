@@ -1,8 +1,10 @@
 # shakedown
 
 shakedown is a set of test doubles for Zig code written against `std.Io`. A
-`Clock` moves time only when the test moves it, a `Layer` overrides some `Io`
-slots and forwards the rest, and two allocators count or quarantine memory.
+`Clock` moves time only when the test moves it, a `FaultIo` counts, traces and
+fails any `Io` call by plan, `sweep` injects every single fault at every step of
+an operation, a `Layer` overrides some `Io` slots and forwards the rest, and two
+allocators count or quarantine memory.
 
 ## Install
 
@@ -14,7 +16,8 @@ imports. It is a test dependency: production code never imports it.
 ## Usage
 
 [examples/usage.zig](examples/usage.zig) tests a retry loop that backs off one second, then two.
-The task sleeps on the clock, and the test lets exactly each backoff pass.
+The task sleeps on the clock, and the test lets exactly each backoff pass. A
+`FaultIo` then fails the first sync of a file whose path ends in `.lock`.
 
 <!-- BEGIN GENERATED zig build docs -- usage -->
 ```zig
@@ -44,6 +47,20 @@ const bytes = try gpa.alloc(u8, 100);
 gpa.free(bytes);
 std.debug.assert(counting.peak_bytes == 100);
 std.debug.assert(counting.live_bytes == 0);
+
+// Fail the first sync of a file whose path ends in ".lock", and count
+// every call on the way.
+const dir = try Io.Dir.cwd().createDirPathOpen(init.io, ".zig-cache/shakedown-example", .{});
+defer dir.close(init.io);
+const fio = try shakedown.FaultIo.init(init.gpa, init.io, .{ .plan = &.{.{
+    .at = .{ .nth = .{ .call = .fileSync, .n = 1, .path = .{ .suffix = ".lock" } } },
+    .fault = .{ .fail = error.InputOutput },
+}} });
+defer fio.deinit();
+const lock = try dir.createFile(fio.io(), "HEAD.lock", .{});
+defer lock.close(fio.io());
+if (lock.sync(fio.io())) |_| unreachable else |err| std.debug.assert(err == error.InputOutput);
+std.debug.assert(fio.count(.fileSync) == 1);
 ```
 <!-- END GENERATED -->
 
@@ -89,6 +106,41 @@ overflow faults too. Resizes are refused unless the length stays the same, so a
 growth moves the block and the old range is quarantined. Each call is a system
 call: it is for soak runs and test suites, not for timing.
 
+`FaultIo` wraps every `Io` slot and every `operate` operation, by code generated
+from `Io.VTable` and `Io.Operation`, and forwards each call to its base. Each
+call takes a step from the run's `Steps` and is counted. A plan is a list of
+entries, each a trigger and a fault: the n-th call matching a call and a path
+(`Match`: exact, prefix, suffix or contains), the call at a given step, or each
+matching call with a seeded chance. A fault returns an error from the call's own
+error set, cuts a read or write short (0 bytes is no progress, not the end of a
+stream), lands a cancel at a cancelation point, sleeps on the base first, or runs
+test code at that point. A plan that asks for an error a call cannot return, or a
+cancel where none can land, is refused when it is set. `count` reports calls by
+kind; the trace keeps every record, the last n or none, and hashes what it keeps
+so two runs can be compared. With `track_paths`, the default, opened directories
+and files are named by the paths they were opened with, joined across `openDir`,
+so a plan can fail the sync of `repo/objects/pack.idx` and not another file.
+With an empty plan and the trace off a call costs a step, a count and one bit
+test. `random_seed` makes `io.random` reproducible. `allocator(child)` puts
+allocations through the same plan, counts and trace, as `.alloc`, `.resize` and
+`.remap`.
+
+`Plan(Call, Fault)`, `Trace(Event)` and `Steps` are generic, so a package with
+raw calls of its own (a seam around system calls `Io` cannot express) plans and
+traces them with its own call type on `FaultIo`'s steps. `beginForeign` and
+`endForeign` put such a call into `FaultIo`'s plan and trace as `.foreign`, and a
+`Layer` over the `FaultIo` routes the seam's hook while every other slot reaches
+the `FaultIo` unchanged.
+
+`sweep(gpa, base, ctx, options)` makes one clean run of the operation `ctx`
+describes, then one run per step and per fault that applies there: each error
+in `options.errors` the call can return, a cancel, short reads and writes, and a
+refused allocation. `ctx.check` judges what each run left behind. Every faulted
+run must make the same calls as the clean run up to its fault, or the sweep
+fails as `Nondeterministic` and names the first record that differed. A sweep
+therefore never reports a pass for a run that tested something else, such as a
+temp name drawn from `io.random`.
+
 `corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
 draws, and `corpus.encode` builds a whole Smith input from a list of draws at
 compile time. `Source` is the one source of random decisions; for now it is a
@@ -97,7 +149,9 @@ seeded generator whose draws are fixed per seed on every target.
 ## Scope
 
 - It does not simulate a scheduler, a file system or a network yet. Code that
-  waits on a `Clock` runs on real threads of the base `Io`.
+  waits on a `Clock` runs on real threads of the base `Io`, and a sweep over
+  several tasks on a threaded base is refused as nondeterministic.
+- It does not shrink a failing run yet.
 - It does not control time for code that bypasses `Io`: `std.Thread`, spin loops
   on atomics and raw system calls see real time.
 - It does not detect data races. That is ThreadSanitizer's job.
@@ -105,7 +159,7 @@ seeded generator whose draws are fixed per seed on every target.
 
 ## Platforms
 
-`Clock`, `Layer`, `Counting` and `corpus` are portable Zig. `Quarantine` closes
+`Clock`, `Layer`, `FaultIo`, `sweep`, `Counting` and `corpus` are portable Zig. `Quarantine` closes
 memory with `madvise` and `mprotect` on Linux, macOS and the BSDs, and with a
 decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
 `Quarantine.supported` says which.
@@ -113,7 +167,10 @@ decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
 ## Testing
 
 `zig build test` runs the unit suite, the quarantine death tests and the
-example. The death tests run in child processes: a use after free and a one-byte
+example. The sweep tests save a file three ways: through a temp file and a
+rename, which survives every single fault; in place, which a sweep catches
+losing the old save; and with a leak on an error path, which an allocator check
+catches. The death tests run in child processes: a use after free and a one-byte
 overflow must kill them. The clock's stress test keeps 1,000 threads in timed
 waits while the clock moves 10,000 times from another thread, and checks that
 none hangs and none times out early; `-Dstress-threads=N` and `-Dstress-rounds=N`
