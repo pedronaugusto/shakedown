@@ -35,7 +35,7 @@ pub fn Plan(comptime Call: type, comptime Fault: type) type {
             /// The n-th call (from 1) matching `call` (null = any call) and
             /// `path`, and as many after it as `times` allows.
             nth: struct { call: ?Call = null, n: u32, path: Match = .any },
-            /// The call that takes this step: what a sweep uses.
+            /// The call that takes this step: what `everyFault` uses.
             step: u64,
             /// Each matching call fires with this probability, drawn from
             /// the plan's `Source`, until `times` have fired.

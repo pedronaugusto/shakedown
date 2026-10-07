@@ -14,10 +14,10 @@ test {
     _ = @import("trace.zig");
     _ = @import("io_call.zig");
     _ = @import("FaultIo.zig");
-    _ = @import("sweep.zig");
+    _ = @import("every_fault.zig");
     _ = @import("layer_test.zig");
     _ = @import("clock_test.zig");
     _ = @import("quarantine_test.zig");
     _ = @import("fault_test.zig");
-    _ = @import("sweep_test.zig");
+    _ = @import("every_fault_test.zig");
 }

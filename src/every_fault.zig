@@ -1,12 +1,12 @@
-//! `sweep`: every single fault at every step of an operation.
+//! `everyFault`: every single fault at every step of an operation.
 //!
 //! One clean run records the operation's calls. Then, for each step and
 //! each fault that applies to the call made there, a fresh run injects that
 //! fault at that step and the caller's `check` judges the result. Every
 //! faulted run must make the same calls as the clean run up to its step;
-//! one that does not makes the sweep fail as `Nondeterministic`, naming the
-//! first record that differed, so a sweep never silently tests the wrong
-//! call.
+//! one that does not fails the whole as `Nondeterministic`, naming the
+//! first record that differed, so a faulted run never silently tests the
+//! wrong call.
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -16,7 +16,8 @@ const IoFault = io_call.IoFault;
 const FaultIo = @import("FaultIo.zig");
 const IoTrace = FaultIo.IoTrace;
 
-pub const SweepOptions = struct {
+/// What `everyFault` tries, and what it keeps when a run fails.
+pub const EveryFaultOptions = struct {
     /// Errors tried at every step whose call can return them.
     errors: []const anyerror = &.{ error.InputOutput, error.NoSpaceLeft, error.AccessDenied },
     /// Reads and writes that moved bytes: `short(0)`, and `short(half)`.
@@ -29,21 +30,28 @@ pub const SweepOptions = struct {
     max_steps: u64 = 100_000,
     /// What a failing run's trace keeps for the report.
     trace: IoTrace.Mode = .{ .last = 64 },
-    /// Filled when the sweep fails, if given. Free with `SweepReport.deinit`.
-    diagnostics: ?*SweepReport = null,
+    /// Filled when a run fails, if given. Free with `EveryFaultReport.deinit`.
+    diagnostics: ?*EveryFaultReport = null,
 };
 
-pub const SweepError = error{ OutOfMemory, Nondeterministic, CheckFailed, TooManySteps };
+/// Why `everyFault` failed: a run failed its check (or its `setUp`), a
+/// faulted run left the clean run's calls, the clean run took more than
+/// `max_steps`, or memory ran out.
+pub const EveryFaultError = error{ OutOfMemory, Nondeterministic, CheckFailed, TooManySteps };
 
 /// The fault a run injected, and where.
 pub const Injected = struct { step: u64, call: IoCall, fault: IoFault };
 
-pub const SweepReport = struct {
+/// What `everyFault` did: the clean run's steps, the runs made and, when
+/// one failed, how.
+pub const EveryFaultReport = struct {
     /// Steps in the clean run.
     steps: u64 = 0,
     /// Runs made, the clean one included.
     runs: u64 = 0,
     failure: ?Failure = null,
+    /// Private: what `failure.trace` was allocated with.
+    gpa: ?Allocator = null,
 
     pub const Failure = struct {
         /// Null when the clean run failed its check.
@@ -57,13 +65,14 @@ pub const SweepReport = struct {
         trace: []const u8,
     };
 
-    pub fn deinit(r: *SweepReport, gpa: Allocator) void {
-        if (r.failure) |f| gpa.free(f.trace);
+    pub fn deinit(r: *EveryFaultReport) void {
+        if (r.failure) |f| if (r.gpa) |gpa| gpa.free(f.trace);
         r.* = undefined;
     }
 };
 
-/// Sweeps every single fault over the operation `ctx` describes. `ctx` is
+/// Runs the operation `ctx` describes once clean, then once per single
+/// fault at each of its steps. `ctx` is
 /// a pointer to a struct with:
 ///
 ///     fn setUp(ctx, fio: *FaultIo) anyerror!void      fresh state for each run
@@ -73,10 +82,12 @@ pub const SweepReport = struct {
 ///     fn faultsFor(ctx, record: IoTrace.Record) []const IoFault   optional, for a seam's calls
 ///
 /// `check` gets the run's `Io` and judges what the operation left behind;
-/// it fails the sweep by returning an error. Allocation is swept for the
-/// allocators `setUp` makes with `fio.allocator`.
-pub fn sweep(gpa: Allocator, base: Io, ctx: anytype, options: SweepOptions) SweepError!SweepReport {
-    var report: SweepReport = .{};
+/// it fails the whole by returning an error. `check` runs before
+/// `tearDown`, and `tearDown` follows every run whose `setUp` succeeded.
+/// Allocation is faulted through the allocators `setUp` makes with
+/// `fio.allocator`.
+pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOptions) EveryFaultError!EveryFaultReport {
+    var report: EveryFaultReport = .{};
     const clean = FaultIo.init(gpa, base, .{ .trace = .all }) catch |err| return outOfMemory(err);
     defer clean.deinit();
     try once(gpa, ctx, clean, options, &report, null);
@@ -106,7 +117,7 @@ const Faulted = struct { injected: Injected, clean: *FaultIo, index: usize };
 /// One run: set up, run, check, tear down. `check` judges the run before
 /// `tearDown` releases what it left, and `tearDown` follows every run whose
 /// `setUp` succeeded, the failing ones included.
-fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: SweepOptions, report: *SweepReport, faulted: ?Faulted) SweepError!void {
+fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: EveryFaultOptions, report: *EveryFaultReport, faulted: ?Faulted) EveryFaultError!void {
     report.runs += 1;
     ctx.setUp(fio) catch |err| {
         if (options.diagnostics) |d| d.* = .{ .runs = report.runs, .failure = .{ .injected = null, .err = err, .trace = "" } };
@@ -124,7 +135,7 @@ fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: SweepOptions, repo
 }
 
 /// The faults to try at `record`'s step, into `buffer`.
-fn candidates(ctx: anytype, options: SweepOptions, record: IoTrace.Record, buffer: *[16]IoFault) []const IoFault {
+fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, buffer: *[16]IoFault) []const IoFault {
     const call = record.event.call;
     var len: usize = 0;
     if (call == .foreign) {
@@ -193,8 +204,8 @@ fn divergence(clean: *FaultIo, faulted: *FaultIo, index: usize, step: u64) ?u64 
     return lo;
 }
 
-fn fail(gpa: Allocator, options: SweepOptions, fio: *FaultIo, report: SweepReport, failure: SweepReport.Failure) SweepError {
-    const err: SweepError = if (failure.err == error.Nondeterministic) error.Nondeterministic else error.CheckFailed;
+fn fail(gpa: Allocator, options: EveryFaultOptions, fio: *FaultIo, report: EveryFaultReport, failure: EveryFaultReport.Failure) EveryFaultError {
+    const err: EveryFaultError = if (failure.err == error.Nondeterministic) error.Nondeterministic else error.CheckFailed;
     const diagnostics = options.diagnostics orelse return err;
     var text: Io.Writer.Allocating = .init(gpa);
     errdefer text.deinit();
@@ -203,10 +214,11 @@ fn fail(gpa: Allocator, options: SweepOptions, fio: *FaultIo, report: SweepRepor
     kept.trace = text.toOwnedSlice() catch return error.OutOfMemory;
     diagnostics.* = report;
     diagnostics.failure = kept;
+    diagnostics.gpa = gpa;
     return err;
 }
 
-fn outOfMemory(err: FaultIo.InitError) SweepError {
+fn outOfMemory(err: FaultIo.InitError) EveryFaultError {
     return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         // A one-entry plan built from a call's own fault always applies.

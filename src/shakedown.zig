@@ -36,9 +36,12 @@ pub const IoTrace = FaultIo.IoTrace;
 /// An `Io` that counts, traces and faults every call it forwards.
 pub const FaultIo = @import("FaultIo.zig");
 /// Every single fault at every step of an operation, with a determinism check.
-pub const sweep = @import("sweep.zig").sweep;
-pub const SweepOptions = @import("sweep.zig").SweepOptions;
-pub const SweepError = @import("sweep.zig").SweepError;
-pub const SweepReport = @import("sweep.zig").SweepReport;
-/// The fault a sweep's run injected, and where.
-pub const Injected = @import("sweep.zig").Injected;
+pub const everyFault = @import("every_fault.zig").everyFault;
+/// What `everyFault` tries, and what it keeps when a run fails.
+pub const EveryFaultOptions = @import("every_fault.zig").EveryFaultOptions;
+/// Why `everyFault` failed.
+pub const EveryFaultError = @import("every_fault.zig").EveryFaultError;
+/// What `everyFault` did, and how a failing run failed.
+pub const EveryFaultReport = @import("every_fault.zig").EveryFaultReport;
+/// The fault one of `everyFault`'s runs injected, and where.
+pub const Injected = @import("every_fault.zig").Injected;

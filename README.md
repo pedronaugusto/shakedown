@@ -2,8 +2,8 @@
 
 shakedown is a set of test doubles for Zig code written against `std.Io`. A
 `Clock` moves time only when the test moves it, a `FaultIo` counts, traces and
-fails any `Io` call by plan, `sweep` injects every single fault at every step of
-an operation, a `Layer` overrides some `Io` slots and forwards the rest, and two
+fails any `Io` call by plan, `everyFault` injects every single fault at every
+step of an operation, a `Layer` overrides some `Io` slots and forwards the rest, and two
 allocators count or quarantine memory.
 
 ## Install
@@ -132,14 +132,16 @@ traces them with its own call type on `FaultIo`'s steps. `beginForeign` and
 `Layer` over the `FaultIo` routes the seam's hook while every other slot reaches
 the `FaultIo` unchanged.
 
-`sweep(gpa, base, ctx, options)` makes one clean run of the operation `ctx`
+`everyFault(gpa, base, ctx, options)` makes one clean run of the operation `ctx`
 describes, then one run per step and per fault that applies there: each error
 in `options.errors` the call can return, a cancel, short reads and writes, and a
-refused allocation. `ctx.check` judges what each run left behind. Every faulted
-run must make the same calls as the clean run up to its fault, or the sweep
-fails as `Nondeterministic` and names the first record that differed. A sweep
-therefore never reports a pass for a run that tested something else, such as a
-temp name drawn from `io.random`.
+refused allocation. Each run is `ctx.setUp`, `ctx.run`, `ctx.check`, then
+`ctx.tearDown`: `check` judges what the run left behind before `tearDown`
+releases it, and `tearDown` follows every run whose `setUp` succeeded, a failing
+one too. Every faulted run must make the same calls as the clean run up to its
+fault, or `everyFault` fails as `Nondeterministic` and names the first record
+that differed. It therefore never reports a pass for a run that tested
+something else, such as a temp name drawn from `io.random`.
 
 `corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
 draws, and `corpus.encode` builds a whole Smith input from a list of draws at
@@ -149,8 +151,8 @@ seeded generator whose draws are fixed per seed on every target.
 ## Scope
 
 - It does not simulate a scheduler, a file system or a network yet. Code that
-  waits on a `Clock` runs on real threads of the base `Io`, and a sweep over
-  several tasks on a threaded base is refused as nondeterministic.
+  waits on a `Clock` runs on real threads of the base `Io`, and `everyFault`
+  over several tasks on a threaded base is refused as nondeterministic.
 - It does not shrink a failing run yet.
 - It does not control time for code that bypasses `Io`: `std.Thread`, spin loops
   on atomics and raw system calls see real time.
@@ -159,7 +161,7 @@ seeded generator whose draws are fixed per seed on every target.
 
 ## Platforms
 
-`Clock`, `Layer`, `FaultIo`, `sweep`, `Counting` and `corpus` are portable Zig. `Quarantine` closes
+`Clock`, `Layer`, `FaultIo`, `everyFault`, `Counting` and `corpus` are portable Zig. `Quarantine` closes
 memory with `madvise` and `mprotect` on Linux, macOS and the BSDs, and with a
 decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
 `Quarantine.supported` says which.
@@ -167,9 +169,9 @@ decommit on Windows. Elsewhere it hands out plain pages and quarantines nothing;
 ## Testing
 
 `zig build test` runs the unit suite, the quarantine death tests and the
-example. The sweep tests save a file three ways: through a temp file and a
-rename, which survives every single fault; in place, which a sweep catches
-losing the old save; and with a leak on an error path, which an allocator check
+example. The `everyFault` tests save a file three ways: through a temp file and
+a rename, which survives every single fault; in place, which one faulted run
+catches losing the old save; and with a leak on an error path, which an allocator check
 catches. The death tests run in child processes: a use after free and a one-byte
 overflow must kill them. The clock's stress test keeps 1,000 threads in timed
 waits while the clock moves 10,000 times from another thread, and checks that

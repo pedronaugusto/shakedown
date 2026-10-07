@@ -22,7 +22,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     } },
     .{ .name = "drivers and namespaces", .patterns = &.{
         "src/alloc.zig",
-        "src/sweep.zig",
+        "src/every_fault.zig",
     } },
     .{ .name = "public", .patterns = &.{
         "src/shakedown.zig",

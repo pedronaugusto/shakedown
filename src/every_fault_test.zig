@@ -1,4 +1,4 @@
-//! `sweep` from outside: a save that survives every single fault passes,
+//! `everyFault` from outside: a save that survives every single fault passes,
 //! and a save that does not, a leak on an error path and a run that
 //! depends on randomness are each caught.
 const std = @import("std");
@@ -96,7 +96,7 @@ test "a save through a temp file and a rename survives every single fault" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var save: Save = .{ .dir = tmp.dir, .how = .atomic };
-    const report = try shakedown.sweep(testing.allocator, testing.io, &save, .{});
+    const report = try shakedown.everyFault(testing.allocator, testing.io, &save, .{});
     try testing.expect(report.steps >= 6);
     // Several faults at most steps: far more runs than steps.
     try testing.expect(report.runs > 2 * report.steps);
@@ -106,9 +106,9 @@ test "a save in place is caught losing the old save" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var save: Save = .{ .dir = tmp.dir, .how = .in_place };
-    var report: shakedown.SweepReport = .{};
-    defer report.deinit(testing.allocator);
-    try testing.expectError(error.CheckFailed, shakedown.sweep(testing.allocator, testing.io, &save, .{ .diagnostics = &report }));
+    var report: shakedown.EveryFaultReport = .{};
+    defer report.deinit();
+    try testing.expectError(error.CheckFailed, shakedown.everyFault(testing.allocator, testing.io, &save, .{ .diagnostics = &report }));
     const failure = report.failure.?;
     try testing.expectEqual(@as(anyerror, error.SaveLost), failure.err);
     // The file was created, so truncated; the write is where the old save dies.
@@ -120,10 +120,10 @@ test "a buffer leaked on an error path is caught by an allocator check" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
     var save: Save = .{ .dir = tmp.dir, .how = .leaky };
-    var report: shakedown.SweepReport = .{};
-    defer report.deinit(testing.allocator);
-    const result = shakedown.sweep(testing.allocator, testing.io, &save, .{ .diagnostics = &report });
-    // The leak is real: free what the sweep's failing run left behind.
+    var report: shakedown.EveryFaultReport = .{};
+    defer report.deinit();
+    const result = shakedown.everyFault(testing.allocator, testing.io, &save, .{ .diagnostics = &report });
+    // The leak is real: free what the failing run left behind.
     try testing.expectError(error.CheckFailed, result);
     try testing.expectEqual(@as(anyerror, error.Leaked), report.failure.?.err);
     try testing.expectEqual(@as(usize, 3), save.counting.live_bytes);
@@ -134,9 +134,9 @@ test "a run that depends on io.random is refused as nondeterministic" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
     var save: Save = .{ .dir = tmp.dir, .how = .random_name };
-    var report: shakedown.SweepReport = .{};
-    defer report.deinit(testing.allocator);
-    try testing.expectError(error.Nondeterministic, shakedown.sweep(testing.allocator, testing.io, &save, .{ .diagnostics = &report }));
+    var report: shakedown.EveryFaultReport = .{};
+    defer report.deinit();
+    try testing.expectError(error.Nondeterministic, shakedown.everyFault(testing.allocator, testing.io, &save, .{ .diagnostics = &report }));
     try testing.expect(report.failure.?.difference != null);
 }
 
@@ -182,16 +182,16 @@ const Seam = struct {
     }
 };
 
-test "a seam's raw calls are swept with the Io calls around them" {
+test "a seam's raw calls are faulted with the Io calls around them" {
     var seam: Seam = .{};
-    const report = try shakedown.sweep(testing.allocator, testing.io, &seam, .{});
+    const report = try shakedown.everyFault(testing.allocator, testing.io, &seam, .{});
     try testing.expectEqual(@as(u64, 3), report.steps);
     try testing.expectEqual(@as(u32, 1), seam.raw_failures);
 }
 
 test "a clean run longer than max_steps is refused" {
     var seam: Seam = .{};
-    try testing.expectError(error.TooManySteps, shakedown.sweep(testing.allocator, testing.io, &seam, .{ .max_steps = 2 }));
+    try testing.expectError(error.TooManySteps, shakedown.everyFault(testing.allocator, testing.io, &seam, .{ .max_steps = 2 }));
 }
 
 /// Records the order of its hooks, and frees in `tearDown` what `check`
@@ -221,9 +221,9 @@ const Ordered = struct {
 
     pub fn check(o: *Ordered, io: Io, result: anyerror!void, injected: ?shakedown.Injected) !void {
         _ = io;
-        _ = injected;
-        result catch {};
         o.note('c');
+        // The clean run passes; the one faulted run is the cancel of its sleep.
+        if (injected == null) try result else try testing.expectError(error.Canceled, result);
         const scratch = o.scratch orelse return error.TornDown;
         try testing.expectEqualStrings("state", scratch);
         if (o.fail_check) return error.Judged;
@@ -238,16 +238,16 @@ const Ordered = struct {
 
 test "check judges a run before its tearDown, on passing and failing runs" {
     var ordered: Ordered = .{};
-    const report = try shakedown.sweep(testing.allocator, testing.io, &ordered, .{ .short = false });
+    const report = try shakedown.everyFault(testing.allocator, testing.io, &ordered, .{ .short = false });
     // One clean run, then one run per fault of the one sleep.
     try testing.expectEqual(@as(u64, 1), report.steps);
     try testing.expectEqual(@as(u64, 2), report.runs);
     try testing.expectEqualStrings("srctsrct", ordered.log[0..ordered.len]);
 
     var failing: Ordered = .{ .fail_check = true };
-    var failed: shakedown.SweepReport = .{};
-    defer failed.deinit(testing.allocator);
-    try testing.expectError(error.CheckFailed, shakedown.sweep(testing.allocator, testing.io, &failing, .{ .diagnostics = &failed }));
+    var failed: shakedown.EveryFaultReport = .{};
+    defer failed.deinit();
+    try testing.expectError(error.CheckFailed, shakedown.everyFault(testing.allocator, testing.io, &failing, .{ .diagnostics = &failed }));
     try testing.expectEqual(@as(anyerror, error.Judged), failed.failure.?.err);
     try testing.expectEqualStrings("srct", failing.log[0..failing.len]);
 }
