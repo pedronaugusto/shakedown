@@ -1,5 +1,6 @@
-//! Test inputs built at compile time: fuzz corpus entries in
-//! `std.testing.Smith`'s input format, and text repeated to a length.
+//! Test inputs: fuzz corpus entries in `std.testing.Smith`'s input format,
+//! built at compile time or from a recorded tape, and text repeated to a
+//! length.
 //!
 //! Smith reads its input as a sequence of draws: an integer is 8
 //! little-endian bytes, an end-of-stream flag is one byte, `bytes` reads as
@@ -54,6 +55,15 @@ pub inline fn repeat(comptime text: []const u8, comptime times: usize) *const [t
         const final: [text.len * times:0]u8 = terminated[0 .. text.len * times :0].*;
         return &final;
     }
+}
+
+/// A recorded tape's choices as Smith input: each choice is an integer
+/// draw, 8 little-endian bytes, so a source reading it under the fuzzer
+/// draws the same choices the tape holds. Owned by the caller.
+pub fn fromTape(gpa: std.mem.Allocator, choices: []const u64) error{OutOfMemory}![]u8 {
+    const out = try gpa.alloc(u8, choices.len * 8);
+    for (choices, 0..) |choice, i| std.mem.writeInt(u64, out[i * 8 ..][0..8], choice, .little);
+    return out;
 }
 
 /// One draw, as Smith reads it.

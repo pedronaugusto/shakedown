@@ -46,3 +46,17 @@ pub const EveryFaultError = @import("every_fault.zig").EveryFaultError;
 pub const EveryFaultReport = @import("every_fault.zig").EveryFaultReport;
 /// The fault one of `everyFault`'s runs injected, and where.
 pub const Injected = @import("every_fault.zig").Injected;
+/// Values drawn from a `Source`, a smaller tape a simpler value.
+pub const gen = @import("gen.zig");
+/// A recorded run's choices and spans.
+pub const Tape = Source.Tape;
+/// A property run as many seeded cases, its failures shrunk.
+pub const check = @import("check.zig").check;
+/// One run of a property's body.
+pub const Case = @import("check.zig").Case;
+/// How `check` runs a property.
+pub const CheckOptions = @import("check.zig").CheckOptions;
+/// Why `check` failed.
+pub const CheckError = @import("check.zig").CheckError;
+/// How a property failed: its minimal tape and its report.
+pub const CheckReport = @import("check.zig").CheckReport;

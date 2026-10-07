@@ -14,7 +14,9 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/Steps.zig",
     } },
     .{ .name = "vocabulary", .patterns = &.{
+        "src/gen.zig",
         "src/plan.zig",
+        "src/shrink.zig",
         "src/trace.zig",
     } },
     .{ .name = "io layers", .patterns = &.{
@@ -23,6 +25,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     } },
     .{ .name = "drivers and namespaces", .patterns = &.{
         "src/alloc.zig",
+        "src/check.zig",
         "src/every_fault.zig",
     } },
     .{ .name = "public", .patterns = &.{

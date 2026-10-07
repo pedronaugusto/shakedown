@@ -16,10 +16,15 @@ test {
     _ = @import("io_call.zig");
     _ = @import("FaultIo.zig");
     _ = @import("every_fault.zig");
+    _ = @import("gen.zig");
+    _ = @import("shrink.zig");
+    _ = @import("check.zig");
     _ = @import("layer_test.zig");
     _ = @import("clock_test.zig");
     _ = @import("quarantine_test.zig");
     _ = @import("no_resize_test.zig");
     _ = @import("fault_test.zig");
     _ = @import("every_fault_test.zig");
+    _ = @import("check_test.zig");
+    _ = @import("shrink_challenge_test.zig");
 }
