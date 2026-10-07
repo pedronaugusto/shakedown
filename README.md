@@ -284,7 +284,7 @@ quarantines nothing; `Quarantine.supported` says which.
 
 ## Testing
 
-`zig build test` runs the unit suite, two death tests and the example. The
+`zig build test` runs the unit suite, the death tests and the example. The
 conformance checks run on std's threaded `Io`, through an empty `Layer` and an
 empty `FaultIo`, and on simulations on both executors, all three schedules and
 eight seeds. A thousand seeds of that workload each repeat their run, and a
@@ -308,7 +308,9 @@ place, which one faulted run catches losing the old save; with a leak on an
 error path, which an allocator check catches; and with a temp name counted
 outside the `Io`, which the determinism check refuses. The death tests run in
 child processes: a use after free and a one-byte overflow on a quarantine, and
-a simulated task overflowing its stack, must kill them. The clock's stress test
+a simulated task overflowing its stack, must kill them, and a simulated task
+that panics under `shakedown.panic` must print its simulation's seed and last
+calls first. The clock's stress test
 keeps 1,000 threads in timed waits while the clock moves 10,000 times from
 another thread, and checks that none hangs and none times out early;
 `-Dstress-threads=N` and `-Dstress-rounds=N` resize it. `zig build check`
