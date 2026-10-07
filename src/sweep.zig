@@ -79,8 +79,7 @@ pub fn sweep(gpa: Allocator, base: Io, ctx: anytype, options: SweepOptions) Swee
     var report: SweepReport = .{};
     const clean = FaultIo.init(gpa, base, .{ .trace = .all }) catch |err| return outOfMemory(err);
     defer clean.deinit();
-    const clean_result = try once(ctx, clean, options, &report);
-    ctx.check(clean.io(), clean_result, null) catch |err| return fail(gpa, options, clean, report, .{ .injected = null, .err = err, .trace = "" });
+    try once(gpa, ctx, clean, options, &report, null);
     report.steps = clean.steps().peek();
     if (report.steps > options.max_steps) return error.TooManySteps;
 
@@ -95,27 +94,33 @@ pub fn sweep(gpa: Allocator, base: Io, ctx: anytype, options: SweepOptions) Swee
                 .plan = &.{.{ .at = .{ .step = record.step }, .fault = fault }},
             }) catch |err| return outOfMemory(err);
             defer fio.deinit();
-            const result = try once(ctx, fio, options, &report);
-            if (divergence(clean, fio, index, record.step)) |at| {
-                return fail(gpa, options, fio, report, .{ .injected = injected, .err = error.Nondeterministic, .difference = at, .trace = "" });
-            }
-            ctx.check(fio.io(), result, injected) catch |err| {
-                return fail(gpa, options, fio, report, .{ .injected = injected, .err = err, .trace = "" });
-            };
+            try once(gpa, ctx, fio, options, &report, .{ .injected = injected, .clean = clean, .index = index });
         }
     }
     return report;
 }
 
-/// One run: set up, run, tear down. Returns what the operation returned.
-fn once(ctx: anytype, fio: *FaultIo, options: SweepOptions, report: *SweepReport) SweepError!(anyerror!void) {
+/// A faulted run: its fault, and the clean run it must follow up to it.
+const Faulted = struct { injected: Injected, clean: *FaultIo, index: usize };
+
+/// One run: set up, run, check, tear down. `check` judges the run before
+/// `tearDown` releases what it left, and `tearDown` follows every run whose
+/// `setUp` succeeded, the failing ones included.
+fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: SweepOptions, report: *SweepReport, faulted: ?Faulted) SweepError!void {
     report.runs += 1;
     ctx.setUp(fio) catch |err| {
         if (options.diagnostics) |d| d.* = .{ .runs = report.runs, .failure = .{ .injected = null, .err = err, .trace = "" } };
         return error.CheckFailed;
     };
     defer ctx.tearDown();
-    return ctx.run(fio.io());
+    const result = ctx.run(fio.io());
+    const injected = if (faulted) |f| f.injected else null;
+    if (faulted) |f| if (divergence(f.clean, fio, f.index, f.injected.step)) |at| {
+        return fail(gpa, options, fio, report.*, .{ .injected = injected, .err = error.Nondeterministic, .difference = at, .trace = "" });
+    };
+    ctx.check(fio.io(), result, injected) catch |err| {
+        return fail(gpa, options, fio, report.*, .{ .injected = injected, .err = err, .trace = "" });
+    };
 }
 
 /// The faults to try at `record`'s step, into `buffer`.

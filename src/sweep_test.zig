@@ -193,3 +193,61 @@ test "a clean run longer than max_steps is refused" {
     var seam: Seam = .{};
     try testing.expectError(error.TooManySteps, shakedown.sweep(testing.allocator, testing.io, &seam, .{ .max_steps = 2 }));
 }
+
+/// Records the order of its hooks, and frees in `tearDown` what `check`
+/// reads.
+const Ordered = struct {
+    log: [256]u8 = undefined,
+    len: usize = 0,
+    /// Owned between `setUp` and `tearDown`.
+    scratch: ?[]u8 = null,
+    fail_check: bool = false,
+
+    fn note(o: *Ordered, c: u8) void {
+        o.log[o.len] = c;
+        o.len += 1;
+    }
+
+    pub fn setUp(o: *Ordered, fio: *FaultIo) !void {
+        _ = fio;
+        o.note('s');
+        o.scratch = try testing.allocator.dupe(u8, "state");
+    }
+
+    pub fn run(o: *Ordered, io: Io) !void {
+        o.note('r');
+        try io.sleep(.zero, .awake);
+    }
+
+    pub fn check(o: *Ordered, io: Io, result: anyerror!void, injected: ?shakedown.Injected) !void {
+        _ = io;
+        _ = injected;
+        result catch {};
+        o.note('c');
+        const scratch = o.scratch orelse return error.TornDown;
+        try testing.expectEqualStrings("state", scratch);
+        if (o.fail_check) return error.Judged;
+    }
+
+    pub fn tearDown(o: *Ordered) void {
+        o.note('t');
+        testing.allocator.free(o.scratch.?);
+        o.scratch = null;
+    }
+};
+
+test "check judges a run before its tearDown, on passing and failing runs" {
+    var ordered: Ordered = .{};
+    const report = try shakedown.sweep(testing.allocator, testing.io, &ordered, .{ .short = false });
+    // One clean run, then one run per fault of the one sleep.
+    try testing.expectEqual(@as(u64, 1), report.steps);
+    try testing.expectEqual(@as(u64, 2), report.runs);
+    try testing.expectEqualStrings("srctsrct", ordered.log[0..ordered.len]);
+
+    var failing: Ordered = .{ .fail_check = true };
+    var failed: shakedown.SweepReport = .{};
+    defer failed.deinit(testing.allocator);
+    try testing.expectError(error.CheckFailed, shakedown.sweep(testing.allocator, testing.io, &failing, .{ .diagnostics = &failed }));
+    try testing.expectEqual(@as(anyerror, error.Judged), failed.failure.?.err);
+    try testing.expectEqualStrings("srct", failing.log[0..failing.len]);
+}
