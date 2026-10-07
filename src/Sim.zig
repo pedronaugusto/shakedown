@@ -38,6 +38,8 @@ pub const Outcome = options_mod.Outcome;
 pub const TaskReport = options_mod.TaskReport;
 /// One call, as the run's trace records it.
 pub const Event = options_mod.Event;
+/// A thread that watches simulations, shared through `Options.watched_by`.
+pub const Watchdog = @import("sim/Watchdog.zig");
 
 /// Private: the allocator the simulation was made with.
 gpa: Allocator,
@@ -49,9 +51,12 @@ own_source: Source,
 fio: ?*FaultIo = null,
 /// Private: the memory `allocator` hands out, once asked for.
 region: ?Region = null,
-/// Private: the watchdog's thread and its stop word.
-watchdog: ?std.Thread = null,
-watchdog_stop: std.atomic.Value(u32) = .init(0),
+/// Private: the watchdog of its own, used unless `Options.watched_by`
+/// names a shared one; the one watching it, once a run has begun; and
+/// what that one reads.
+own_watchdog: Watchdog = .{},
+watched_by: ?*Watchdog = null,
+watch: Watchdog.Watched = undefined,
 
 pub const InitError = error{ OutOfMemory, ExecutorUnavailable, FaultNotInErrorSet, FaultNotApplicable };
 
@@ -63,19 +68,32 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     const drawn_from = options.source orelse &s.own_source;
     s.core = try .init(gpa, options, drawn_from);
     errdefer s.core.deinit();
-    if (options.faults.len > 0) s.fio = try FaultIo.init(gpa, s.coreIo(), .{ .plan = options.faults, .source = drawn_from });
+    if (options.faults.len > 0) {
+        const fio = try FaultIo.init(gpa, s.coreIo(), .{ .plan = options.faults, .source = drawn_from });
+        // A cancel the fault part lands is held for the simulation's task.
+        fio.tasks.id = taskOf;
+        fio.tasks.blocked = blockedOf;
+        s.fio = fio;
+    }
     s.core.outer = s.io();
     return s;
+}
+
+fn taskOf(base: Io) u64 {
+    const c = Core.of(base.userdata);
+    return if (c.current) |t| t.id else 0;
+}
+
+fn blockedOf(base: Io) bool {
+    const c = Core.of(base.userdata);
+    return if (c.current) |t| t.protection == .blocked else false;
 }
 
 /// Ends the simulation. Tasks still waiting are dropped where they stand,
 /// their `defer`s not run.
 pub fn deinit(s: *Sim) void {
-    if (s.watchdog) |thread| {
-        s.watchdog_stop.store(1, .release);
-        real().futexWake(u32, &s.watchdog_stop.raw, 1);
-        thread.join();
-    }
+    if (s.watched_by) |w| w.remove(&s.watch);
+    s.own_watchdog.deinit();
     s.core.deinit();
     if (s.fio) |f| f.deinit();
     if (s.region) |*r| r.deinit();
@@ -151,7 +169,11 @@ pub fn step(s: *Sim) ?Outcome {
 }
 
 fn drive(s: *Sim, mode: Core.Mode, until: i64) ?Outcome {
-    s.startWatchdog();
+    if (s.watched_by == null) if (s.core.options.watchdog) |limit| {
+        const w = s.core.options.watched_by orelse &s.own_watchdog;
+        s.watch = .{ .running = &s.core.running, .calls = &s.core.calls, .stuck = &s.core.stuck, .limit = Core.nanoseconds(limit.nanoseconds) };
+        if (w.add(&s.watch)) s.watched_by = w;
+    };
     return s.core.drive(mode, until) catch |err| .{ .failed = err };
 }
 
@@ -200,57 +222,6 @@ pub fn allocator(s: *Sim) Allocator {
 /// Calls made so far.
 pub fn steps(s: *const Sim) u64 {
     return s.core.steps;
-}
-
-// The watchdog.
-
-fn real() Io {
-    return Io.Threaded.global_single_threaded.io();
-}
-
-fn startWatchdog(s: *Sim) void {
-    if (s.watchdog != null or s.core.options.watchdog == null) return;
-    // ziglint-ignore: Z026 without its thread the watchdog is off; the run itself is unchanged
-    s.watchdog = std.Thread.spawn(.{ .stack_size = 64 * 1024 }, watch, .{s}) catch null;
-}
-
-/// Samples the running task and the call count. A task that makes no call
-/// for the watchdog's time is reported and the run marked stuck, which ends
-/// it at the task's next call; one that never makes one is reported again
-/// and the process aborted, since nothing else can stop it.
-fn watch(s: *Sim) void {
-    const limit = Core.nanoseconds(s.core.options.watchdog.?.nanoseconds);
-    const slice = @max(@divTrunc(limit, 8), std.time.ns_per_ms);
-    var last = s.core.calls.load(.monotonic);
-    var idle: i64 = 0;
-    while (s.watchdog_stop.load(.acquire) == 0) {
-        // ziglint-ignore: Z026 a wait cut short only samples sooner
-        real().futexWaitTimeout(u32, &s.watchdog_stop.raw, 0, .{ .duration = .{ .raw = .fromNanoseconds(slice), .clock = .awake } }) catch {};
-        const task = s.core.running.load(.monotonic);
-        const count = s.core.calls.load(.monotonic);
-        if (task == 0 or count != last) {
-            last = count;
-            idle = 0;
-            continue;
-        }
-        idle += slice;
-        if (idle >= limit and !s.core.stuck.load(.monotonic)) {
-            s.core.stuck.store(true, .monotonic);
-            say("shakedown: task {d} has run {d} ms without an Io call; the run ends as stuck at its next one\n", .{ task, @divTrunc(idle, std.time.ns_per_ms) });
-        }
-        if (idle >= 2 * limit) {
-            say("shakedown: task {d} has made no Io call for {d} ms and cannot be stopped; aborting\n", .{ task, @divTrunc(idle, std.time.ns_per_ms) });
-            std.process.abort();
-        }
-    }
-}
-
-fn say(comptime fmt: []const u8, args: anytype) void {
-    var buffer: [256]u8 = undefined;
-    const stderr = std.debug.lockStderr(&buffer).terminal();
-    defer std.debug.unlockStderr();
-    // ziglint-ignore: Z026 a message stderr cannot take is lost
-    stderr.writer.print(fmt, args) catch {};
 }
 
 // Panics.

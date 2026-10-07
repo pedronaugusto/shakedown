@@ -108,6 +108,12 @@ that sleeps does, and `stepReal` moves real time alone, backwards too. The CPU
 clocks stay frozen unless `Options.cpu` hands them to the base. Timers fire in
 the order the clocks reach them, ties in the order they were armed.
 
+With `advance = .{ .auto = .{ .late = d } }` time moves by itself instead: each
+timer fires as it is armed, the clocks moving to its deadline and `d` past it, as
+a sleeper that resumes late. That suits code whose own waits move its time, with
+no test thread to move it: a retry loop sleeps through its backoff at once, and a
+loop that measures its intervals sees each one end late.
+
 A waiter blocks on the base until its timer fires or its wait is woken, so the
 base must keep real time: `std.testing.io` or a `Threaded` of the test's own.
 A timer lives on the waiter's stack and the clock allocates nothing. A sleep
@@ -139,10 +145,32 @@ call takes a step from the run's `Steps` and is counted. A plan is a list of
 entries, each a trigger and a fault: the n-th call matching a call and a path
 (`Match`: exact, prefix, suffix or contains), the call at a given step, or each
 matching call with a seeded chance. A fault returns an error from the call's own
-error set, cuts a read or write short (0 bytes is no progress, not the end of a
-stream), lands a cancel at a cancelation point, sleeps on the base first, or runs
-test code at that point. A plan that asks for an error a call cannot return, or a
-cancel where none can land, is refused when it is set. `count` reports calls by
+error set in place of the call (`fail`), or makes the call and loses its answer,
+returning the error after it took effect (`fail_after`, as a write that reached
+the disk and then reported `InputOutput`); cuts a read or write short (0 bytes is
+no progress, not the end of a stream); lands a cancel; wakes a futex wait with no
+one waking it (`spurious_wake`); stalls the call until a cancel ends it, as a read
+of a silent terminal does; sleeps on the base first; or runs test code at that
+point, and then makes the call or injects the fault its `then` names. A plan that
+asks for an error a call cannot return, a cancel where none can land, or a lost
+answer from a call that hands back something to release (a file, a socket, a
+task, a lock) is refused when it is set.
+
+A cancel lands as std delivers one: at a cancelation point of a task whose cancel
+protection is unblocked, which `FaultIo` asks the base. Under blocked protection
+no cancel lands and the call is made, and the trace records it unfaulted. A task
+that takes the cancel and re-arms it with `recancel`, as std's `Queue` does when it
+reports progress first, meets it again at its next cancelation point. A task is
+the thread it runs on, as on std's `Threaded`; under a `Sim` it is the
+simulation's task.
+
+The operations of a `Batch` are calls too. Each is counted, stepped, decided and
+traced once, by the first await that sees it, so a pump that waits on a read is
+seen to submit one read however often it waits. A failure or a short read of
+nothing completes a batched operation at once; a stalled one is kept from the
+base until the batch is canceled, and an await with nothing else to wait on waits
+out its timeout on the base, which a `Clock` makes virtual. A cancel planned on a
+batched operation lands on the await. `count` reports calls by
 kind; the trace keeps every record, the last n or none, and hashes what it keeps
 so two runs can be compared. With `track_paths`, the default, opened directories
 and files are named by the paths they were opened with, joined across `openDir`,
@@ -169,8 +197,11 @@ releases it, and `tearDown` follows every run whose `setUp` succeeded, a failing
 one too. Every faulted run must make the same calls as the clean run up to its
 fault, or `everyFault` fails as `Nondeterministic` and names the first record
 that differed. It therefore never reports a pass for a run that tested
-something else. Every run's `io.random` draws from `options.random_seed`, so a
-temp name drawn from it is the same name in every run.
+something else. A cancel that cannot land, under blocked protection, leaves its
+run clean, and `check` is told no fault was injected. `options.lost_answers`
+tries each of its errors after the call, at every step that can lose its answer.
+Every run's `io.random` draws from `options.random_seed`, so a temp name drawn
+from it is the same name in every run.
 
 ### Properties
 
@@ -214,7 +245,8 @@ blocks, the schedule picks the next ready one: the first ready (`fifo`), any
 ready, time moves to the earliest timer. Every futex-based primitive in std
 (`Mutex`, `Condition`, `Event`, `Queue`, `Semaphore`, `RwLock`), `async`,
 `concurrent`, groups, `Select`, cancelation with its protection and `recancel`,
-sleeps and timeouts, and `random` run on it unchanged. Where std allows more
+sleeps and timeouts, and `random` run on it unchanged. Every call that can return
+`error.Canceled` is a cancelation point, those it does not simulate yet too. Where std allows more
 than one behaviour the simulation draws one: whether `async` runs the function
 at once or starts a task, a spurious futex wake (1% by default), a wake and a
 cancel landing together (reporting the cancel hands the wake on to the next
@@ -228,7 +260,9 @@ report of every task still waiting (what it waits on, where it was started and
 its stack), at a step or time limit, or `stuck`: a watchdog thread notices a
 task that makes no `Io` call for ten seconds of real time and ends the run at
 its next call, or aborts the process with the report printed when that call
-never comes. `start`, `step`, `runFor` and `runUntil` drive a run a step or a
+never comes. A simulation starts its watchdog's thread on its first run, unless
+`Options.watched_by` hands it a `Sim.Watchdog` it shares; `check` shares one
+among all its cases' simulations. `start`, `step`, `runFor` and `runUntil` drive a run a step or a
 frame at a time, and `at` starts a task at an instant, for input replay.
 `Options.faults` puts a `FaultIo` outermost, drawing its chances from the same
 source. `allocator()` lays memory out the same way in every run of a seed, from
@@ -313,9 +347,14 @@ that panics under `shakedown.panic` must print its simulation's seed and last
 calls first. The clock's stress test
 keeps 1,000 threads in timed waits while the clock moves 10,000 times from
 another thread, and checks that none hangs and none times out early;
-`-Dstress-threads=N` and `-Dstress-rounds=N` resize it. `zig build check`
-compiles everything without running it, and `zig build bench` runs the
-benchmarks by hand; CI compiles them and never times them.
+`-Dstress-threads=N` and `-Dstress-rounds=N` resize it. The cancel tests land a
+cancel on a task that holds its protection blocked and on one that does not, and
+re-arm one through std's `Queue`, which takes a cancel after a partial put. The
+batch tests count each operation once however often it is awaited, and wait out a
+stalled read's deadline on a clock. `zig build check` compiles the tests, programs
+and example without running them. `zig build bench` builds the benchmarks in
+ReleaseFast and runs them, by hand; `zig build test` runs each row once at its
+smallest, and nothing times them in CI.
 
 [CI](.github/workflows/ci.yml) runs the source checks and the Linux Debug suite
 on every push it is asked for, and before a merge the Debug suite on macOS and

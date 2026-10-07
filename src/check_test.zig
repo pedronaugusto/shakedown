@@ -134,3 +134,24 @@ test "a seed draws the same cases every time" {
     try shakedown.check(testing.allocator, &second, Commutes.body, .{ .cases = 5, .seed = 99 });
     try testing.expectEqual(first.cases, second.cases);
 }
+
+const SimCases = struct {
+    cases: u32 = 0,
+
+    fn body(self: *SimCases, c: *Case) !void {
+        const sim = try c.sim(.{});
+        try testing.expectEqual(shakedown.Sim.Outcome.finished, sim.run(nothing, .{sim.io()}));
+        // The run's watchdog watches it: it started no thread of its own.
+        try testing.expect(sim.own_watchdog.thread == null);
+        try testing.expect(sim.watched_by != null);
+        self.cases += 1;
+    }
+
+    fn nothing(_: std.Io) void {}
+};
+
+test "every case's simulation shares the run's one watchdog" {
+    var ctx: SimCases = .{};
+    try shakedown.check(testing.allocator, &ctx, SimCases.body, .{ .cases = 20, .seed = 3 });
+    try testing.expectEqual(@as(u32, 20), ctx.cases);
+}

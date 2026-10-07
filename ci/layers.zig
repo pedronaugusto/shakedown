@@ -12,6 +12,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/match.zig",
         "src/sim/executor.zig",
         "src/sim/Region.zig",
+        "src/sim/Watchdog.zig",
         "src/Source.zig",
         "src/Steps.zig",
     } },

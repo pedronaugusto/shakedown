@@ -5,13 +5,15 @@
 //! real ones, which a run's outcome cannot depend on. Every other call (the
 //! file system, the network, processes) fails as an `Io` without them
 //! would, with `error.Unexpected`, until those parts of the simulation
-//! exist. Every call is a step and a record in the trace.
+//! exist. Every call is a step and a record in the trace, and every call
+//! that can return `error.Canceled` is a cancelation point.
 const builtin = @import("builtin");
 const std = @import("std");
 const Io = std.Io;
 const Core = @import("Core.zig");
 const Task = Core.Task;
-const IoCall = @import("../io_call.zig").IoCall;
+const io_call = @import("../io_call.zig");
+const IoCall = io_call.IoCall;
 
 pub const vtable: Io.VTable = blk: {
     var table: Io.VTable = undefined;
@@ -368,6 +370,10 @@ const slots = struct {
     pub fn lockStderr(userdata: ?*anyopaque, mode: ?Io.Terminal.Mode) Io.Cancelable!Io.LockedStderr {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
+        if (e.task) |t| if (Core.cancelPoint(t)) {
+            c.record(.lockStderr, e, digest(error.Canceled));
+            return error.Canceled;
+        };
         c.record(.lockStderr, e, 0);
         const r = real();
         return r.vtable.lockStderr(r.userdata, mode);
@@ -376,6 +382,10 @@ const slots = struct {
     pub fn tryLockStderr(userdata: ?*anyopaque, mode: ?Io.Terminal.Mode) Io.Cancelable!?Io.LockedStderr {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
+        if (e.task) |t| if (Core.cancelPoint(t)) {
+            c.record(.tryLockStderr, e, digest(error.Canceled));
+            return error.Canceled;
+        };
         c.record(.tryLockStderr, e, 0);
         const r = real();
         return r.vtable.tryLockStderr(r.userdata, mode);
@@ -546,9 +556,9 @@ fn Return(comptime name: []const u8) type {
     return @typeInfo(@typeInfo(@FieldType(Io.VTable, name)).pointer.child).@"fn".return_type.?;
 }
 
-/// What a call the simulation does not have returns: nothing for one that
-/// cannot fail, `error.Unexpected` where its error set allows it, else the
-/// first error of its set.
+/// What a call the simulation does not have returns, once no cancel has
+/// landed: nothing for one that cannot fail, `error.Unexpected` where its
+/// error set allows it, else the first error of its set.
 fn fallback(comptime R: type) R {
     return switch (@typeInfo(R)) {
         .void => {},
@@ -573,6 +583,10 @@ fn unsupported(comptime name: []const u8) @FieldType(Io.VTable, name) {
         inline fn run(userdata: ?*anyopaque, ret: usize) return_type {
             const c = Core.of(userdata);
             const e = c.enter(ret, true);
+            if (comptime io_call.cancelable(call)) if (e.task) |t| if (Core.cancelPoint(t)) {
+                c.record(call, e, digest(error.Canceled));
+                return error.Canceled;
+            };
             const value = fallback(return_type);
             c.record(call, e, switch (@typeInfo(return_type)) {
                 .void => 0,

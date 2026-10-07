@@ -6,7 +6,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- `IoFault` has `fail_after`, `spurious_wake` and `stall`: a switch over it names
+  them.
+- A planned `cancel` lands only where std would deliver one: under blocked cancel
+  protection the call is made, and the trace records it unfaulted. `everyFault`
+  tells `check` no fault was injected in such a run.
+- `FaultIo` counts, steps, plans and traces each operation of a `Batch` once, as
+  a call of its own, so steps and counts of code that batches include them.
+
 ### Added
+
+- `IoFault.fail_after`, a lost answer: the call is made, then returns the error.
+  `EveryFaultOptions.lost_answers` tries it at every step that can lose its
+  answer.
+- `IoFault.spurious_wake`, a futex wait woken by no one; `IoFault.stall`, a call
+  that waits until a cancel ends it, and a batched operation kept pending until
+  its batch is canceled, so an await waits out its timeout.
+- `IoFault.Callback.then`: what happens to the call once the callback has run, a
+  fault of its own, checked with the plan.
+- `Clock.Options.advance`: `.auto` fires each timer as it is armed, the clocks
+  moving to its deadline and `late` past it.
+- `Sim.Watchdog` and `Sim.Options.watched_by`, a watchdog several simulations
+  share; `check` shares one among its cases' simulations, which no longer start a
+  thread each.
+
+### Fixed
+
+- `recancel` after a cancel `FaultIo` landed re-arms it for the task's next
+  cancelation point, instead of reaching a base that never canceled the task,
+  where std's threaded `Io` panics. std's `Queue` does so after a partial put.
+- Every call a `Sim` does not simulate yet that can return `error.Canceled` is a
+  cancelation point, as are `lockStderr` and `tryLockStderr`.
+- A `Clock`'s timed batch wait whose timer has fired looks once more without
+  waiting, instead of waiting out another `recheck`.
 
 - `Layer(State, overrides)`: an `Io` that overrides some vtable slots, keeps its
   state in itself and forwards every other slot to its base.

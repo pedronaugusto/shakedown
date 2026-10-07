@@ -289,3 +289,74 @@ test "check judges a run before its tearDown, on passing and failing runs" {
     try testing.expectEqual(@as(anyerror, error.Judged), failed.failure.?.err);
     try testing.expectEqualStrings("srct", failing.log[0..failing.len]);
 }
+
+/// Writes a file with cancel protection blocked, as code does that must
+/// not be interrupted halfway, then sleeps where a cancel may land: on a
+/// task of its own, since a task is what has a protection to block.
+const Protected = struct {
+    dir: Io.Dir,
+    /// Runs whose fault landed, and runs given none.
+    faulted: u32 = 0,
+    clean: u32 = 0,
+
+    pub fn setUp(p: *Protected, fio: *FaultIo) !void {
+        _ = p;
+        _ = fio;
+    }
+
+    fn work(io: Io, dir: Io.Dir) !void {
+        const was = io.swapCancelProtection(.blocked);
+        {
+            defer _ = io.swapCancelProtection(was);
+            dir.writeFile(io, .{ .sub_path = "whole", .data = "written whole" }) catch |err| switch (err) {
+                error.Canceled => unreachable, // unreachable: cancel protection is blocked
+                else => |e| return e,
+            };
+        }
+        try io.sleep(.zero, .awake);
+    }
+
+    pub fn run(p: *Protected, io: Io) !void {
+        var task = try io.concurrent(work, .{ io, p.dir });
+        try task.await(io);
+    }
+
+    pub fn check(p: *Protected, io: Io, result: anyerror!void, injected: ?shakedown.Injected) !void {
+        _ = io;
+        const fault = injected orelse {
+            p.clean += 1;
+            return result;
+        };
+        p.faulted += 1;
+        // Only cancels are tried, and one that lands is the run's error.
+        try testing.expect(fault.fault == .cancel);
+        try testing.expectError(error.Canceled, result);
+    }
+
+    pub fn tearDown(p: *Protected) void {
+        _ = p;
+    }
+};
+
+test "a cancel the protection keeps out is no fault, and its run is checked as a clean one" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var protected: Protected = .{ .dir = tmp.dir };
+    const report = try shakedown.everyFault(testing.allocator, testing.io, &protected, .{ .errors = &.{}, .short = false });
+    // Every cancelation point was tried; only the sleep's and the task's
+    // own landed. The clean run, and each one inside the protection, were
+    // checked as clean.
+    try testing.expectEqual(report.runs, protected.faulted + protected.clean);
+    try testing.expect(protected.clean > 1);
+    try testing.expect(protected.faulted >= 1);
+}
+
+test "lost answers are tried where asked, and a save through a rename survives them" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var save: Save = .{ .dir = tmp.dir, .how = .atomic };
+    const without = try shakedown.everyFault(testing.allocator, testing.io, &save, .{});
+    const with = try shakedown.everyFault(testing.allocator, testing.io, &save, .{ .lost_answers = &.{error.InputOutput} });
+    // The write and the sync can lose their answer with InputOutput.
+    try testing.expectEqual(without.runs + 2, with.runs);
+}

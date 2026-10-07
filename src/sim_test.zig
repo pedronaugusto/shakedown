@@ -344,6 +344,64 @@ test "a fault plan is the simulation's outermost part" {
     try testing.expectEqual(@as(u64, 1), sim.faults().?.count(.sleep));
 }
 
+/// A cancel requested while the task holds its protection blocked lands
+/// at its first cancelation point after: a call the simulation does not
+/// have, which still is one.
+const LateCancel = struct {
+    fn target(io: Io, file: Io.File) !void {
+        const was = io.swapCancelProtection(.blocked);
+        io.sleep(.fromSeconds(1), .awake) catch unreachable; // unreachable: protection is blocked
+        _ = io.swapCancelProtection(was);
+        try file.sync(io);
+    }
+
+    fn main(io: Io) !void {
+        const nothing: Io.File = .{ .handle = Io.File.stdout().handle, .flags = .{ .nonblocking = false } };
+        var task = try io.concurrent(target, .{ io, nothing });
+        try io.sleep(.fromMilliseconds(1), .awake);
+        try testing.expectError(error.Canceled, task.cancel(io));
+    }
+};
+
+test "every call that can be canceled is a cancelation point, those the simulation lacks too" {
+    const sim = try Sim.init(testing.allocator, .{ .async_start = .concurrent });
+    defer sim.deinit();
+    try testing.expectEqual(Sim.Outcome.finished, sim.run(LateCancel.main, .{sim.io()}));
+}
+
+const Rearmed = struct {
+    fn main(io: Io) !void {
+        try testing.expectError(error.Canceled, io.sleep(.fromSeconds(1), .awake));
+        io.recancel();
+        try testing.expectError(error.Canceled, io.checkCancel());
+        try io.checkCancel();
+    }
+};
+
+test "a cancel the fault plan landed is the task's to re-arm" {
+    const sim = try Sim.init(testing.allocator, .{ .faults = &.{.{ .at = .{ .nth = .{ .call = .sleep, .n = 1 } }, .fault = .cancel }} });
+    defer sim.deinit();
+    try testing.expectEqual(Sim.Outcome.finished, sim.run(Rearmed.main, .{sim.io()}));
+    try testing.expectEqual(@as(u64, 1), sim.faults().?.count(.recancel));
+}
+
+test "simulations share one watchdog, which finds each stuck run" {
+    var watchdog: Sim.Watchdog = .init();
+    defer watchdog.deinit();
+    for (0..2) |_| {
+        const sim = try Sim.init(testing.allocator, .{ .watchdog = .fromMilliseconds(50), .watched_by = &watchdog });
+        defer sim.deinit();
+        const thread = watchdog.thread;
+        switch (sim.run(Spinner.spin, .{ sim.io(), sim })) {
+            .stuck => {},
+            else => return error.TestUnexpectedResult,
+        }
+        // One thread watched both; the simulation started none of its own.
+        if (thread) |t| try testing.expectEqual(t.getHandle(), watchdog.thread.?.getHandle());
+        try testing.expect(sim.own_watchdog.thread == null);
+    }
+}
+
 const Pointers = struct {
     order: [16]u64 = undefined,
 

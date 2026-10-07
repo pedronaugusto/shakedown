@@ -11,6 +11,11 @@
 //! sleeps does, and `stepReal` moves only real time, backwards too. The CPU
 //! clocks stay frozen unless `Options.cpu` hands them to the base.
 //!
+//! With `Options.advance = .auto`, time moves by itself instead: each timer
+//! fires as it is armed, the clocks moving to its deadline, and as far past
+//! it as `late` says, as a sleeper that resumes late. That suits code whose
+//! own waits are what move its time, with no test thread to move it.
+//!
 //! The base must keep real time (`std.testing.io`, or a `Threaded` of the
 //! test's own): a waiter blocks on the base until a timer fires or its
 //! wait is woken. A `Clock` must not move once `io` has been called.
@@ -36,6 +41,21 @@ pub const Options = struct {
     /// its timer. A timeout that fires reaches its waiter at most this late;
     /// a wake from the code under test reaches it at once.
     recheck: Io.Duration = .fromMilliseconds(1),
+    /// Who moves time.
+    advance: Advance = .manual,
+
+    pub const Advance = union(enum) {
+        /// The test, with `advance` and its kin; a waiter waits for it.
+        manual,
+        /// The waiters: each timer fires as it is armed.
+        auto: Auto,
+    };
+
+    pub const Auto = struct {
+        /// How far past its deadline each timer fires: the clocks move to
+        /// the deadline and this much further. Zero is on time.
+        late: Io.Duration = .zero,
+    };
 
     pub const Cpu = enum {
         /// `cpu_process` and `cpu_thread` read `monotonic` and never move.
@@ -105,6 +125,10 @@ const State = struct {
 };
 
 pub fn init(base: Io, options: Options) Clock {
+    switch (options.advance) {
+        .manual => {},
+        .auto => |auto| assert(auto.late.nanoseconds >= 0),
+    }
     const monotonic = nanoseconds(options.monotonic.nanoseconds);
     return .{ .layer = .init(base, .{
         .options = options,
@@ -265,8 +289,10 @@ fn batchAwaitConcurrent(userdata: ?*anyopaque, batch: *Io.Batch, timeout: Io.Tim
     defer disarm(l, &timer);
     const slice = recheck(l);
     while (true) {
-        return l.base.vtable.batchAwaitConcurrent(l.base.userdata, batch, slice) catch |err| switch (err) {
-            error.Timeout => if (timer.state.load(.acquire) != 0) error.Timeout else continue,
+        // A timer that has fired gets one last look, which waits for nothing.
+        const fired = timer.state.load(.acquire) != 0;
+        return l.base.vtable.batchAwaitConcurrent(l.base.userdata, batch, if (fired) zero else slice) catch |err| switch (err) {
+            error.Timeout => if (fired or timer.state.load(.acquire) != 0) error.Timeout else continue,
             else => err,
         };
     }
@@ -332,19 +358,28 @@ fn recheck(l: *L) Io.Timeout {
     return .{ .duration = .{ .raw = l.state.options.recheck, .clock = .awake } };
 }
 
-/// Arms `timer` unless its deadline is already reached; returns whether it did.
+/// Arms `timer` unless its deadline is already reached; returns whether it
+/// did. Under `.auto` the clocks then move until it fires.
 fn arm(l: *L, timer: *Timer, deadline: i64) bool {
     const s = &l.state;
     s.mutex.lockUncancelable(l.base);
     defer s.mutex.unlock(l.base);
     const kept = @backingInt(timer.clock);
-    if (deadline <= s.clocks[kept].load(.acquire)) return false;
+    const current = s.clocks[kept].load(.acquire);
+    if (deadline <= current) return false;
     s.seq += 1;
     var entry = s.timers[kept].getEntryFor(.{ .deadline = deadline, .seq = s.seq });
     entry.set(&timer.node);
     _ = s.count.fetchAdd(1, .release);
     _ = s.arming.fetchAdd(1, .release);
     l.base.futexWake(u32, &s.arming.raw, std.math.maxInt(u32));
+    switch (s.options.advance) {
+        .manual => {},
+        .auto => |auto| {
+            const by = (deadline -| current) +| nanoseconds(auto.late.nanoseconds);
+            moveLocked(l, .{ by, by, by });
+        },
+    }
     return true;
 }
 

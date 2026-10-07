@@ -14,6 +14,15 @@
 //! step, fires on whatever call it lands on; if its fault cannot apply to
 //! that call, it does nothing.
 //!
+//! The operations of a `Batch` are calls too: each is counted, stepped,
+//! decided and recorded once, when the first await after its submission
+//! sees it, whichever await completes it.
+//!
+//! A cancel `FaultIo` lands is held for its task, as a base holds its own,
+//! so `recancel` re-arms it for the task's next cancelation point. A task
+//! is the thread it runs on, as on std's `Threaded`, unless the base knows
+//! its tasks, as a `Sim` does.
+//!
 //! `FaultIo` is safe to use from several tasks at once. Decisions and
 //! records are taken under a lock, never across the forwarded call. A
 //! `FaultIo` must not move, which `init` guarantees by allocating it.
@@ -33,7 +42,6 @@ const FaultIo = @This();
 
 pub const IoPlan = Plan(IoCall, IoFault);
 pub const IoTrace = Trace(IoEvent);
-const CallSet = std.EnumSet(IoCall);
 
 /// Private: the allocator everything here comes from.
 gpa: Allocator,
@@ -51,10 +59,14 @@ plan: IoPlan,
 entries: []IoPlan.Entry = &.{},
 counters: []u32 = &.{},
 fired_storage: []IoPlan.Fired = &.{},
-/// Private: the calls that leave the fast path.
-watched: CallSet = .empty,
+/// Private: the calls that leave the fast path, read there without the
+/// lock: what `watched` names, and what a cancel this `FaultIo` holds
+/// needs.
+watching: Watching = .{},
+/// Private: what the plan, the trace, the paths and the seed need watched.
+watched: Calls = .empty,
 /// Private: the calls the plan may fire on.
-planned: CallSet = .empty,
+planned: Calls = .empty,
 /// Private: open handle to the path it was opened by.
 paths: std.AutoHashMapUnmanaged(i64, []const u8) = .empty,
 path_arena: std.heap.ArenaAllocator,
@@ -63,6 +75,24 @@ path_arena: std.heap.ArenaAllocator,
 random: Source,
 /// Private: one shim per child `allocator` was given.
 shims: std.ArrayList(*AllocatorShim) = .empty,
+/// Private: the tasks holding a cancel this `FaultIo` landed, theirs to
+/// re-arm with `recancel`. Under the lock.
+cancels: std.ArrayList(Held) = .empty,
+/// Private: how many of those are re-armed, read without the lock at a
+/// cancelation point.
+rearmed: std.atomic.Value(u32) = .init(0),
+/// Private: the calling task, and whether its cancel protection is
+/// blocked. A simulation sets its own.
+tasks: Tasks = .{},
+/// Private: how many batches have a state, read without the lock.
+batch_count: std.atomic.Value(usize) = .init(0),
+/// Private: what is known of each batch an await has seen, the states no
+/// batch needs and how many states there are, under the lock; and the state
+/// the last lookup found, read without the lock.
+batches: std.AutoHashMapUnmanaged(*Io.Batch, *Batched) = .empty,
+spare_batches: std.ArrayList(*Batched) = .empty,
+batch_states: usize = 0,
+last_batch: std.atomic.Value(?*Batched) = .init(null),
 
 pub const Options = struct {
     plan: []const IoPlan.Entry = &.{},
@@ -118,6 +148,12 @@ pub fn deinit(f: *FaultIo) void {
     gpa.free(f.fired_storage);
     for (f.shims.items) |s| gpa.destroy(s);
     f.shims.deinit(gpa);
+    f.cancels.deinit(gpa);
+    var it = f.batches.valueIterator();
+    while (it.next()) |b| b.*.destroy(gpa);
+    f.batches.deinit(gpa);
+    for (f.spare_batches.items) |b| b.destroy(gpa);
+    f.spare_batches.deinit(gpa);
     gpa.destroy(f);
 }
 
@@ -129,7 +165,7 @@ pub fn io(f: *FaultIo) Io {
 /// Replaces the plan and forgets the old one's matches. Not to be called
 /// while calls are in flight.
 pub fn setPlan(f: *FaultIo, entries: []const IoPlan.Entry) InitError!void {
-    var planned: CallSet = .empty;
+    var planned: Calls = .empty;
     for (entries) |entry| {
         if (entry.fault == .crash) return error.FaultNotApplicable;
         const call = switch (entry.at) {
@@ -169,6 +205,74 @@ pub fn setPlan(f: *FaultIo, entries: []const IoPlan.Entry) InitError!void {
         f.watched.insert(.random);
         f.watched.insert(.randomSecure);
     }
+    f.watch();
+}
+
+/// A set of calls, a bit per call.
+const Calls = struct {
+    words: [word_count]u64 = @splat(0),
+
+    const word_count = (io_call.call_count + 63) / 64;
+
+    const empty: Calls = .{};
+
+    const full: Calls = blk: {
+        var all: Calls = .{};
+        for (0..io_call.call_count) |i| all.words[i / 64] |= @as(u64, 1) << @intCast(i % 64);
+        break :blk all;
+    };
+
+    fn of(comptime names: []const []const u8) Calls {
+        var set: Calls = .{};
+        for (names) |name| set.insert(@field(IoCall, name));
+        return set;
+    }
+
+    fn insert(c: *Calls, call: IoCall) void {
+        const i: usize = @backingInt(call);
+        c.words[i / 64] |= @as(u64, 1) << @intCast(i % 64);
+    }
+
+    fn contains(c: Calls, call: IoCall) bool {
+        const i: usize = @backingInt(call);
+        return c.words[i / 64] & (@as(u64, 1) << @intCast(i % 64)) != 0;
+    }
+
+    fn setUnion(c: *Calls, other: Calls) void {
+        for (&c.words, other.words) |*word, more| word.* |= more;
+    }
+};
+
+/// `Calls` each call reads without the lock: one word load and a bit test.
+const Watching = struct {
+    words: [Calls.word_count]std.atomic.Value(u64) = @splat(.init(0)),
+
+    inline fn contains(w: *const Watching, call: IoCall) bool {
+        const i: usize = @backingInt(call);
+        return w.words[i / 64].load(.monotonic) & (@as(u64, 1) << @intCast(i % 64)) != 0;
+    }
+
+    fn set(w: *Watching, calls: Calls) void {
+        for (&w.words, calls.words) |*word, value| word.store(value, .monotonic);
+    }
+};
+
+/// Every cancelation point: where a re-armed cancel may land.
+const cancelation_points: Calls = blk: {
+    @setEvalBranchQuota(10_000);
+    var set: Calls = .empty;
+    for (std.enums.values(IoCall)) |call| if (io_call.cancelable(call)) set.insert(call);
+    break :blk set;
+};
+
+/// Sets what leaves the fast path: `watched`, `recancel` while a task holds
+/// a cancel landed here, and every cancelation point while one is re-armed.
+/// Under the lock, or with no call in flight.
+fn watch(f: *FaultIo) void {
+    var calls = f.watched;
+    if (f.cancels.items.len > 0) calls.insert(.recancel);
+    if (f.rearmed.load(.monotonic) > 0) calls.setUnion(cancelation_points);
+    f.watching.set(calls);
 }
 
 /// How many times `call` was made.
@@ -186,7 +290,10 @@ pub fn steps(f: *FaultIo) *Steps {
     return &f.steps_;
 }
 
-/// The faults the plan injected, in order, with the step of each.
+/// The plan's entries that fired, in order, with the step of each. A fault
+/// that could not apply where it fired (a step entry on a call it does not
+/// fit, a cancel under blocked protection) is listed and did nothing: the
+/// trace records what each call was given.
 pub fn fired(f: *const FaultIo) []const IoPlan.Fired {
     return f.plan.fired();
 }
@@ -302,16 +409,15 @@ fn shimAlloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr
     const s = shimOf(ptr);
     const f = s.fio;
     _ = f.counts[@backingInt(IoCall.alloc)].fetchAdd(1, .monotonic);
-    if (!f.watched.contains(.alloc)) {
+    if (!f.watching.contains(.alloc)) {
         _ = f.steps_.take();
         return s.child.rawAlloc(len, alignment, ret_addr);
     }
     const d = f.decide(.alloc, .{});
-    if (d.fault) |fault| if (fault == .fail) {
-        f.record(d.step, .{ .call = .alloc, .outcome = .{ .err = error.OutOfMemory }, .fault = .fail });
+    if (refused(f.preludeAnywhere(d.fault))) {
+        f.record(d.step, .{ .call = .alloc, .outcome = .{ .err = error.OutOfMemory }, .fault = d.fault.? });
         return null;
-    };
-    f.beforeAnywhere(d.fault);
+    }
     const result = s.child.rawAlloc(len, alignment, ret_addr);
     f.record(d.step, .{
         .call = .alloc,
@@ -325,16 +431,15 @@ fn shimResize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_l
     const s = shimOf(ptr);
     const f = s.fio;
     _ = f.counts[@backingInt(IoCall.resize)].fetchAdd(1, .monotonic);
-    if (!f.watched.contains(.resize)) {
+    if (!f.watching.contains(.resize)) {
         _ = f.steps_.take();
         return s.child.rawResize(memory, alignment, new_len, ret_addr);
     }
     const d = f.decide(.resize, .{});
-    if (d.fault) |fault| if (fault == .fail) {
-        f.record(d.step, .{ .call = .resize, .outcome = .{ .err = error.OutOfMemory }, .fault = .fail });
+    if (refused(f.preludeAnywhere(d.fault))) {
+        f.record(d.step, .{ .call = .resize, .outcome = .{ .err = error.OutOfMemory }, .fault = d.fault.? });
         return false;
-    };
-    f.beforeAnywhere(d.fault);
+    }
     const ok = s.child.rawResize(memory, alignment, new_len, ret_addr);
     f.record(d.step, .{
         .call = .resize,
@@ -348,16 +453,15 @@ fn shimRemap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_le
     const s = shimOf(ptr);
     const f = s.fio;
     _ = f.counts[@backingInt(IoCall.remap)].fetchAdd(1, .monotonic);
-    if (!f.watched.contains(.remap)) {
+    if (!f.watching.contains(.remap)) {
         _ = f.steps_.take();
         return s.child.rawRemap(memory, alignment, new_len, ret_addr);
     }
     const d = f.decide(.remap, .{});
-    if (d.fault) |fault| if (fault == .fail) {
-        f.record(d.step, .{ .call = .remap, .outcome = .{ .err = error.OutOfMemory }, .fault = .fail });
+    if (refused(f.preludeAnywhere(d.fault))) {
+        f.record(d.step, .{ .call = .remap, .outcome = .{ .err = error.OutOfMemory }, .fault = d.fault.? });
         return null;
-    };
-    f.beforeAnywhere(d.fault);
+    }
     const result = s.child.rawRemap(memory, alignment, new_len, ret_addr);
     f.record(d.step, .{
         .call = .remap,
@@ -365,6 +469,13 @@ fn shimRemap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_le
         .fault = if (d.fault) |x| x else null,
     });
     return result;
+}
+
+/// Whether what is left of an allocation's fault refuses it: the one
+/// fault an allocation can be given besides a delay or a callback.
+fn refused(fault: ?IoFault) bool {
+    const x = fault orelse return false;
+    return x == .fail;
 }
 
 fn shimFree(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
@@ -399,25 +510,33 @@ fn decideLocked(f: *FaultIo, call: IoCall, subject: IoEvent.Subject) Decision {
     return .{ .step = step, .fault = fault };
 }
 
-/// What a fault does before the call is made: a delay or a callback.
-/// Returns `error.Canceled` when a delay is canceled at a cancelation
-/// point; elsewhere the cancel is put back for the next one.
-fn before(f: *FaultIo, fault: ?IoFault, cancelation_point: bool) Io.Cancelable!void {
-    const x = fault orelse return;
-    switch (x) {
-        .delay => |d| f.base.vtable.sleep(f.base.userdata, .{ .duration = .{ .raw = d, .clock = .awake } }) catch |err| {
-            if (cancelation_point) return err;
-            f.base.vtable.recancel(f.base.userdata);
+/// What a fault does before the call: a callback, then what it leads to,
+/// or a delay. Returns what is left to do to the call itself, or null to
+/// make it. A delay canceled at a cancelation point returns
+/// `error.Canceled`; elsewhere the cancel is put back for the next one.
+fn prelude(f: *FaultIo, fault: ?IoFault, cancelation_point: bool) Io.Cancelable!?IoFault {
+    var next = fault;
+    while (next) |x| switch (x) {
+        .call => |c| {
+            c.f(f.base, c.ctx);
+            next = if (c.then) |then| then.* else null;
         },
-        .call => |c| c.f(f.base, c.ctx),
-        .fail, .short, .cancel, .crash => {},
-    }
+        .delay => |d| {
+            f.base.vtable.sleep(f.base.userdata, .{ .duration = .{ .raw = d, .clock = .awake } }) catch |err| {
+                if (cancelation_point) return err;
+                f.base.vtable.recancel(f.base.userdata);
+            };
+            return null;
+        },
+        .fail, .fail_after, .short, .cancel, .spurious_wake, .stall, .crash => return x,
+    };
+    return null;
 }
 
-/// `before` for a call that is no cancelation point: a canceled delay puts
+/// `prelude` for a call that is no cancelation point: a canceled delay puts
 /// the cancel back for the next one, so nothing is returned.
-fn beforeAnywhere(f: *FaultIo, fault: ?IoFault) void {
-    f.before(fault, false) catch unreachable; // unreachable: off a cancelation point, before puts the cancel back
+fn preludeAnywhere(f: *FaultIo, fault: ?IoFault) ?IoFault {
+    return f.prelude(fault, false) catch unreachable; // unreachable: off a cancelation point, prelude puts the cancel back
 }
 
 fn record(f: *FaultIo, step: u64, event: IoEvent) void {
@@ -492,48 +611,73 @@ fn forward(f: *FaultIo, comptime name: []const u8, args: anytype) Return(name) {
 fn intercept(comptime name: []const u8, userdata: ?*anyopaque, args: anytype) Return(name) {
     const f = of(userdata);
     if (comptime std.mem.eql(u8, name, "operate")) return f.operate(args[0]);
+    if (comptime std.mem.eql(u8, name, "batchAwaitAsync")) return f.batchAwait(false, args[0], .none);
+    if (comptime std.mem.eql(u8, name, "batchAwaitConcurrent")) return f.batchAwait(true, args[0], args[1]);
+    if (comptime std.mem.eql(u8, name, "batchCancel")) return f.batchCancel(args[0]);
     const call = comptime @field(IoCall, name);
     _ = f.counts[@backingInt(call)].fetchAdd(1, .monotonic);
-    if (!f.watched.contains(call)) {
+    if (!f.watching.contains(call)) {
         _ = f.steps_.take();
         return f.forward(name, args);
     }
     return f.slow(name, args);
 }
 
-fn slow(f: *FaultIo, comptime name: []const u8, args: anytype) Return(name) {
+noinline fn slow(f: *FaultIo, comptime name: []const u8, args: anytype) Return(name) {
     const call = comptime @field(IoCall, name);
     const R = Return(name);
+    const cancelation_point = comptime io_call.cancelable(call);
     var path_buffer: [path_capacity]u8 = undefined;
     // One lock for the subject's path and the decision.
     f.lock();
     const subject = f.subjectOf(name, args, &path_buffer);
     const d = f.decideLocked(call, subject);
+    // Seeded randomness given no fault: drawn under the same lock.
+    if (comptime std.mem.eql(u8, name, "random")) if (d.fault == null and f.options.random_seed != null) {
+        f.fillRandomLocked(args[0]);
+        f.unlock();
+        f.record(d.step, .{ .call = call, .subject = subject });
+        return;
+    };
     f.unlock();
     var event: IoEvent = .{ .call = call, .subject = subject, .fault = if (d.fault) |x| x else null };
-    if (d.fault) |fault| switch (fault) {
-        .fail => |err| if (comptime io_call.failSet(call)) |E| {
-            event.outcome = .{ .err = err };
-            f.record(d.step, event);
-            return failAs(R, E, err);
+    const fault = f.prelude(d.fault, cancelation_point) catch |err| return f.failed(name, d.step, &event, err);
+    // What replaces the call.
+    if (fault) |x| switch (x) {
+        .fail => |err| return f.failed(name, d.step, &event, err),
+        .cancel => if (cancelation_point) {
+            if (f.land()) return f.failed(name, d.step, &event, error.Canceled);
+            if (d.fault.? == .cancel) event.fault = null;
         },
-        .cancel => if (comptime io_call.failSet(call)) |E| {
-            event.outcome = .{ .err = error.Canceled };
+        .stall => if (cancelation_point) return f.failed(name, d.step, &event, f.stall()),
+        .spurious_wake => if (comptime call == .futexWait or call == .futexWaitUncancelable) {
             f.record(d.step, event);
-            return failAs(R, E, error.Canceled);
+            return;
         },
+        .fail_after, .short, .delay, .call, .crash => {},
+    };
+    // A cancel re-armed for this task lands where the base would deliver it.
+    if (cancelation_point and f.rearmedLands()) return f.failed(name, d.step, &event, error.Canceled);
+    if (comptime call == .recancel) if (f.rearm()) {
+        f.record(d.step, event);
+        return;
+    };
+    // What changes the call.
+    if (fault) |x| switch (x) {
         .short => |n| if (comptime cutsSlot(name)) {
             const result = f.cutSlot(name, args, n);
             event.outcome = outcomeOf(R, result);
             f.record(d.step, event);
             return result;
         },
-        .delay, .call, .crash => {},
-    };
-    f.before(d.fault, comptime io_call.cancelable(call)) catch |err| if (comptime io_call.failSet(call)) |E| {
-        event.outcome = .{ .err = err };
-        f.record(d.step, event);
-        return failAs(R, E, err);
+        .fail_after => |err| if (comptime io_call.failSet(call) != null) {
+            const result = f.forward(name, args);
+            if (succeeded(R, result)) return f.failed(name, d.step, &event, err);
+            event.outcome = outcomeOf(R, result);
+            f.record(d.step, event);
+            return result;
+        },
+        .fail, .cancel, .stall, .spurious_wake, .delay, .call, .crash => {},
     };
     if (comptime closes(name)) f.forget(name, args);
     if (comptime std.mem.eql(u8, name, "random") or std.mem.eql(u8, name, "randomSecure")) {
@@ -550,10 +694,30 @@ fn slow(f: *FaultIo, comptime name: []const u8, args: anytype) Return(name) {
     return result;
 }
 
+/// Records `err` as the outcome of slot `name` and returns it as the slot's
+/// return type gives it.
+fn failed(f: *FaultIo, comptime name: []const u8, step: u64, event: *IoEvent, err: anyerror) Return(name) {
+    event.outcome = .{ .err = err };
+    f.record(step, event.*);
+    if (comptime io_call.failSet(@field(IoCall, name))) |E| return failAs(Return(name), E, err);
+    unreachable; // unreachable: only a call that can fail is failed, as setPlan and decide check
+}
+
+fn succeeded(comptime R: type, result: R) bool {
+    return switch (@typeInfo(R)) {
+        .error_union => if (result) |_| true else |_| false,
+        else => true,
+    };
+}
+
 /// `buffer` from the seeded source, eight bytes a draw.
 fn fillRandom(f: *FaultIo, buffer: []u8) void {
     f.lock();
     defer f.unlock();
+    f.fillRandomLocked(buffer);
+}
+
+fn fillRandomLocked(f: *FaultIo, buffer: []u8) void {
     var rest = buffer;
     while (rest.len > 0) {
         const word: [8]u8 = @bitCast(std.mem.nativeToLittle(u64, f.random.below(std.math.maxInt(u64))));
@@ -597,7 +761,7 @@ fn operate(f: *FaultIo, operation: Io.Operation) Io.Cancelable!Io.Operation.Resu
         inline else => |op, tag| {
             const call = comptime @field(IoCall, @tagName(tag));
             _ = f.counts[@backingInt(call)].fetchAdd(1, .monotonic);
-            if (!f.watched.contains(call)) {
+            if (!f.watching.contains(call)) {
                 _ = f.steps_.take();
                 return f.base.vtable.operate(f.base.userdata, operation);
             }
@@ -606,20 +770,20 @@ fn operate(f: *FaultIo, operation: Io.Operation) Io.Cancelable!Io.Operation.Resu
     }
 }
 
-fn operateSlow(f: *FaultIo, comptime tag: Io.Operation.Tag, op: @FieldType(Io.Operation, @tagName(tag))) Io.Cancelable!Io.Operation.Result {
+noinline fn operateSlow(f: *FaultIo, comptime tag: Io.Operation.Tag, op: @FieldType(Io.Operation, @tagName(tag))) Io.Cancelable!Io.Operation.Result {
     const call = comptime @field(IoCall, @tagName(tag));
     const op_type = @FieldType(Io.Operation, @tagName(tag));
     var event: IoEvent = .{ .call = call, .subject = .{ .handle = operationHandle(op_type, op) } };
     f.lock();
-    if (event.subject.handle != -1) event.subject.path = f.paths.get(event.subject.handle);
+    event.subject.path = f.pathOf(event.subject.handle);
     const d = f.decideLocked(call, event.subject);
     f.unlock();
     if (d.fault) |x| event.fault = x;
-    if (d.fault) |fault| switch (fault) {
+    const fault = f.prelude(d.fault, true) catch |err| return f.operationFailed(d.step, &event, err);
+    if (fault) |x| switch (x) {
         .cancel => {
-            event.outcome = .{ .err = error.Canceled };
-            f.record(d.step, event);
-            return error.Canceled;
+            if (f.land()) return f.operationFailed(d.step, &event, error.Canceled);
+            if (d.fault.? == .cancel) event.fault = null;
         },
         .fail => |err| {
             event.outcome = .{ .err = err };
@@ -627,27 +791,43 @@ fn operateSlow(f: *FaultIo, comptime tag: Io.Operation.Tag, op: @FieldType(Io.Op
             if (err == error.Canceled) return error.Canceled;
             return failedOperation(tag, err);
         },
+        .stall => return f.operationFailed(d.step, &event, f.stall()),
+        .fail_after, .short, .spurious_wake, .delay, .call, .crash => {},
+    };
+    if (f.rearmedLands()) return f.operationFailed(d.step, &event, error.Canceled);
+    if (fault) |x| switch (x) {
         .short => |n| if (comptime shortOperation(tag)) {
-            const result = try f.shortOperate(tag, op, n);
+            const result = f.shortOperate(tag, op, n) catch |err| return f.operationFailed(d.step, &event, err);
             event.outcome = operationOutcome(tag, result);
             f.record(d.step, event);
             return result;
         },
-        .delay, .call, .crash => {},
-    };
-    f.before(d.fault, true) catch |err| {
-        event.outcome = .{ .err = err };
-        f.record(d.step, event);
-        return err;
+        .fail_after => |err| {
+            const result = f.base.vtable.operate(f.base.userdata, @unionInit(Io.Operation, @tagName(tag), op)) catch |e| return f.operationFailed(d.step, &event, e);
+            event.outcome = operationOutcome(tag, result);
+            if (event.outcome == .ok) {
+                event.outcome = .{ .err = err };
+                f.record(d.step, event);
+                return failedOperation(tag, err);
+            }
+            f.record(d.step, event);
+            return result;
+        },
+        .fail, .cancel, .stall, .spurious_wake, .delay, .call, .crash => {},
     };
     const result = f.base.vtable.operate(f.base.userdata, @unionInit(Io.Operation, @tagName(tag), op)) catch |err| {
-        event.outcome = .{ .err = err };
-        f.record(d.step, event);
-        return err;
+        return f.operationFailed(d.step, &event, err);
     };
     event.outcome = operationOutcome(tag, result);
     f.record(d.step, event);
     return result;
+}
+
+/// An operation that did not happen: `operate`'s own `error.Canceled`.
+fn operationFailed(f: *FaultIo, step: u64, event: *IoEvent, err: Io.Cancelable) Io.Cancelable {
+    event.outcome = .{ .err = err };
+    f.record(step, event.*);
+    return err;
 }
 
 fn operationHandle(comptime Op: type, op: Op) i64 {
@@ -696,6 +876,516 @@ fn operationOutcome(comptime tag: Io.Operation.Tag, result: Io.Operation.Result)
     }
 }
 
+// Cancels.
+
+/// A task holding a cancel this `FaultIo` landed, and whether `recancel`
+/// re-armed it.
+const Held = struct { task: u64, rearmed: bool = false };
+
+/// How a `FaultIo` sees the calling task.
+const Tasks = struct {
+    /// Which task is calling: its thread, by default.
+    id: *const fn (base: Io) u64 = threadOf,
+    /// Whether the calling task's cancel protection is blocked: asked of
+    /// the base, by default, and put back as it was.
+    blocked: *const fn (base: Io) bool = askBase,
+};
+
+fn threadOf(_: Io) u64 {
+    return std.Thread.getCurrentId();
+}
+
+fn askBase(base: Io) bool {
+    const was = base.vtable.swapCancelProtection(base.userdata, .blocked);
+    _ = base.vtable.swapCancelProtection(base.userdata, was);
+    return was == .blocked;
+}
+
+/// Lands a planned cancel on the calling task, unless its protection is
+/// blocked, and holds it for `recancel`. Returns whether it landed.
+fn land(f: *FaultIo) bool {
+    if (f.tasks.blocked(f.base)) return false;
+    const task = f.tasks.id(f.base);
+    f.lock();
+    defer f.unlock();
+    for (f.cancels.items) |*h| if (h.task == task) {
+        if (h.rearmed) {
+            h.rearmed = false;
+            if (f.rearmed.fetchSub(1, .monotonic) == 1) f.watch();
+        }
+        return true;
+    };
+    // A cancel that could not be held could not be re-armed: it does not land.
+    f.cancels.append(f.gpa, .{ .task = task }) catch return false;
+    if (f.cancels.items.len == 1) f.watch();
+    return true;
+}
+
+/// At `recancel`: re-arms the cancel the calling task holds from this
+/// `FaultIo`. Returns false when it holds none, and the base's is the one
+/// to re-arm.
+fn rearm(f: *FaultIo) bool {
+    const task = f.tasks.id(f.base);
+    f.lock();
+    defer f.unlock();
+    for (f.cancels.items) |*h| if (h.task == task and !h.rearmed) {
+        h.rearmed = true;
+        if (f.rearmed.fetchAdd(1, .monotonic) == 0) f.watch();
+        return true;
+    };
+    return false;
+}
+
+/// At a cancelation point: whether the calling task's re-armed cancel
+/// lands here, unless its protection is blocked.
+fn rearmedLands(f: *FaultIo) bool {
+    if (f.rearmed.load(.monotonic) == 0) return false;
+    const task = f.tasks.id(f.base);
+    const index = index: {
+        f.lock();
+        defer f.unlock();
+        for (f.cancels.items, 0..) |h, i| if (h.task == task and h.rearmed) break :index i;
+        return false;
+    };
+    if (f.tasks.blocked(f.base)) return false;
+    // Only the task itself changes its entry, and entries are never
+    // removed, so its index still holds it.
+    f.lock();
+    defer f.unlock();
+    f.cancels.items[index].rearmed = false;
+    if (f.rearmed.fetchSub(1, .monotonic) == 1) f.watch();
+    return true;
+}
+
+/// A stalled call's wait: on the base, until a cancel ends it.
+fn stall(f: *FaultIo) Io.Cancelable {
+    if (f.rearmedLands()) return error.Canceled;
+    const never: u32 = 0;
+    while (true) f.base.vtable.futexWait(f.base.userdata, &never, 0, .none) catch return error.Canceled;
+}
+
+// Batches.
+
+/// How many batches keep their state once canceled, so that one made again
+/// at the same place finds its own.
+const kept_batches = 16;
+
+/// What `FaultIo` knows of one batch: per operation, by its index in the
+/// batch's storage, whether an await decided it and what is left to do to
+/// it.
+///
+/// Only the task using a batch reads or changes its state, as only one
+/// task uses a batch at a time. A state is never freed before the
+/// `FaultIo`: one its batch no longer needs is kept for another, so a task
+/// that finds it through `last` may read which batch it is for at any time.
+const Batched = struct {
+    /// The batch it is for, null while it is spare. Set under the lock.
+    batch: std.atomic.Value(?*Io.Batch) = .init(null),
+    storage: []Io.Operation.Storage,
+    ops: []Op,
+    /// A short operation's cut buffers, alive until it completes: made the
+    /// first time an index is cut, and kept with the state.
+    cuts: []?*Buffers,
+    /// Bumped by every await; an operation decided by this one carries it.
+    round: u64 = 0,
+
+    const Op = struct {
+        decided: bool = false,
+        /// Kept from the base until the batch is canceled.
+        stalled: bool = false,
+        /// A lost answer, given when the operation completes.
+        after: ?anyerror = null,
+        /// The await that decided it, its step, its path and what the plan
+        /// gave it.
+        round: u64 = 0,
+        step: u64 = 0,
+        path: ?[]const u8 = null,
+        fault: ?IoFault = null,
+    };
+
+    const Buffers = union { reads: [max_vectors][]u8, writes: [max_vectors][]const u8 };
+
+    fn fits(state: *const Batched, b: *Io.Batch) bool {
+        return state.storage.ptr == b.storage.ptr and state.ops.len == b.storage.len;
+    }
+
+    /// Takes the state for `b`, every operation undecided.
+    fn adopt(state: *Batched, b: *Io.Batch) void {
+        state.storage = b.storage;
+        @memset(state.ops, .{});
+        state.batch.store(b, .release);
+    }
+
+    fn destroy(state: *Batched, gpa: Allocator) void {
+        for (state.cuts) |cut| if (cut) |buffers| gpa.destroy(buffers);
+        gpa.free(state.cuts);
+        gpa.free(state.ops);
+        gpa.destroy(state);
+    }
+};
+
+/// The state of `b`, made on its first await when `make` says so; null
+/// when it cannot be had, and the batch's operations then reach the base
+/// undecided. The state the last lookup found is had without the lock.
+fn batchOf(f: *FaultIo, b: *Io.Batch, make: bool) ?*Batched {
+    if (f.last_batch.load(.acquire)) |last| {
+        // `last` may be another task's batch's, or spare; it is this
+        // batch's only if it says so, and then only this task changes it.
+        if (last.batch.load(.acquire) == b and last.fits(b)) return last;
+    }
+    f.lock();
+    defer f.unlock();
+    const state = if (make) f.batchEntry(b) orelse return null else f.batches.get(b) orelse return null;
+    f.last_batch.store(state, .release);
+    return state;
+}
+
+/// Under the lock.
+fn batchEntry(f: *FaultIo, b: *Io.Batch) ?*Batched {
+    const entry = f.batches.getOrPut(f.gpa, b) catch return null;
+    if (entry.found_existing) {
+        const state = entry.value_ptr.*;
+        if (state.fits(b)) return state;
+        // Another batch where one that was never canceled was.
+        f.retire(state);
+        const replacement = f.spareFor(b) orelse {
+            f.batches.removeByPtr(entry.key_ptr);
+            f.batch_count.store(f.batches.count(), .monotonic);
+            return null;
+        };
+        replacement.adopt(b);
+        entry.value_ptr.* = replacement;
+        return replacement;
+    }
+    const state = f.spareFor(b) orelse {
+        f.batches.removeByPtr(entry.key_ptr);
+        return null;
+    };
+    state.adopt(b);
+    entry.value_ptr.* = state;
+    f.batch_count.store(f.batches.count(), .monotonic);
+    return state;
+}
+
+/// A spare state that fits `b`, or a new one. Under the lock.
+fn spareFor(f: *FaultIo, b: *Io.Batch) ?*Batched {
+    for (f.spare_batches.items, 0..) |spare, i| {
+        if (spare.ops.len == b.storage.len) return f.spare_batches.swapRemove(i);
+    }
+    // A state cannot be freed while the `FaultIo` lives, so there is room
+    // for every one among the spares before it is made.
+    f.spare_batches.ensureTotalCapacity(f.gpa, f.batch_states + 1) catch return null;
+    const state = f.gpa.create(Batched) catch return null;
+    const ops = f.gpa.alloc(Batched.Op, b.storage.len) catch {
+        f.gpa.destroy(state);
+        return null;
+    };
+    const cuts = f.gpa.alloc(?*Batched.Buffers, b.storage.len) catch {
+        f.gpa.free(ops);
+        f.gpa.destroy(state);
+        return null;
+    };
+    @memset(cuts, null);
+    state.* = .{ .storage = b.storage, .ops = ops, .cuts = cuts };
+    f.batch_states += 1;
+    return state;
+}
+
+/// Puts a state no batch needs among the spares. Under the lock.
+fn retire(f: *FaultIo, state: *Batched) void {
+    state.batch.store(null, .release);
+    if (f.last_batch.load(.monotonic) == state) f.last_batch.store(null, .release);
+    // Room was made for every state when it was made.
+    f.spare_batches.appendAssumeCapacity(state);
+}
+
+fn AwaitError(comptime concurrent: bool) type {
+    return if (concurrent) Io.Batch.AwaitConcurrentError else Io.Cancelable;
+}
+
+/// An await: each operation the batch holds that no await has seen is a
+/// call, decided in submission order; then the await, itself a call,
+/// waits on the base for what the base may complete.
+fn batchAwait(f: *FaultIo, comptime concurrent: bool, b: *Io.Batch, timeout: Io.Timeout) AwaitError(concurrent)!void {
+    const call: IoCall = if (concurrent) .batchAwaitConcurrent else .batchAwaitAsync;
+    _ = f.counts[@backingInt(call)].fetchAdd(1, .monotonic);
+    const state = f.batchOf(b, true);
+    const work = if (state) |s| f.takeOperations(b, s) else false;
+    const d: Decision = if (f.watching.contains(call)) f.decide(call, .{}) else .{ .step = f.steps_.take(), .fault = null };
+    var lands = if (work) f.applyOperations(b, state.?) else false;
+    var event: IoEvent = .{ .call = call, .fault = if (d.fault) |x| x else null };
+    const fault = f.prelude(d.fault, true) catch |err| return f.awaitFailed(concurrent, d.step, &event, err);
+    if (fault) |x| switch (x) {
+        .fail => |err| return f.awaitFailed(concurrent, d.step, &event, err),
+        .cancel => lands = true,
+        .stall => return f.awaitFailed(concurrent, d.step, &event, f.stall()),
+        .fail_after, .short, .spurious_wake, .delay, .call, .crash => {},
+    };
+    if (lands) {
+        if (f.land()) return f.awaitFailed(concurrent, d.step, &event, error.Canceled);
+        if (d.fault != null and d.fault.? == .cancel) event.fault = null;
+    }
+    if (f.rearmedLands()) return f.awaitFailed(concurrent, d.step, &event, error.Canceled);
+    const result = f.awaitBase(concurrent, b, state, timeout);
+    if (state) |s| finished(b, s);
+    event.outcome = if (result) |_| .{ .ok = 0 } else |err| .{ .err = err };
+    f.record(d.step, event);
+    return result;
+}
+
+fn awaitFailed(f: *FaultIo, comptime concurrent: bool, step: u64, event: *IoEvent, err: anyerror) AwaitError(concurrent) {
+    event.outcome = .{ .err = err };
+    f.record(step, event.*);
+    const E = AwaitError(concurrent);
+    return failAs(E, E, err);
+}
+
+/// Counts, steps and decides each submitted operation no await has
+/// decided, as if it were operated alone. Returns whether any of them
+/// needs `applyOperations`: a fault, or a record to make.
+fn takeOperations(f: *FaultIo, b: *Io.Batch, state: *Batched) bool {
+    state.round += 1;
+    var work = false;
+    var index = b.submitted.head;
+    while (index != .none) {
+        const i = index.toIndex();
+        const submission = &b.storage[i].submission;
+        index = submission.node.next;
+        const op = &state.ops[i];
+        if (op.decided) continue;
+        switch (submission.operation) {
+            inline else => |o, tag| {
+                const call = comptime @field(IoCall, @tagName(tag));
+                _ = f.counts[@backingInt(call)].fetchAdd(1, .monotonic);
+                op.* = .{ .decided = true, .round = state.round };
+                if (f.watching.contains(call)) {
+                    const handle = operationHandle(@TypeOf(o), o);
+                    f.lock();
+                    defer f.unlock();
+                    op.path = f.pathOf(handle);
+                    const d = f.decideLocked(call, .{ .handle = handle, .path = op.path });
+                    op.step = d.step;
+                    op.fault = d.fault;
+                    work = true;
+                } else op.step = f.steps_.take();
+            },
+        }
+    }
+    return work;
+}
+
+/// What this await's decisions do to its operations, and their records. A
+/// failure or a short read of nothing completes an operation here;
+/// anything else leaves it for the base, or keeps it from the base.
+/// Returns whether one asked for a cancel, which lands on the await, since
+/// a batched operation has no `Canceled` of its own.
+fn applyOperations(f: *FaultIo, b: *Io.Batch, state: *Batched) bool {
+    var lands = false;
+    var previous: Io.Operation.OptionalIndex = .none;
+    var index = b.submitted.head;
+    while (index != .none) {
+        const i = index.toIndex();
+        const next = b.storage[i].submission.node.next;
+        const op = &state.ops[i];
+        if (op.round != state.round) {
+            previous = index;
+            index = next;
+            continue;
+        }
+        switch (f.applyOperation(&b.storage[i], op, &state.cuts[i])) {
+            .submitted => previous = index,
+            .cancel => {
+                lands = true;
+                previous = index;
+            },
+            .completed => |result| {
+                unlinkSubmitted(b, previous, index);
+                appendCompleted(b, index, result);
+            },
+        }
+        index = next;
+    }
+    return lands;
+}
+
+const Applied = union(enum) { submitted, cancel, completed: Io.Operation.Result };
+
+fn applyOperation(f: *FaultIo, storage: *Io.Operation.Storage, op: *Batched.Op, cut: *?*Batched.Buffers) Applied {
+    switch (storage.submission.operation) {
+        inline else => |o, tag| {
+            const call = comptime @field(IoCall, @tagName(tag));
+            var event: IoEvent = .{
+                .call = call,
+                .subject = .{ .handle = operationHandle(@TypeOf(o), o), .path = op.path },
+                .fault = if (op.fault) |x| x else null,
+            };
+            defer f.record(op.step, event);
+            const fault = f.preludeAnywhere(op.fault) orelse return .submitted;
+            switch (fault) {
+                .cancel => return .cancel,
+                .fail => |err| {
+                    if (err == error.Canceled) return .cancel;
+                    event.outcome = .{ .err = err };
+                    return .{ .completed = failedOperation(tag, err) };
+                },
+                .fail_after => |err| op.after = err,
+                .stall => op.stalled = true,
+                .short => |n| if (comptime shortOperation(tag)) {
+                    if (n == 0) return .{ .completed = noProgress(tag) };
+                    const buffers = cut.* orelse made: {
+                        // A cut that cannot be held is not made: the
+                        // operation moves what it would have.
+                        const made = f.gpa.create(Batched.Buffers) catch return .submitted;
+                        cut.* = made;
+                        break :made made;
+                    };
+                    storage.submission.operation = cutOperation(tag, o, n, buffers);
+                },
+                .spurious_wake, .delay, .call, .crash => {},
+            }
+            return .submitted;
+        },
+    }
+}
+
+/// The wait itself. Stalled operations are kept from the base and put
+/// back after; an await with nothing the base could complete waits out its
+/// timeout, or until canceled, as an await on silent operations does.
+fn awaitBase(f: *FaultIo, comptime concurrent: bool, b: *Io.Batch, state: ?*Batched, timeout: Io.Timeout) AwaitError(concurrent)!void {
+    var kept: Io.Operation.List = .empty;
+    if (state) |s| keepStalled(b, s, &kept);
+    defer putBack(b, &kept);
+    const completed = b.completed.head != .none;
+    if (b.submitted.head == .none and kept.head != .none) {
+        if (completed) return;
+        if (!concurrent or timeout == .none) return f.stall();
+        try f.base.vtable.sleep(f.base.userdata, timeout);
+        return error.Timeout;
+    }
+    if (!concurrent) {
+        // What a fault completed is enough; the rest waits for the next
+        // await.
+        if (completed) return;
+        return f.base.vtable.batchAwaitAsync(f.base.userdata, b);
+    }
+    if (completed) {
+        f.base.vtable.batchAwaitConcurrent(f.base.userdata, b, .{ .duration = .{ .raw = .zero, .clock = .awake } }) catch |err| switch (err) {
+            error.Timeout => {},
+            else => return err,
+        };
+        return;
+    }
+    return f.base.vtable.batchAwaitConcurrent(f.base.userdata, b, timeout);
+}
+
+/// The completions, each given what its decision left for it, and
+/// forgotten as decided: its index may be submitted again.
+fn finished(b: *Io.Batch, state: *Batched) void {
+    var index = b.completed.head;
+    while (index != .none) {
+        const i = index.toIndex();
+        const completion = &b.storage[i].completion;
+        const op = &state.ops[i];
+        if (op.decided) {
+            if (op.after) |err| completion.result = lostAnswer(completion.result, err);
+            op.* = .{};
+        }
+        index = completion.node.next;
+    }
+}
+
+/// Forgets what was decided of the operations a cancel called off.
+fn forgetUnused(b: *Io.Batch, state: *Batched) void {
+    var index = b.unused.head;
+    while (index != .none) {
+        const i = index.toIndex();
+        state.ops[i] = .{};
+        index = b.storage[i].unused.next;
+    }
+}
+
+/// A batch's cancel, a call of its own; then the lost answers of what
+/// completed meanwhile.
+fn batchCancel(f: *FaultIo, b: *Io.Batch) void {
+    _ = f.counts[@backingInt(IoCall.batchCancel)].fetchAdd(1, .monotonic);
+    if (!f.watching.contains(.batchCancel)) {
+        _ = f.steps_.take();
+        f.base.vtable.batchCancel(f.base.userdata, b);
+    } else {
+        const d = f.decide(.batchCancel, .{});
+        _ = f.preludeAnywhere(d.fault);
+        f.base.vtable.batchCancel(f.base.userdata, b);
+        f.record(d.step, .{ .call = .batchCancel, .fault = if (d.fault) |x| x else null });
+    }
+    // What completed while it was called off may owe a lost answer, and
+    // what it called off is forgotten: its index may be submitted again.
+    if (f.batch_count.load(.monotonic) == 0) return;
+    const state = f.batchOf(b, false) orelse return;
+    finished(b, state);
+    forgetUnused(b, state);
+    // Past the states kept, the batch's goes now: it may be gone for good.
+    if (f.batch_count.load(.monotonic) <= kept_batches) return;
+    f.lock();
+    defer f.unlock();
+    if (f.batches.fetchRemove(b)) |entry| f.retire(entry.value);
+    f.batch_count.store(f.batches.count(), .monotonic);
+}
+
+fn lostAnswer(result: Io.Operation.Result, err: anyerror) Io.Operation.Result {
+    switch (result) {
+        inline else => |_, tag| {
+            if (operationOutcome(tag, result) == .ok) return failedOperation(tag, err);
+            return result;
+        },
+    }
+}
+
+fn unlinkSubmitted(b: *Io.Batch, previous: Io.Operation.OptionalIndex, index: Io.Operation.OptionalIndex) void {
+    const next = b.storage[index.toIndex()].submission.node.next;
+    switch (previous) {
+        .none => b.submitted.head = next,
+        else => b.storage[previous.toIndex()].submission.node.next = next,
+    }
+    if (b.submitted.tail == index) b.submitted.tail = previous;
+}
+
+fn appendCompleted(b: *Io.Batch, index: Io.Operation.OptionalIndex, result: Io.Operation.Result) void {
+    switch (b.completed.tail) {
+        .none => b.completed.head = index,
+        else => |tail| b.storage[tail.toIndex()].completion.node.next = index,
+    }
+    b.storage[index.toIndex()] = .{ .completion = .{ .node = .{ .next = .none }, .result = result } };
+    b.completed.tail = index;
+}
+
+/// Moves the stalled operations out of the submitted list into `kept`, in
+/// order.
+fn keepStalled(b: *Io.Batch, state: *Batched, kept: *Io.Operation.List) void {
+    var previous: Io.Operation.OptionalIndex = .none;
+    var index = b.submitted.head;
+    while (index != .none) {
+        const next = b.storage[index.toIndex()].submission.node.next;
+        if (state.ops[index.toIndex()].stalled) {
+            unlinkSubmitted(b, previous, index);
+            b.storage[index.toIndex()].submission.node.next = .none;
+            switch (kept.tail) {
+                .none => kept.head = index,
+                else => |tail| b.storage[tail.toIndex()].submission.node.next = index,
+            }
+            kept.tail = index;
+        } else previous = index;
+        index = next;
+    }
+}
+
+/// Puts the kept operations back at the head of the submitted list.
+fn putBack(b: *Io.Batch, kept: *Io.Operation.List) void {
+    if (kept.head == .none) return;
+    b.storage[kept.tail.toIndex()].submission.node.next = b.submitted.head;
+    if (b.submitted.head == .none) b.submitted.tail = kept.tail;
+    b.submitted.head = kept.head;
+}
+
 // Short reads and writes.
 
 /// The most buffers a short call passes on; past them it moves less,
@@ -737,33 +1427,36 @@ fn cutSlot(f: *FaultIo, comptime name: []const u8, args: anytype, n: u32) Return
 }
 
 fn shortOperate(f: *FaultIo, comptime tag: Io.Operation.Tag, op: @FieldType(Io.Operation, @tagName(tag)), n: u32) Io.Cancelable!Io.Operation.Result {
+    if (n == 0) return noProgress(tag);
+    var buffers: Batched.Buffers = undefined;
+    return f.base.vtable.operate(f.base.userdata, cutOperation(tag, op, n, &buffers));
+}
+
+/// What a read or write that moved nothing returns: not the end of a
+/// stream.
+fn noProgress(comptime tag: Io.Operation.Tag) Io.Operation.Result {
+    if (tag == .net_read) return @unionInit(Io.Operation.Result, "net_read", .{ .data_len = 0 });
+    return @unionInit(Io.Operation.Result, @tagName(tag), 0);
+}
+
+/// The operation cut to at most `n` bytes, its buffers in `buffers`.
+fn cutOperation(comptime tag: Io.Operation.Tag, op: @FieldType(Io.Operation, @tagName(tag)), n: u32, buffers: *Batched.Buffers) Io.Operation {
+    var cut = op;
     switch (tag) {
-        .file_read_streaming => {
-            if (n == 0) return @unionInit(Io.Operation.Result, "file_read_streaming", 0);
-            var storage: [max_vectors][]u8 = undefined;
-            var cut = op;
-            cut.data = cutReads([]u8, op.data, n, &storage);
-            return f.base.vtable.operate(f.base.userdata, .{ .file_read_streaming = cut });
-        },
-        .net_read => {
-            if (n == 0) return @unionInit(Io.Operation.Result, "net_read", .{ .data_len = 0 });
-            var storage: [max_vectors][]u8 = undefined;
-            var cut = op;
-            cut.data = cutReads([]u8, op.data, n, &storage);
-            return f.base.vtable.operate(f.base.userdata, .{ .net_read = cut });
+        .file_read_streaming, .net_read => {
+            buffers.* = .{ .reads = undefined };
+            cut.data = cutReads([]u8, op.data, n, &buffers.reads);
         },
         .file_write_streaming, .net_write => {
-            if (n == 0) return @unionInit(Io.Operation.Result, @tagName(tag), 0);
-            var storage: [max_vectors][]const u8 = undefined;
-            const c = cutWrite(op.header, op.data, op.splat, n, &storage);
-            var cut = op;
+            buffers.* = .{ .writes = undefined };
+            const c = cutWrite(op.header, op.data, op.splat, n, &buffers.writes);
             cut.header = c.header;
             cut.data = c.data;
             cut.splat = c.splat;
-            return f.base.vtable.operate(f.base.userdata, @unionInit(Io.Operation, @tagName(tag), cut));
         },
         else => unreachable, // unreachable: shortOperation admits only these
     }
+    return @unionInit(Io.Operation, @tagName(tag), cut);
 }
 
 /// The first `n` bytes of `data`, as buffers.
@@ -822,13 +1515,7 @@ fn cutWrite(header: []const u8, data: []const []const u8, splat: usize, n: usize
 const path_capacity = 4096;
 
 /// The calls whose results or arguments change the path table.
-const path_calls: CallSet = blk: {
-    var set: CallSet = .empty;
-    for (.{ "dirOpenDir", "dirCreateDirPathOpen", "dirCreateFile", "dirOpenFile", "dirCreateFileAtomic", "fileClose", "dirClose" }) |name| {
-        set.insert(@field(IoCall, name));
-    }
-    break :blk set;
-};
+const path_calls: Calls = .of(&.{ "dirOpenDir", "dirCreateDirPathOpen", "dirCreateFile", "dirOpenFile", "dirCreateFileAtomic", "fileClose", "dirClose" });
 
 fn opens(comptime name: []const u8) bool {
     inline for (.{ "dirOpenDir", "dirCreateDirPathOpen", "dirCreateFile", "dirOpenFile", "dirCreateFileAtomic" }) |n| {
@@ -878,6 +1565,12 @@ fn subjectOf(f: *FaultIo, comptime name: []const u8, args: anytype, buffer: *[pa
         return f.known(handleId(args[0]));
     }
     return .{};
+}
+
+/// The path `handle` was opened by, when paths are tracked. Under the lock.
+fn pathOf(f: *FaultIo, handle: i64) ?[]const u8 {
+    if (!f.options.track_paths or handle == -1) return null;
+    return f.paths.get(handle);
 }
 
 fn known(f: *FaultIo, handle: i64) IoEvent.Subject {

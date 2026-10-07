@@ -212,6 +212,55 @@ test "a batch wait with a deadline times out on the clock, and completes when it
     try testing.expectEqual(@as(usize, 0), clock.armed());
 }
 
+/// A tick of five milliseconds until fifty have passed on the clock, as an
+/// interval loop measures them.
+fn tickFor(io: Io, sleeps: *u32) Io.Cancelable!void {
+    const start = Io.Timestamp.now(io, .awake);
+    while (start.durationTo(.now(io, .awake)).nanoseconds < 50 * std.time.ns_per_ms) {
+        try io.sleep(.fromMilliseconds(5), .awake);
+        sleeps.* += 1;
+    }
+}
+
+test "auto: each sleep returns at once, its deadline reached and as late as asked" {
+    var on_time: Clock = .init(testing.io, .{ .advance = .{ .auto = .{} } });
+    const start = on_time.read(.awake);
+    var sleeps: u32 = 0;
+    try tickFor(on_time.io(), &sleeps);
+    try testing.expectEqual(@as(u32, 10), sleeps);
+    try testing.expectEqual(Io.Duration.fromMilliseconds(50), start.durationTo(on_time.read(.awake)));
+
+    // Each five-millisecond tick resumes twenty-five late: two ticks pass
+    // the fifty.
+    var late: Clock = .init(testing.io, .{ .advance = .{ .auto = .{ .late = .fromMilliseconds(25) } } });
+    sleeps = 0;
+    const late_start = late.read(.awake);
+    try tickFor(late.io(), &sleeps);
+    try testing.expectEqual(@as(u32, 2), sleeps);
+    try testing.expectEqual(Io.Duration.fromMilliseconds(60), late_start.durationTo(late.read(.awake)));
+    try testing.expectEqual(@as(usize, 0), late.armed());
+}
+
+test "auto: a timed futex wait and a batch wait time out at once, on the clock" {
+    var clock: Clock = .init(testing.io, .{ .advance = .{ .auto = .{} } });
+    const io = clock.io();
+    const start = clock.read(.awake);
+    var event: Io.Event = .unset;
+    try testing.expectError(error.Timeout, event.waitTimeout(io, .{ .duration = .{ .raw = .fromSeconds(30), .clock = .awake } }));
+    try testing.expectEqual(Io.Duration.fromSeconds(30), start.durationTo(clock.read(.awake)));
+    if (builtin.target.os.tag == .windows) return; // a pipe read is not a pollable batch operation there
+    const fds = try Io.Threaded.pipe2(.{});
+    const read_end: Io.File = .{ .handle = fds[0], .flags = .{ .nonblocking = false } };
+    const write_end: Io.File = .{ .handle = fds[1], .flags = .{ .nonblocking = false } };
+    defer read_end.close(testing.io);
+    defer write_end.close(testing.io);
+    // An hour on the clock, and no real time: the wait looks once.
+    const real_start = Io.Timestamp.now(testing.io, .awake);
+    try testing.expectError(error.Timeout, readWithin(io, read_end, .{ .duration = .{ .raw = .fromSeconds(3600), .clock = .awake } }));
+    try testing.expect(real_start.durationTo(.now(testing.io, .awake)).nanoseconds < std.time.ns_per_s);
+    try testing.expectEqual(Io.Duration.fromSeconds(3630), start.durationTo(clock.read(.awake)));
+}
+
 test "no timed wait hangs or times out early while the clock moves from another thread" {
     var clock: Clock = .init(testing.io, .{});
     const threads = build_options.stress_threads;

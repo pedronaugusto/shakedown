@@ -23,8 +23,12 @@ pub const EveryFaultOptions = struct {
     errors: []const anyerror = &.{ error.InputOutput, error.NoSpaceLeft, error.AccessDenied },
     /// Reads and writes that moved bytes: `short(0)`, and `short(half)`.
     short: bool = true,
-    /// `cancel` at every cancelation point.
+    /// `cancel` at every cancelation point. A run whose cancel could not
+    /// land, under blocked cancel protection, is checked as a clean run.
     cancel: bool = true,
+    /// Errors tried as lost answers (`fail_after`): the call is made, then
+    /// returns the error, at every step whose call can.
+    lost_answers: []const anyerror = &.{},
     /// `fail(OutOfMemory)` at every call through `FaultIo.allocator`.
     alloc: bool = true,
     /// Every run's `io.random` and `randomSecure` draw from a generator
@@ -88,7 +92,9 @@ pub const EveryFaultReport = struct {
 ///     fn faultsFor(ctx, record: IoTrace.Record) []const IoFault   optional, for a seam's calls
 ///
 /// `check` gets the run's `Io` and judges what the operation left behind;
-/// it fails the whole by returning an error. `check` runs before
+/// it fails the whole by returning an error. Its `injected` is the fault
+/// the run was given, or null for the clean run and for a cancel that
+/// could not land. `check` runs before
 /// `tearDown`, and `tearDown` follows every run whose `setUp` succeeded.
 /// Allocation is faulted through the allocators `setUp` makes with
 /// `fio.allocator`.
@@ -101,7 +107,7 @@ pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOpt
     if (report.steps > options.max_steps) return error.TooManySteps;
 
     const records = clean.trace().records();
-    var faults: [16]IoFault = undefined;
+    var faults: [max_faults]IoFault = undefined;
     for (records, 0..) |record, index| {
         for (candidates(ctx, options, record, &faults)) |fault| {
             const injected: Injected = .{ .step = record.step, .call = record.event.call, .fault = fault };
@@ -118,6 +124,9 @@ pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOpt
     return report;
 }
 
+/// The most faults tried at one step.
+const max_faults = 32;
+
 /// A faulted run: its fault, and the clean run it must follow up to it.
 const Faulted = struct { injected: Injected, clean: *FaultIo, index: usize };
 
@@ -132,17 +141,28 @@ fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: EveryFaultOptions,
     };
     defer ctx.tearDown();
     const result = ctx.run(fio.io());
-    const injected = if (faulted) |f| f.injected else null;
-    if (faulted) |f| if (divergence(f.clean, fio, f.index, f.injected.step)) |at| {
-        return fail(gpa, options, fio, report.*, .{ .injected = injected, .err = error.Nondeterministic, .difference = at, .trace = "" });
-    };
+    var injected = if (faulted) |f| f.injected else null;
+    if (faulted) |f| {
+        if (divergence(f.clean, fio, f.index, f.injected.step)) |at| {
+            return fail(gpa, options, fio, report.*, .{ .injected = injected, .err = error.Nondeterministic, .difference = at, .trace = "" });
+        }
+        if (!landed(f.clean, fio, f.index)) injected = null;
+    }
     ctx.check(fio.io(), result, injected) catch |err| {
         return fail(gpa, options, fio, report.*, .{ .injected = injected, .err = err, .trace = "" });
     };
 }
 
+/// Whether the faulted run's fault did something at its step: a cancel
+/// under blocked protection did not, and its record is the clean run's.
+fn landed(clean: *FaultIo, faulted: *FaultIo, index: usize) bool {
+    const theirs = faulted.trace().hashAt(index) orelse return true;
+    const ours = clean.trace().hashAt(index) orelse return true;
+    return theirs != ours;
+}
+
 /// The faults to try at `record`'s step, into `buffer`.
-fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, buffer: *[16]IoFault) []const IoFault {
+fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, buffer: *[max_faults]IoFault) []const IoFault {
     const call = record.event.call;
     var len: usize = 0;
     if (call == .foreign) {
@@ -168,6 +188,13 @@ fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, 
         if (len == buffer.len) break;
         if (!io_call.canFail(call, err)) continue;
         buffer[len] = .{ .fail = err };
+        len += 1;
+    }
+    for (options.lost_answers) |err| {
+        if (len == buffer.len) break;
+        const fault: IoFault = .{ .fail_after = err };
+        fault.check(call) catch continue;
+        buffer[len] = fault;
         len += 1;
     }
     if (options.cancel and len < buffer.len and io_call.cancelable(call)) {

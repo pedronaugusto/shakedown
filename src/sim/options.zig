@@ -6,6 +6,7 @@ const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
 const Plan = @import("../plan.zig").Plan;
 const Trace = @import("../trace.zig").Trace;
+const Watchdog = @import("Watchdog.zig");
 
 pub const Executor = enum {
     /// The fastest this target has: Win32 fibers on Windows, fibers on
@@ -68,6 +69,9 @@ pub const Options = struct {
     /// Real time a task may run without an `Io` call before the run is
     /// stuck; null turns the watchdog off. See `Outcome.stuck`.
     watchdog: ?Io.Duration = .fromSeconds(10),
+    /// A watchdog shared with other simulations, which must outlive this
+    /// one; null starts one of the simulation's own on its first run.
+    watched_by: ?*Watchdog = null,
     /// The clocks' starting instants and resolution.
     clock: Clock = .{},
     /// What the run's trace keeps. Its hash covers every call in any mode.

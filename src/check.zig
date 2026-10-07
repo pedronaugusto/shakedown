@@ -38,10 +38,12 @@ pub const Case = struct {
 
     /// A simulation whose every decision comes from this case's source, so
     /// its schedules, faults and timings shrink with the case's inputs. It
-    /// is torn down when the case ends.
+    /// is torn down when the case ends. Unless the options name one, it
+    /// shares the run's watchdog, so a case starts no thread.
     pub fn sim(c: *Case, options: Sim.Options) Sim.InitError!*Sim {
         var with = options;
         with.source = c.source;
+        if (with.watched_by == null) with.watched_by = &c.runner.watchdog;
         try c.runner.sims.ensureUnusedCapacity(c.runner.gpa, 1);
         const s = try Sim.init(c.runner.gpa, with);
         c.runner.sims.appendAssumeCapacity(s);
@@ -209,6 +211,8 @@ const Runner = struct {
     arena: std.heap.ArenaAllocator,
     body: struct { ctx: *anyopaque, run: *const fn (*anyopaque, *Case) anyerror!void } = undefined,
     sims: std.ArrayList(*Sim) = .empty,
+    /// The one watchdog every case's simulations share.
+    watchdog: Sim.Watchdog = .init(),
     notes: ?std.ArrayList(u8) = null,
     /// The final run's error return trace, taken before the error is
     /// handled and its frames are let go.
@@ -235,6 +239,7 @@ const Runner = struct {
         r.source.deinit();
         r.arena.deinit();
         r.sims.deinit(r.gpa);
+        r.watchdog.deinit();
         if (r.notes) |*n| n.deinit(r.gpa);
         r.* = undefined;
     }
