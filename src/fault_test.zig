@@ -284,7 +284,7 @@ test "allocations go through the same plan, trace and counts" {
     const plan = [_]IoPlan.Entry{.{ .at = .{ .nth = .{ .call = .alloc, .n = 3 } }, .fault = .{ .fail = error.OutOfMemory } }};
     const fio = try FaultIo.init(testing.allocator, testing.io, .{ .plan = &plan, .trace = .all });
     defer fio.deinit();
-    const gpa = fio.allocator(testing.allocator);
+    const gpa = try fio.allocator(testing.allocator);
     const a = try gpa.alloc(u8, 10);
     defer gpa.free(a);
     var list: std.ArrayList(u32) = .empty;
@@ -295,6 +295,34 @@ test "allocations go through the same plan, trace and counts" {
     const last = fio.trace().records()[fio.trace().records().len - 1].event;
     try testing.expectEqual(shakedown.IoCall.alloc, last.call);
     try testing.expectEqual(@as(anyerror, error.OutOfMemory), last.outcome.err);
+}
+
+test "allocator is one shim per child, and refuses with OutOfMemory when it cannot make one" {
+    var counting: shakedown.alloc.Counting = .init(testing.allocator);
+    const fio = try FaultIo.init(counting.allocator(), testing.io, .{});
+    defer fio.deinit();
+    const first = try fio.allocator(testing.allocator);
+    const made = counting.allocations;
+    // Asking again for the same child, in a loop, makes nothing new.
+    for (0..100) |_| {
+        const again = try fio.allocator(testing.allocator);
+        try testing.expect(again.ptr == first.ptr and again.vtable == first.vtable);
+    }
+    try testing.expectEqual(made, counting.allocations);
+    // Another child is another shim.
+    var other: shakedown.alloc.Counting = .init(testing.allocator);
+    const second = try fio.allocator(other.allocator());
+    try testing.expect(second.ptr != first.ptr);
+    const bytes = try second.alloc(u8, 4);
+    second.free(bytes);
+    try testing.expectEqual(@as(u64, 1), other.allocations);
+
+    // With nothing left to allocate from, the shim is refused, not a panic.
+    var failing: std.testing.FailingAllocator = .init(testing.allocator, .{});
+    const tight = try FaultIo.init(failing.allocator(), testing.io, .{});
+    defer tight.deinit();
+    failing.fail_index = failing.alloc_index;
+    try testing.expectError(error.OutOfMemory, tight.allocator(testing.allocator));
 }
 
 const Raw = enum { barrier, rename_noreplace };

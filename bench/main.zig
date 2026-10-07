@@ -187,7 +187,7 @@ fn allocFailing(ctx: *Context, ops: u64) anyerror!void {
 fn allocFaultIo(ctx: *Context, ops: u64) anyerror!void {
     const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
     defer fio.deinit();
-    try allocLoop(ctx, fio.allocator(std.heap.smp_allocator), ops, 256);
+    try allocLoop(ctx, try fio.allocator(std.heap.smp_allocator), ops, 256);
 }
 
 fn allocQuarantine(ctx: *Context, ops: u64) anyerror!void {

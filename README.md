@@ -126,7 +126,8 @@ so a plan can fail the sync of `repo/objects/pack.idx` and not another file.
 With an empty plan and the trace off a call costs a step, a count and one bit
 test. `random_seed` makes `io.random` reproducible. `allocator(child)` puts
 allocations through the same plan, counts and trace, as `.alloc`, `.resize` and
-`.remap`.
+`.remap`. It makes one shim per child, on the first call for that child, and
+returns `error.OutOfMemory` when it cannot.
 
 `Plan(Call, Fault)`, `Trace(Event)` and `Steps` are generic, so a package with
 raw calls of its own (a seam around system calls `Io` cannot express) plans and

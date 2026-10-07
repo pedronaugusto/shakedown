@@ -35,7 +35,7 @@ const Save = struct {
             else => return err,
         };
         s.counting = .init(testing.allocator);
-        s.gpa = fio.allocator(s.counting.allocator());
+        s.gpa = try fio.allocator(s.counting.allocator());
         s.fio = fio;
     }
 

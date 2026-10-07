@@ -61,6 +61,7 @@ path_arena: std.heap.ArenaAllocator,
 /// Private: `io.random` under `random_seed`, and the draws of `.chance`
 /// entries when `Options.source` is null.
 random: Source,
+/// Private: one shim per child `allocator` was given.
 shims: std.ArrayList(*AllocatorShim) = .empty,
 
 pub const Options = struct {
@@ -270,14 +271,19 @@ const AllocatorShim = struct {
 
 /// `child`, with every allocation, resize and remap counted, stepped,
 /// traced and planned as `.alloc`, `.resize` and `.remap`. A `fail` fault
-/// is a refusal. Lives as long as the `FaultIo`.
-pub fn allocator(f: *FaultIo, child: Allocator) Allocator {
-    const s = f.gpa.create(AllocatorShim) catch @panic("FaultIo.allocator: out of memory");
+/// is a refusal. Lives as long as the `FaultIo`. The first call for a
+/// child makes its shim; every later call for an equal child returns the
+/// same allocator and allocates nothing.
+pub fn allocator(f: *FaultIo, child: Allocator) Allocator.Error!Allocator {
+    f.lock();
+    defer f.unlock();
+    for (f.shims.items) |s| {
+        if (s.child.ptr == child.ptr and s.child.vtable == child.vtable) return .{ .ptr = s, .vtable = &allocator_vtable };
+    }
+    try f.shims.ensureUnusedCapacity(f.gpa, 1);
+    const s = try f.gpa.create(AllocatorShim);
     s.* = .{ .fio = f, .child = child };
-    f.shims.append(f.gpa, s) catch {
-        f.gpa.destroy(s);
-        @panic("FaultIo.allocator: out of memory");
-    };
+    f.shims.appendAssumeCapacity(s);
     return .{ .ptr = s, .vtable = &allocator_vtable };
 }
 
