@@ -20,7 +20,7 @@ fn traceHash(seed: u64, executor: Sim.Executor) !u64 {
 
 /// The digest of the first thousand seeds' trace hashes, in order. It
 /// changes only when a simulation's decisions or their order change.
-const golden: u64 = 0xa794f9eb1a80ecfd;
+const golden: u64 = 0x35c388efbfec0c18;
 
 test "a thousand seeds of the conformance workload repeat their runs, and the runs are fixed" {
     var digest: u64 = 0;

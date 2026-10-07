@@ -60,10 +60,15 @@ const Baton = struct {
     turn: std.atomic.Value(u32) = .init(0),
     /// Set to make the thread exit when it next gets the baton.
     exit: bool = false,
-    handle: ?std.Thread = null,
+    handle: ?Thread = null,
     entry: ?Entry = null,
     arg: ?*anyopaque = null,
 };
+
+/// A task's thread. On Windows a thread of our own: std's `Thread.join`
+/// there requires the thread to have returned through std's entry, and a
+/// thread the executor ends never does.
+const Thread = if (builtin.os.tag == .windows) windows.HANDLE else std.Thread;
 
 pub const CreateError = error{ OutOfMemory, SystemResources };
 
@@ -94,6 +99,10 @@ pub fn start(c: *Context, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
         },
         .threads => {
             if (!threads_supported) unreachable; // unreachable: Sim.init refuses an executor the target lacks
+            if (builtin.os.tag == .windows) {
+                c.thread.handle = win32.CreateThread(null, stack_size, win32ThreadStart, &c.thread, win32.stack_size_param_is_a_reservation, null) orelse return error.SystemResources;
+                return;
+            }
             c.thread.handle = std.Thread.spawn(.{ .stack_size = stack_size }, threadMain, .{&c.thread}) catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 else => error.SystemResources,
@@ -115,7 +124,10 @@ pub fn destroy(c: *Context) void {
         .threads => if (c.thread.handle) |handle| {
             c.thread.exit = true;
             pass(&c.thread);
-            handle.join();
+            if (builtin.os.tag == .windows) {
+                _ = windows.ntdll.NtWaitForSingleObject(handle, .FALSE, null);
+                windows.CloseHandle(handle);
+            } else handle.join();
         },
     }
     c.* = undefined;
@@ -217,7 +229,14 @@ const win32 = struct {
     extern "kernel32" fn ConvertFiberToThread() callconv(.winapi) windows.BOOL;
     extern "kernel32" fn IsThreadAFiber() callconv(.winapi) windows.BOOL;
     extern "kernel32" fn ExitThread(code: u32) callconv(.winapi) noreturn;
+    const stack_size_param_is_a_reservation: u32 = 0x10000;
+    extern "kernel32" fn CreateThread(attributes: ?*anyopaque, stack_size: usize, start: *const fn (?*anyopaque) callconv(.winapi) u32, param: ?*anyopaque, flags: u32, id: ?*u32) callconv(.winapi) ?windows.HANDLE;
 };
+
+fn win32ThreadStart(param: ?*anyopaque) callconv(.winapi) u32 {
+    threadMain(@ptrCast(@alignCast(param.?))); // safe: `start` passes the context's baton
+    return 0;
+}
 
 fn win32Start(param: ?*anyopaque) callconv(.winapi) void {
     const b: *Baton = @ptrCast(@alignCast(param.?)); // safe: `start` passes the context's baton, which holds the entry

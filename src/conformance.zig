@@ -78,16 +78,20 @@ fn ms(n: i64) Io.Duration {
 
 // Time and futexes.
 
+/// A sleep sleeps, and a deadline is waited for. A system's timer may end
+/// either up to a tick early (std's threaded `Io` on Windows does), so the
+/// check asks for at least half of each.
 fn timeMoves(_: Allocator, io: Io) !void {
     const awake = Io.Timestamp.now(io, .awake);
     const boot = Io.Timestamp.now(io, .boot);
-    try io.sleep(ms(2), .awake);
+    try io.sleep(ms(20), .awake);
     const slept = awake.durationTo(.now(io, .awake));
-    if (slept.nanoseconds < ms(2).nanoseconds) return error.SleptShort;
+    if (slept.nanoseconds < ms(10).nanoseconds) return error.SleptShort;
     if (boot.durationTo(.now(io, .boot)).nanoseconds < 0) return error.BootWentBack;
-    const deadline: Io.Clock.Timestamp = .fromNow(io, .{ .raw = ms(1), .clock = .awake });
+    const deadline: Io.Clock.Timestamp = .fromNow(io, .{ .raw = ms(20), .clock = .awake });
     try deadline.wait(io);
-    if (deadline.compare(.gt, .now(io, .awake))) return error.WokeBeforeDeadline;
+    const early = deadline.subDuration(.{ .raw = ms(10), .clock = .awake });
+    if (early.compare(.gt, .now(io, .awake))) return error.WokeBeforeDeadline;
 }
 
 fn futexMismatch(_: Allocator, io: Io) !void {
