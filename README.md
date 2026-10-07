@@ -30,10 +30,12 @@ const start = Io.Timestamp.now(io, .awake);
 var attempts: std.atomic.Value(u32) = .init(0);
 var task = try io.concurrent(retry, .{ io, 3, &attempts });
 
-// Wait until the task sleeps, then let exactly its backoff pass.
-try clock.awaitArmed(1, .fromSeconds(10));
+// Wait until the task sleeps, then let exactly its backoff pass. Both
+// waits share one deadline in real time, on the base.
+const patience: Io.Timeout = .{ .deadline = .fromNow(init.io, .{ .raw = .fromSeconds(10), .clock = .awake }) };
+try clock.awaitArmed(1, patience);
 clock.advance(.fromSeconds(1));
-try clock.awaitArmed(1, .fromSeconds(10));
+try clock.awaitArmed(1, patience);
 std.debug.assert(clock.advanceToNext().?.nanoseconds == 2 * std.time.ns_per_s);
 try task.await(io);
 
@@ -93,8 +95,9 @@ waits on its own futex word, which only a firing sets. A timed futex wait
 re-checks its timer every `Options.recheck` of real time, 1 ms by default,
 because the base computes its own deadlines: a timeout reaches its waiter at
 most that late, and a wake from the code under test reaches it at once.
-`awaitArmed(n, limit)` blocks until `n` timers are armed. It is the barrier a
-test takes before `advance` when the waiter runs on another task.
+`awaitArmed(n, timeout)` blocks until `n` timers are armed. It is the barrier a
+test takes before `advance` when the waiter runs on another task. Its
+`Io.Timeout` is read on the base, so one deadline can bound several waits.
 
 `alloc.Counting` counts allocations, frees, resizes, remaps and refusals, and
 the bytes live, at their peak and in total. Its counts are plain fields, so it

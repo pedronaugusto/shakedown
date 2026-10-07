@@ -8,7 +8,7 @@ const build_options = @import("build_options");
 
 /// Long enough that a barrier never fails on a loaded machine; a passing
 /// test waits only as long as the task it waits for.
-const patience: Io.Duration = .fromSeconds(60);
+const patience: Io.Timeout = .{ .duration = .{ .raw = .fromSeconds(60), .clock = .awake } };
 
 fn sleepFor(io: Io, d: Io.Duration, clock: Io.Clock) Io.Cancelable!void {
     return io.sleep(d, clock);
@@ -137,9 +137,17 @@ test "CPU clocks are frozen, or the base's" {
     try testing.expect(moved);
 }
 
-test "awaitArmed gives up after its limit" {
+test "awaitArmed gives up after its timeout, a duration or a deadline on the base" {
     var clock: Clock = .init(testing.io, .{});
-    try testing.expectError(error.Timeout, clock.awaitArmed(1, .fromMilliseconds(5)));
+    try testing.expectError(error.Timeout, clock.awaitArmed(1, .{ .duration = .{ .raw = .fromMilliseconds(5), .clock = .awake } }));
+
+    // One deadline shared by several waits, on the base and not on the
+    // clock: moving the clock past it does not end the wait early.
+    const deadline: Io.Timeout = .{ .deadline = .fromNow(testing.io, .{ .raw = .fromMilliseconds(20), .clock = .awake }) };
+    clock.advance(.fromSeconds(3600));
+    try testing.expectError(error.Timeout, clock.awaitArmed(1, deadline));
+    try testing.expectError(error.Timeout, clock.awaitArmed(1, deadline));
+    try testing.expect(deadline.deadline.compare(.lte, .now(testing.io, .awake)));
 }
 
 /// The shape of a test that steps a task through its waits one by one: the
@@ -223,7 +231,7 @@ test "no timed wait hangs or times out early while the clock moves from another 
     stop.store(true, .release);
     // Every waiter is now at most a few milliseconds of clock time from its
     // deadline; keep the clock moving until all are out.
-    const limit = Io.Clock.Timestamp.fromNow(testing.io, .{ .raw = patience, .clock = .awake });
+    const limit = patience.toTimestamp(testing.io).?;
     while (finished.load(.acquire) < threads) {
         clock.advance(.fromMilliseconds(1));
         std.Thread.yield() catch std.atomic.spinLoopHint();

@@ -185,7 +185,7 @@ test "a delay sleeps on the base, which a Clock makes virtual" {
     const file = try tmp.dir.createFile(testing.io, "f", .{ .read = true });
     defer file.close(testing.io);
     var task = try fio.io().concurrent(statFile, .{ fio.io(), file });
-    try clock.awaitArmed(1, .fromSeconds(60));
+    try clock.awaitArmed(1, .{ .duration = .{ .raw = .fromSeconds(60), .clock = .awake } });
     try testing.expectEqual(@as(?Io.Duration, .fromSeconds(30)), clock.advanceToNext());
     _ = try task.await(fio.io());
 }

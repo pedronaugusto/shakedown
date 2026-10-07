@@ -184,16 +184,21 @@ pub fn nextDeadline(c: *Clock) ?Io.Clock.Timestamp {
 
 /// Block, in real time on the base, until at least `n` timers are armed:
 /// the barrier a test takes before `advance` when the waiter runs on
-/// another task.
-pub fn awaitArmed(c: *Clock, n: usize, limit: Io.Duration) AwaitArmedError!void {
+/// another task. `timeout` is read on the base, never on this clock, so a
+/// deadline can be shared with the test's other waits; `.none` waits for
+/// as long as it takes.
+pub fn awaitArmed(c: *Clock, n: usize, timeout: Io.Timeout) AwaitArmedError!void {
     const s = &c.layer.state;
     const base = c.layer.base;
-    const until: Io.Clock.Timestamp = .fromNow(base, .{ .raw = limit, .clock = .awake });
+    const deadline = timeout.toDeadline(base);
     while (true) {
         const seen = s.arming.load(.acquire);
         if (s.count.load(.acquire) >= n) return;
-        if (until.compare(.lte, .now(base, .awake))) return error.Timeout;
-        try base.futexWaitTimeout(u32, &s.arming.raw, seen, .{ .deadline = until });
+        switch (deadline) {
+            .deadline => |at| if (at.compare(.lte, .now(base, at.clock))) return error.Timeout,
+            .none, .duration => {},
+        }
+        try base.futexWaitTimeout(u32, &s.arming.raw, seen, deadline);
     }
 }
 

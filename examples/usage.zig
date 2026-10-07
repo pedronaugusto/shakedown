@@ -32,10 +32,12 @@ pub fn main(init: std.process.Init) !void {
     var attempts: std.atomic.Value(u32) = .init(0);
     var task = try io.concurrent(retry, .{ io, 3, &attempts });
 
-    // Wait until the task sleeps, then let exactly its backoff pass.
-    try clock.awaitArmed(1, .fromSeconds(10));
+    // Wait until the task sleeps, then let exactly its backoff pass. Both
+    // waits share one deadline in real time, on the base.
+    const patience: Io.Timeout = .{ .deadline = .fromNow(init.io, .{ .raw = .fromSeconds(10), .clock = .awake }) };
+    try clock.awaitArmed(1, patience);
     clock.advance(.fromSeconds(1));
-    try clock.awaitArmed(1, .fromSeconds(10));
+    try clock.awaitArmed(1, patience);
     std.debug.assert(clock.advanceToNext().?.nanoseconds == 2 * std.time.ns_per_s);
     try task.await(io);
 

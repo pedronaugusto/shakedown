@@ -12,7 +12,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   state in itself and forwards every other slot to its base.
 - `Clock`: a manual clock over any base `Io`, with separate awake, boot and real
   clocks, suspend and wall-clock steps, timers fired in deadline and arming order,
-  and `awaitArmed` as the barrier before `advance`.
+  and `awaitArmed`, bounded by an `Io.Timeout` on the base, as the barrier
+  before `advance`.
 - `alloc.Counting`, an allocator that counts calls, refusals and bytes live, at
   their peak and in total.
 - `alloc.Quarantine`, an allocator that never hands out an address twice and can
