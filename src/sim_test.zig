@@ -374,31 +374,25 @@ test "pointer-keyed maps iterate alike in two runs on the simulation's allocator
 }
 
 const Leaky = struct {
-    real: bool,
+    leaks: bool,
+    runs: u32 = 0,
 
     fn body(l: *Leaky, io: Io) !void {
-        // Time from outside the simulation steers the run.
-        const outside = Io.Threaded.global_single_threaded.io();
-        const ns = Io.Timestamp.now(outside, .awake).nanoseconds;
-        if (l.real and @mod(ns, 2) == 0) try io.sleep(.fromSeconds(1), .awake);
+        // State kept outside the run steers it: every other run sleeps once
+        // more.
+        l.runs += 1;
+        if (l.leaks and l.runs % 2 == 1) try io.sleep(.fromSeconds(1), .awake);
         try io.sleep(.fromSeconds(1), .awake);
     }
 };
 
 test "expectDeterministic passes one seed's runs, and names where two differ" {
-    var steady: Leaky = .{ .real = false };
+    var steady: Leaky = .{ .leaks = false };
     try shakedown.expectDeterministic(testing.allocator, &steady, Leaky.body, .{});
-    var leaky: Leaky = .{ .real = true };
-    // The parity of a real clock agrees between two runs half the time:
-    // try until it disagrees once.
-    for (0..64) |_| {
-        var report: shakedown.DeterminismReport = undefined;
-        shakedown.expectDeterministic(testing.allocator, &leaky, Leaky.body, .{ .diagnostics = &report }) catch |err| {
-            defer report.deinit();
-            try testing.expectEqual(error.Nondeterministic, err);
-            try testing.expect(std.mem.find(u8, report.text, "different calls at record") != null);
-            return;
-        };
-    }
-    return error.TestUnexpectedResult;
+    var leaky: Leaky = .{ .leaks = true };
+    var report: shakedown.DeterminismReport = undefined;
+    try testing.expectError(error.Nondeterministic, shakedown.expectDeterministic(testing.allocator, &leaky, Leaky.body, .{ .diagnostics = &report }));
+    defer report.deinit();
+    try testing.expectEqual(@as(u64, 1), report.index);
+    try testing.expect(std.mem.find(u8, report.text, "different calls at record 1") != null);
 }

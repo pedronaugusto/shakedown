@@ -215,20 +215,22 @@ fn semaphoreCounts(_: Allocator, io: Io) !void {
     if (s.waitTimeout(io, .{ .duration = .{ .raw = ms(1), .clock = .awake } }) != error.Timeout) return error.CountedTooMany;
 }
 
+/// Readers hold the lock together, so what they count is atomic: on a
+/// threaded `Io` they run at once.
 const Shared = struct {
     lock: Io.RwLock = .init,
-    readers: u32 = 0,
-    writing: bool = false,
-    broken: bool = false,
+    readers: std.atomic.Value(u32) = .init(0),
+    writing: std.atomic.Value(bool) = .init(false),
+    broken: std.atomic.Value(bool) = .init(false),
 
     fn read(s: *Shared, io: Io) Io.Cancelable!void {
         for (0..10) |_| {
             try s.lock.lockShared(io);
             defer s.lock.unlockShared(io);
-            s.readers += 1;
-            if (s.writing) s.broken = true;
+            _ = s.readers.fetchAdd(1, .acq_rel);
+            if (s.writing.load(.acquire)) s.broken.store(true, .release);
             try io.sleep(.fromNanoseconds(1), .awake);
-            s.readers -= 1;
+            _ = s.readers.fetchSub(1, .acq_rel);
         }
     }
 
@@ -236,10 +238,10 @@ const Shared = struct {
         for (0..10) |_| {
             try s.lock.lock(io);
             defer s.lock.unlock(io);
-            if (s.readers != 0 or s.writing) s.broken = true;
-            s.writing = true;
+            if (s.readers.load(.acquire) != 0 or s.writing.load(.acquire)) s.broken.store(true, .release);
+            s.writing.store(true, .release);
             try io.sleep(.fromNanoseconds(1), .awake);
-            s.writing = false;
+            s.writing.store(false, .release);
         }
     }
 };
@@ -251,7 +253,7 @@ fn rwLockExcludes(_: Allocator, io: Io) !void {
     for (0..3) |_| try group.concurrent(io, Shared.read, .{ &s, io });
     for (0..2) |_| try group.concurrent(io, Shared.write, .{ &s, io });
     try group.await(io);
-    if (s.broken) return error.NotExcluded;
+    if (s.broken.load(.acquire)) return error.NotExcluded;
 }
 
 // Tasks.
@@ -370,19 +372,19 @@ fn groupAwaits(_: Allocator, io: Io) !void {
     for (flags) |f| if (!f) return error.MemberNotRun;
 }
 
-fn sleepCounted(io: Io, canceled: *u32) Io.Cancelable!void {
+fn sleepCounted(io: Io, canceled: *std.atomic.Value(u32)) Io.Cancelable!void {
     io.sleep(.fromSeconds(3600), .awake) catch |err| {
-        canceled.* += 1;
+        _ = canceled.fetchAdd(1, .acq_rel);
         return err;
     };
 }
 
 fn groupCancels(_: Allocator, io: Io) !void {
-    var canceled: u32 = 0;
+    var canceled: std.atomic.Value(u32) = .init(0);
     var group: Io.Group = .init;
     for (0..4) |_| try group.concurrent(io, sleepCounted, .{ io, &canceled });
     group.cancel(io);
-    if (canceled != 4) return error.MemberNotCanceled;
+    if (canceled.load(.acquire) != 4) return error.MemberNotCanceled;
 }
 
 const Raced = union(enum) { quick: Io.Cancelable!void, slow: Io.Cancelable!void };
