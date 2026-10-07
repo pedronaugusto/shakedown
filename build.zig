@@ -16,6 +16,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Everything below is this repository's own: a project depending on
+    // shakedown builds the module and nothing else, and fetches nothing for
+    // it.
+    if (b.dep_prefix.len != 0) return;
+
     //=====================================================================
     // Tests
     //=====================================================================
@@ -43,7 +48,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run the tests, the fault programs and the example");
     test_step.dependOn(&b.addRunArtifact(tests).step);
 
-    const check_step = b.step("check", "Compile the tests, programs, example and benchmarks without running them");
+    const check_step = b.step("check", "Compile the tests, programs and example without running them");
     check_step.dependOn(&tests.step);
 
     // A use after free and a one-byte overflow on a quarantine must kill the
@@ -95,38 +100,36 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(examples_step);
     check_step.dependOn(&example.step);
 
-    //=====================================================================
-    // Benchmarks: run by hand with `zig build bench`, compiled by CI and never
-    // timed there. Results are JSON lines under zig-out/bench/.
-    //=====================================================================
-
-    const bench = b.addExecutable(.{
-        .name = "shakedown-bench",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("bench/main.zig"),
-            .target = target,
-            .optimize = if (optimize == .debug) .fast else optimize,
-            .imports = &.{.{ .name = "shakedown", .module = module }},
-        }),
-    });
-    const bench_run = b.addRunArtifact(bench);
-    bench_run.setCwd(b.path("."));
-    bench_run.addPassthruArgs();
-    b.step("bench", "Run the benchmarks (by hand; never timed in CI)").dependOn(&bench_run.step);
-    check_step.dependOn(&bench.step);
-
     b.getInstallStep().dependOn(check_step);
 
     //=====================================================================
-    // CI wiring, only in shakedown's own tree. preflight is lazy and only the
-    // root build asks for it, so a project depending on shakedown neither
-    // needs nor fetches it.
+    // CI wiring. preflight is lazy and only the root build asks for it, so a
+    // project depending on shakedown neither needs nor fetches it.
     //=====================================================================
 
-    if (b.dep_prefix.len == 0) if (b.lazyImport(@This(), "preflight")) |preflight| {
-        preflight.addCi(b, .{ .tests = test_step, .portable_tests = true });
+    if (b.lazyImport(@This(), "preflight")) |preflight| {
+        preflight.addCi(b, .{
+            .tests = test_step,
+            .portable_tests = true,
+            // `zig build bench` runs them in ReleaseFast, by hand; never
+            // timed in CI, where `zig build test` runs each once.
+            .bench = .{
+                .programs = &.{.{ .name = "shakedown-bench", .source = "bench/main.zig" }},
+                .imports = benchImports,
+                .target = target,
+                .optimize = optimize,
+            },
+        });
         // A project that depends on shakedown by path, with no packages to
         // fetch: the build a consumer gets.
         preflight.addConsumerCheck(b, .{ .package = "shakedown", .program = b.path("ci/consumer.zig") });
-    };
+    }
+}
+
+/// shakedown in the mode a benchmark builds in: an imported module keeps
+/// its own mode, so a ReleaseFast benchmark over the Debug module would time
+/// the Debug module.
+fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
+    const module = b.createModule(.{ .root_source_file = b.path("src/shakedown.zig"), .target = target, .optimize = optimize });
+    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "shakedown", .module = module }}) catch @panic("OOM");
 }

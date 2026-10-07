@@ -1,9 +1,10 @@
 //! shakedown's own benchmarks: what a layer, a clock or an allocator costs
 //! over std's own. `zig build bench` runs them in ReleaseFast and writes one
-//! JSON line per row to stdout and to zig-out/bench/results.jsonl.
+//! JSON line per row to stdout.
 //!
-//! Timings are taken by hand, on an idle machine, never in CI; CI only
-//! compiles this. `zig build bench -- <row prefix>` runs the rows whose name
+//! Timings are taken by hand, on an idle machine, never in CI, where
+//! `zig build test` runs each row once at its smallest (`--smoke`).
+//! `zig-out/bench/shakedown-bench <row prefix>` runs the rows whose name
 //! starts with the prefix.
 const std = @import("std");
 const Io = std.Io;
@@ -16,6 +17,8 @@ const Row = struct {
     name: []const u8,
     /// Operations per timed run.
     ops: u64,
+    /// Operations in the one run of `--smoke`: the fewest the row runs.
+    smoke: u64 = 1,
     run: *const fn (ctx: *Context, ops: u64) anyerror!void,
 };
 
@@ -31,6 +34,9 @@ const rows = [_]Row{
     .{ .name = "now/threaded", .ops = 10_000_000, .run = nowThreaded },
     .{ .name = "now/layer", .ops = 10_000_000, .run = nowLayer },
     .{ .name = "now/clock", .ops = 10_000_000, .run = nowClock },
+    .{ .name = "now/faultio", .ops = 10_000_000, .run = nowFaultIo },
+    .{ .name = "checkcancel/threaded", .ops = 10_000_000, .run = checkCancelThreaded },
+    .{ .name = "checkcancel/faultio", .ops = 10_000_000, .run = checkCancelFaultIo },
     .{ .name = "pread4k/threaded", .ops = 1_000_000, .run = preadThreaded },
     .{ .name = "pread4k/layer", .ops = 1_000_000, .run = preadLayer },
     .{ .name = "pread4k/clock", .ops = 1_000_000, .run = preadClock },
@@ -45,17 +51,20 @@ const rows = [_]Row{
     .{ .name = "random16/threaded", .ops = 1_000_000, .run = randomThreaded },
     .{ .name = "random16/faultio", .ops = 1_000_000, .run = randomFaultIo },
     .{ .name = "random16/faultio-seeded", .ops = 1_000_000, .run = randomFaultSeeded },
+    .{ .name = "batch1/threaded", .ops = 200_000, .run = batchThreaded },
+    .{ .name = "batch1/faultio", .ops = 200_000, .run = batchFaultIo },
     .{ .name = "everyfault/alloc16-random", .ops = 2_000, .run = everyFaultSweep },
     .{ .name = "sim/now", .ops = 10_000_000, .run = simNow },
-    .{ .name = "sim/switch-fibers", .ops = 1_000_000, .run = simSwitchFibers },
-    .{ .name = "sim/switch-threads", .ops = 20_000, .run = simSwitchThreads },
+    .{ .name = "sim/switch-fibers", .ops = 1_000_000, .smoke = 2, .run = simSwitchFibers },
+    .{ .name = "sim/switch-threads", .ops = 20_000, .smoke = 2, .run = simSwitchThreads },
     .{ .name = "sim/spawn-await", .ops = 1_000_000, .run = simSpawn },
-    .{ .name = "sim/contention-random", .ops = 100_000, .run = simContentionRandom },
-    .{ .name = "sim/contention-pct", .ops = 100_000, .run = simContentionPct },
-    .{ .name = "sim/timers", .ops = 100_000, .run = simTimers },
+    .{ .name = "sim/contention-random", .ops = 100_000, .smoke = 100, .run = simContentionRandom },
+    .{ .name = "sim/contention-pct", .ops = 100_000, .smoke = 100, .run = simContentionPct },
+    .{ .name = "sim/timers", .ops = 100_000, .smoke = 1000, .run = simTimers },
     .{ .name = "sim/new", .ops = 10_000, .run = simNew },
-    .{ .name = "sim/replay", .ops = 100_000, .run = simReplay },
+    .{ .name = "sim/replay", .ops = 100_000, .smoke = 100, .run = simReplay },
     .{ .name = "check/sum-cases", .ops = 25_600, .run = checkCases },
+    .{ .name = "check/sim-cases", .ops = 2_560, .run = checkSimCases },
     .{ .name = "check/shrink-distinct", .ops = 20, .run = checkShrink },
 };
 
@@ -63,18 +72,16 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    const prefix: []const u8 = if (args.len > 1) args[1] else "";
+    const smoke = args.len > 1 and std.mem.eql(u8, args[1], "--smoke");
+    const prefix: []const u8 = if (args.len > 1 and !smoke) args[1] else "";
 
-    const cwd = Io.Dir.cwd();
-    try cwd.createDirPath(io, "zig-out/bench");
-    var out_file = try cwd.createFile(io, "zig-out/bench/results.jsonl", .{});
-    defer out_file.close(io);
-    var out_buffer: [4096]u8 = undefined;
-    var out = out_file.writer(io, &out_buffer);
     var stdout_buffer: [4096]u8 = undefined;
-    var stdout = Io.File.stdout().writer(io, &stdout_buffer);
+    var stdout = Io.File.stdout().writerStreaming(io, &stdout_buffer);
 
-    var scratch = try cwd.createDirPathOpen(io, "zig-out/bench/scratch", .{});
+    // The file the reads read, in the working directory, gone at the end.
+    const cwd = Io.Dir.cwd();
+    var scratch = try cwd.createDirPathOpen(io, "shakedown-bench-scratch", .{});
+    defer cwd.deleteTree(io, "shakedown-bench-scratch") catch {};
     defer scratch.close(io);
     var page: [4096]u8 = @splat(0x5a);
     try scratch.writeFile(io, .{ .sub_path = "data", .data = &page });
@@ -84,6 +91,10 @@ pub fn main(init: std.process.Init) !void {
     var ctx: Context = .{ .io = io, .gpa = gpa, .dir = scratch, .file = file };
     for (rows) |row| {
         if (!std.mem.startsWith(u8, row.name, prefix)) continue;
+        if (smoke) {
+            try row.run(&ctx, row.smoke);
+            continue;
+        }
         var samples: [repeats]u64 = undefined;
         for (&samples) |*sample| {
             const start = Io.Timestamp.now(io, .awake);
@@ -93,13 +104,9 @@ pub fn main(init: std.process.Init) !void {
         std.mem.sort(u64, &samples, {}, std.sort.asc(u64));
         const median = samples[repeats / 2];
         const per_op = @as(f64, @floatFromInt(median)) / @as(f64, @floatFromInt(row.ops));
-        const fmt = "{{\"row\":\"{s}\",\"ops\":{d},\"median_ns\":{d},\"min_ns\":{d},\"ns_per_op\":{d:.2}}}\n";
-        const values = .{ row.name, row.ops, median, samples[0], per_op };
-        try out.interface.print(fmt, values);
-        try stdout.interface.print(fmt, values);
+        try stdout.interface.print("{{\"row\":\"{s}\",\"ops\":{d},\"median_ns\":{d},\"min_ns\":{d},\"ns_per_op\":{d:.2}}}\n", .{ row.name, row.ops, median, samples[0], per_op });
         try stdout.interface.flush();
     }
-    try out.interface.flush();
     std.mem.doNotOptimizeAway(ctx.sink);
 }
 
@@ -125,6 +132,28 @@ fn nowLayer(ctx: *Context, ops: u64) anyerror!void {
 fn nowClock(ctx: *Context, ops: u64) anyerror!void {
     var clock: shakedown.Clock = .init(ctx.io, .{});
     nowLoop(ctx, clock.io(), ops);
+}
+
+fn nowFaultIo(ctx: *Context, ops: u64) anyerror!void {
+    const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
+    defer fio.deinit();
+    nowLoop(ctx, fio.io(), ops);
+}
+
+// Cancelation points: the cheapest call that can be canceled.
+
+fn checkCancelLoop(io: Io, ops: u64) !void {
+    for (0..ops) |_| try io.checkCancel();
+}
+
+fn checkCancelThreaded(ctx: *Context, ops: u64) anyerror!void {
+    try checkCancelLoop(ctx.io, ops);
+}
+
+fn checkCancelFaultIo(ctx: *Context, ops: u64) anyerror!void {
+    const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
+    defer fio.deinit();
+    try checkCancelLoop(fio.io(), ops);
 }
 
 // Reads.
@@ -235,6 +264,33 @@ fn randomFaultSeeded(ctx: *Context, ops: u64) anyerror!void {
     const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false, .random_seed = 1 });
     defer fio.deinit();
     randomLoop(ctx, fio.io(), ops);
+}
+
+// Batches.
+
+/// A batch of one read of the page, awaited, taken and canceled: what a
+/// pump's wait costs.
+fn batchLoop(ctx: *Context, io: Io, ops: u64) !void {
+    var buffer: [4096]u8 = undefined;
+    var storage: [1]Io.Operation.Storage = undefined;
+    for (0..ops) |_| {
+        var batch: Io.Batch = .init(&storage);
+        defer batch.cancel(io);
+        batch.addAt(0, .{ .file_read_streaming = .{ .file = ctx.file, .data = &.{&buffer} } });
+        try batch.awaitAsync(io);
+        const done = batch.next() orelse return error.BenchFailed;
+        ctx.sink +%= done.result.file_read_streaming catch 0;
+    }
+}
+
+fn batchThreaded(ctx: *Context, ops: u64) anyerror!void {
+    try batchLoop(ctx, ctx.io, ops);
+}
+
+fn batchFaultIo(ctx: *Context, ops: u64) anyerror!void {
+    const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
+    defer fio.deinit();
+    try batchLoop(ctx, fio.io(), ops);
 }
 
 // everyFault.
@@ -439,6 +495,17 @@ fn sumCommutes(_: void, c: *shakedown.Case) !void {
 
 fn checkCases(ctx: *Context, ops: u64) anyerror!void {
     try shakedown.check(ctx.gpa, {}, sumCommutes, .{ .cases = @intCast(ops), .seed = 1 });
+}
+
+/// A simulation per case, as a property over a schedule makes, its root
+/// doing nothing: what each case pays for its simulation and its watchdog.
+fn emptySim(_: void, c: *shakedown.Case) !void {
+    const sim = try c.sim(.{ .schedule = .fifo });
+    if (sim.run(nothing, .{sim.io()}) != .finished) return error.BenchFailed;
+}
+
+fn checkSimCases(ctx: *Context, ops: u64) anyerror!void {
+    try shakedown.check(ctx.gpa, {}, emptySim, .{ .cases = @intCast(ops), .seed = 1 });
 }
 
 fn distinctBelowThree(_: void, c: *shakedown.Case) !void {
