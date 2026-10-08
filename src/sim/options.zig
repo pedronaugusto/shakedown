@@ -7,6 +7,7 @@ const IoCall = io_call.IoCall;
 const Plan = @import("../plan.zig").Plan;
 const Trace = @import("../trace.zig").Trace;
 const Fs = @import("Fs.zig");
+const Net = @import("net/Model.zig");
 const Watchdog = @import("Watchdog.zig");
 
 pub const Executor = enum {
@@ -49,6 +50,7 @@ pub const AsyncStart = enum {
 pub const Options = struct {
     /// The node-zero filesystem; null leaves file slots unavailable.
     fs: ?Fs.Options = .{},
+    net: ?Net.Options = .{},
     /// The seed of the simulation's own source, unless `source` is given.
     seed: u64 = 0,
     /// Draw every decision from this source instead: a `Case` passes its own,
@@ -97,13 +99,15 @@ pub const Event = struct {
     call: IoCall,
     /// The task that made it; 0 for calls from outside any task.
     task: u32,
+    /// The Io namespace used by this call. Task IDs remain global.
+    node: u32 = 0,
     /// A digest of the choices drawn during the call, if any were.
     decision: ?u64 = null,
     /// A digest of what the call returned.
     outcome: u64 = 0,
 
     pub fn format(e: Event, w: *Io.Writer) Io.Writer.Error!void {
-        try w.print("{t} task {d} -> {x}", .{ e.call, e.task, e.outcome });
+        try w.print("{t} task {d} node {d} -> {x}", .{ e.call, e.task, e.node, e.outcome });
         if (e.decision) |d| try w.print(" [drew {x}]", .{d});
     }
 };
@@ -111,6 +115,7 @@ pub const Event = struct {
 /// A task the run ended with: where it came from and what it waited on.
 pub const TaskReport = struct {
     id: u32,
+    node: u32 = 0,
     /// The return address of the call that started it.
     spawned_at: usize,
     waiting: Waiting,

@@ -21,7 +21,8 @@ fn traceHash(seed: u64, executor: Sim.Executor) !u64 {
 /// The digest of the first thousand seeds' trace hashes, in order. It
 /// changes only when a simulation's decisions or their order change.
 // B4 extends the fixture with files, hard links and mmap, including input digests.
-const golden: u64 = 0x48b6c2b3d7b27569;
+// B5 adds the node namespace to each record; scheduler choices are unchanged.
+const golden: u64 = 0x6484418532bdea69;
 
 test "a thousand seeds of the conformance workload repeat their runs, and the runs are fixed" {
     var digest: u64 = 0;

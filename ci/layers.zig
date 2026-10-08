@@ -27,6 +27,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "disk state", .patterns = &.{"src/sim/fs/state.zig"} },
     .{ .name = "disk model", .patterns = &.{"src/sim/fs/Model.zig"} },
     .{ .name = "disk", .patterns = &.{"src/sim/Fs.zig"} },
+    .{ .name = "network model", .patterns = &.{"src/sim/net/Model.zig"} },
     .{ .name = "simulation parts", .patterns = &.{
         "src/sim/options.zig",
     } },
@@ -38,7 +39,10 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/FaultIo.zig",
         "src/sim/calls.zig",
         "src/sim/fs/calls.zig",
+        "src/sim/net/calls.zig",
+        "src/sim/routing.zig",
     } },
+    .{ .name = "nodes and topology", .patterns = &.{ "src/sim/Node.zig", "src/sim/Net.zig" } },
     .{ .name = "simulation", .patterns = &.{
         "src/Sim.zig",
     } },
@@ -60,7 +64,7 @@ pub const layers: []const gantry.rules.Layer = &.{
 
 pub const entries: []const []const u8 = &.{"src/bench/compare.zig"};
 
-pub const modules: []const gantry.NamedModule = &.{.{ .name = "measuring", .path = "src/bench.zig" }};
+pub const modules: []const gantry.NamedModule = &.{ .{ .name = "measuring", .path = "src/bench.zig" }, .{ .name = "network_model", .path = "src/sim/net/Model.zig" } };
 
 pub const references: []const gantry.rules.ReferenceRule = &.{
     .{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{

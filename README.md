@@ -1,5 +1,8 @@
 # shakedown
 
+Work in progress: the network phase is implemented here; stateful models,
+simulated processes and exhaustive schedule search are still planned.
+
 shakedown tests Zig code written against `std.Io`. A `Sim` is a simulated `Io`
 that runs the code's tasks one at a time and owns their time, so one seed
 reproduces a whole run, schedule included. `check` runs a property over many
@@ -331,10 +334,59 @@ is `"ab"` written n times, the array product Zig 0.17 dropped: a static,
 0-terminated constant like a literal, for any n without raising the eval branch
 quota.
 
+## Simulated network
+
+`sim.node("service", .{ .addresses = &.{address} })` creates an isolated disk and
+socket namespace. Addresses default to distinct `10.x.x.x` IPv4 addresses; DNS
+registration is explicit with `sim.net().dns("service.test", node)`. Hand
+`node.io()` to ordinary `std.Io` clients and servers, including `std.http`.
+TCP, UDP, Unix sockets and stream socket pairs use no kernel network resources.
+Unix paths and loopback addresses belong to the calling node. IPv4 and IPv6
+bindings are separate; requesting a dual-stack UDP binding returns
+`OptionUnsupported`. Interface queries return `InterfaceNotFound`.
+
+`sim.net().link(a, b, options)` configures both directions. Latency can be fixed,
+uniform or exponential; every random choice uses the simulation's Source and
+replays on fibers and threads. TCP handshakes take two latency draws. Streams
+preserve order and deliver bytes once; loss adds exponential retransmission
+backoff starting at 200 ms. Each direction has bounded buffering and partial
+writes; full buffers wait through the scheduler. UDP can lose, duplicate and
+reorder datagrams. Bandwidth serializes bytes per directed link. A receive
+reports datagram truncation and supports peek; sent datagrams survive sender
+close. Unsupported protocols and socket modes return their named Io errors.
+
+`partition` queues packets until healing or a 60-second virtual expiry, which
+leaves streams timed out. `hold` queues without expiry and `release` resumes
+pending delivery. `resetConnections`, peer close and `node.kill()` reset streams;
+`shutdown(.send)` produces EOF after the queued bytes. Kill cooperatively
+cancels the node's tasks while respecting blocked cancellation protection.
+`node.crash(policy)` also applies that node's disk crash model and can fail with
+`OutOfMemory`. `node.restart(f, args)` starts an owned task; it reports `NodeBusy`
+until old live tasks have ended and `SimulationEnded` after a final outcome.
+
+Batches probe every submitted operation and retain blocked submissions. A timed
+await returns `Timeout`; `batch.cancel` removes pending work. Canceling a connect
+releases both unaccepted endpoints and its handshake. Closed handles never alias
+reused sockets. Packet buffers and socket storage are pooled; warmed message
+transfer and socket reuse allocate nothing. `Options.net.max_packets` bounds
+shared packet storage (1024 by default); packets hold at most 65536 bytes and
+UDP datagrams at most 65535. A resource limit reports `SystemResources`;
+optional duplicate packets may be dropped when the pool is full. All resources
+are released by `sim.deinit()`.
+
+`Sim.Event.node` records the call's Io namespace and `TaskReport.node` records
+task ownership; task IDs remain global. Network traces include portable handles,
+addresses and bytes. Invalid link parameters fail with `InvalidLink`, including
+at `Sim.init`; topology APIs require nodes from the same Sim. Link buffer capacity
+is established when a stream connects, so increasing the configured capacity
+applies to new connections. `bench/` includes RPC, three-node gossip and model
+message workloads, all measured with `shakedown.bench`; CI runs untimed smoke.
+
 ## Scope
 
-- Network and process calls fail with `error.Unexpected`; writes to stdout and
-  stderr reach the real process. `Options.fs = null` disables the disk as well.
+- Process calls fail with `error.Unexpected`; writes to stdout and stderr reach
+  the real process. `Options.fs = null` disables the disk; `Options.net = null`
+  disables network calls.
 - Memory maps synchronize with files only at their explicit `read` and `write`
   calls. Native page faults and implicit mapped-write coherence are outside the
   model. Its name dialects do not model a particular volume's Unicode version.
@@ -360,8 +412,8 @@ statistical significance claim and never makes a timing change pass or fail.
 Added and removed rows are named. Malformed rows, mismatched units or platforms,
 and smoke rows cannot be compared. Build tools can use the fetched package's
 `shakedown-bench-compare` artifact. CI smoke-checks and compiles measuring,
-with no timing thresholds. The package remains work in progress: network simulation, stateful models,
-simulated processes and exhaustive schedule search remain planned.
+with no timing thresholds. The package remains work in progress: stateful models, simulated processes and
+exhaustive schedule search remain planned.
 
 ## Platforms
 

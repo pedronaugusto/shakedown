@@ -22,6 +22,8 @@ const Context = struct {
 };
 
 const rows = [_]Row{
+    .{ .name = "net/rpc-32", .unit = "roundtrip", .run = netRpc },
+    .{ .name = "net/gossip-3", .unit = "round", .run = netGossip },
     .{ .name = "fs_cycle/sim", .unit = "op", .run = fsCycleSim },
     .{ .name = "fs_cycle/threaded", .unit = "op", .run = fsCycleThreaded },
     .{ .name = "fs/crash-states-30", .unit = "op", .run = fsCrashStates },
@@ -614,4 +616,54 @@ fn simDeterminism(ctx: *Context, ops: u64) !void {
         }
     };
     for (0..ops) |_| try shakedown.expectDeterministic(ctx.gpa, {}, Work.run, .{ .sim = .{ .watchdog = null } });
+}
+
+fn netRpc(ctx: *Context, ops: u64) !void {
+    const Work = struct {
+        fn run(count: u64, sink: *u64, io: Io) !void {
+            const pair = try Io.net.Socket.createPair(io, .{});
+            defer pair[0].close(io);
+            defer pair[1].close(io);
+            var bytes: [32]u8 = @splat(42);
+            var vectors = [_][]u8{&bytes};
+            for (0..count) |_| {
+                _ = try (try io.operate(.{ .net_write = .{ .socket_handle = pair[0].handle, .header = &bytes, .data = &.{} } })).net_write;
+                const received = try (try io.operate(.{ .net_read = .{ .socket_handle = pair[1].handle, .data = &vectors } })).net_read;
+                _ = try (try io.operate(.{ .net_write = .{ .socket_handle = pair[1].handle, .header = bytes[0..received.data_len], .data = &.{} } })).net_write;
+                const reply = try (try io.operate(.{ .net_read = .{ .socket_handle = pair[0].handle, .data = &vectors } })).net_read;
+                sink.* +%= reply.data_len + bytes[0];
+            }
+        }
+    };
+    try simRun(ctx, .{ .schedule = .fifo, .trace = .off, .watchdog = null }, Work.run, .{ ops, &ctx.sink });
+}
+fn netGossip(ctx: *Context, ops: u64) !void {
+    const sim = try shakedown.Sim.init(ctx.gpa, .{ .schedule = .fifo, .trace = .off, .watchdog = null });
+    defer sim.deinit();
+    var nodes: [3]*shakedown.Sim.Node = undefined;
+    var addresses: [3]Io.net.IpAddress = undefined;
+    for (&nodes, &addresses, 0..) |*node, *address, i| {
+        address.* = .{ .ip4 = .{ .bytes = .{ 10, 0, 0, @intCast(i + 20) }, .port = 1234 } };
+        node.* = try sim.node("gossip", .{ .addresses = &.{address.*} });
+    }
+    const Work = struct {
+        fn run(peers: [3]*shakedown.Sim.Node, addr: [3]Io.net.IpAddress, count: u64, sink: *u64) !void {
+            var sockets: [3]Io.net.Socket = undefined;
+            for (&sockets, peers, addr) |*socket, node, address| socket.* = try address.bind(node.io(), .{ .mode = .dgram });
+            defer for (sockets, peers) |socket, node| socket.close(node.io());
+            var bytes: [32]u8 = @splat(42);
+            var messages = [_]Io.net.IncomingMessage{.init};
+            for (0..count) |_| {
+                for (sockets, peers, 0..) |socket, node, i| try socket.send(node.io(), &addr[(i + 1) % 3], &bytes);
+                for (sockets, peers) |socket, node| {
+                    const err, const n = (try node.io().operate(.{ .net_receive = .{ .socket_handle = socket.handle, .message_buffer = &messages, .data_buffer = &bytes, .flags = .{} } })).net_receive;
+                    if (err) |e| return e;
+                    sink.* +%= n + bytes[0];
+                }
+            }
+        }
+    };
+    const outcome = sim.run(Work.run, .{ nodes, addresses, ops, &ctx.sink });
+    if (outcome == .failed) return outcome.failed;
+    if (outcome != .finished) return error.SimulationFailed;
 }

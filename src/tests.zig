@@ -2,6 +2,7 @@
 //! from outside.
 test {
     _ = @import("fs_test.zig");
+    _ = @import("net_test.zig");
     _ = @import("shakedown.zig");
     _ = @import("layer.zig");
     _ = @import("Clock.zig");

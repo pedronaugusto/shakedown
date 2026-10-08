@@ -13,8 +13,8 @@
 //! What it cannot reach is what does not go through `Io`: `std.Thread`,
 //! spin loops on atomics, raw system calls, and data races between `Io`
 //! calls, which are ThreadSanitizer's. Files, directories and explicit mmap
-//! read/write synchronization use its disk model. Network and process calls
-//! still fail with `error.Unexpected`.
+//! read/write synchronization use its disk model. TCP, UDP, Unix sockets and
+//! DNS use its network model; process calls still fail with `error.Unexpected`.
 //!
 //! A `Sim` must not move; `init` allocates it.
 const std = @import("std");
@@ -26,11 +26,15 @@ const Trace = @import("trace.zig").Trace;
 const Core = @import("sim/Core.zig");
 const calls = @import("sim/calls.zig");
 const Region = @import("sim/Region.zig");
+const Disk = @import("sim/fs/Model.zig");
 const options_mod = @import("sim/options.zig");
 
+const Routing = @import("sim/routing.zig").Routing;
 const Sim = @This();
 
 pub const Fs = @import("sim/Fs.zig");
+pub const Node = @import("sim/Node.zig");
+pub const Net = @import("sim/Net.zig");
 pub const Options = options_mod.Options;
 pub const Executor = options_mod.Executor;
 pub const Schedule = options_mod.Schedule;
@@ -46,6 +50,10 @@ pub const Watchdog = @import("sim/Watchdog.zig");
 gpa: Allocator,
 /// Private: tasks, time, futexes.
 core: Core,
+nodes: std.ArrayList(*Node) = .empty,
+network: Net = undefined,
+fault_context: Core.Context = undefined,
+fault_outer: ?Routing = null,
 /// Private: the source when the options name none.
 own_source: Source,
 /// Private: the fault part, when the options plan faults.
@@ -59,7 +67,7 @@ own_watchdog: Watchdog = .{},
 watched_by: ?*Watchdog = null,
 watch: Watchdog.Watched = undefined,
 
-pub const InitError = error{ OutOfMemory, ExecutorUnavailable, FaultNotInErrorSet, FaultNotApplicable };
+pub const InitError = error{ OutOfMemory, ExecutorUnavailable, FaultNotInErrorSet, FaultNotApplicable, InvalidLink };
 
 pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     const s = try gpa.create(Sim);
@@ -69,9 +77,22 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     const drawn_from = options.source orelse &s.own_source;
     s.core = try .init(gpa, options, drawn_from);
     errdefer s.core.deinit();
+    s.core.context = .{ .core = &s.core };
+    s.core.vtable = &calls.vtable;
+    s.core.network.drawn_by = &s.core;
+    s.core.network.draw_fn = struct {
+        fn draw(p: *anyopaque, max: u64) u64 {
+            const c: *Core = @ptrCast(@alignCast(p)); // safe: installed with this Core as drawn_by
+            return c.draw(max);
+        }
+    }.draw;
+    _ = try s.core.network.addNode(&.{});
+    s.network = .{ .core = &s.core };
     if (s.core.fs) |*fs_| fs_.clock = &s.core.clocks[@backingInt(Core.Kept.real)];
     if (options.faults.len > 0) {
-        const fio = try FaultIo.init(gpa, s.coreIo(), .{ .source = drawn_from });
+        s.fault_context = .{ .core = &s.core, .inherit = true };
+        const base: Io = .{ .userdata = &s.fault_context, .vtable = &calls.vtable };
+        const fio = try FaultIo.init(gpa, base, .{ .source = drawn_from });
         errdefer fio.deinit();
         fio.tasks.on_crash = if (options.fs != null) crashOf else null;
         try fio.setPlan(options.faults);
@@ -79,6 +100,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
         fio.tasks.id = taskOf;
         fio.tasks.blocked = blockedOf;
         s.fio = fio;
+        s.fault_outer = .init(fio.io(), .{ .context = &s.core.context });
     }
     s.core.outer = s.io();
     return s;
@@ -86,6 +108,16 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
 
 fn crashOf(base: Io) void {
     const c = Core.of(base.userdata);
+    const node_id = c.nodeId();
+    if (node_id != 0) {
+        c.network.kill(node_id);
+        for (c.tasks.items) |task| if (task.node == node_id) c.requestCancel(task);
+        if (c.contexts.items[node_id - 1].disk) |*disk| disk.crash(.random) catch |err| {
+            if (c.current) |task| c.abandon(task, .{ .failed = err });
+        };
+        c.notifyNetwork();
+        return;
+    }
     c.fs.?.crash(.random) catch |err| {
         if (c.current) |t| c.abandon(t, .{ .failed = err });
         return;
@@ -108,6 +140,11 @@ fn blockedOf(base: Io) bool {
 pub fn deinit(s: *Sim) void {
     if (s.watched_by) |w| w.remove(&s.watch);
     s.own_watchdog.deinit();
+    for (s.nodes.items) |n| {
+        s.gpa.free(n.name);
+        s.gpa.destroy(n);
+    }
+    s.nodes.deinit(s.gpa);
     s.core.deinit();
     if (s.fio) |f| f.deinit();
     if (s.region) |*r| r.deinit();
@@ -117,12 +154,12 @@ pub fn deinit(s: *Sim) void {
 
 /// The `Io` to hand the code under test.
 pub fn io(s: *Sim) Io {
-    if (s.fio) |f| return f.io();
+    if (s.fault_outer) |*outer| return outer.io();
     return s.coreIo();
 }
 
 fn coreIo(s: *Sim) Io {
-    return .{ .userdata = &s.core, .vtable = &calls.vtable };
+    return .{ .userdata = &s.core.context, .vtable = &calls.vtable };
 }
 
 /// Runs `f(args)` as the root task until the run ends: every task ended,
@@ -270,4 +307,29 @@ fn describe(s: *Sim) void {
     if (t.choices.len > 0) w.print("; tape {f}", .{t}) catch return;
     w.writeAll("\nlast calls:\n") catch return;
     s.core.trace.format(w) catch return;
+}
+
+/// The owned deterministic network. Disabled network slots fail explicitly.
+pub fn net(s: *Sim) *Net {
+    return &s.network;
+}
+/// Create an isolated node before or during a run. Addresses default to 10.x.x.x.
+pub fn node(s: *Sim, name: []const u8, options: Node.Options) error{OutOfMemory}!*Node {
+    try s.nodes.ensureUnusedCapacity(s.gpa, 1);
+    try s.core.contexts.ensureUnusedCapacity(s.gpa, 1);
+    const ctx = try s.gpa.create(Core.Context);
+    errdefer s.gpa.destroy(ctx);
+    ctx.* = .{ .core = &s.core };
+    if (options.fs) |o| ctx.disk = .{ .model = try Disk.init(s.gpa, s.core.source, o), .clock = &s.core.clocks[@backingInt(Core.Kept.real)] };
+    errdefer if (ctx.disk) |disk| disk.model.deinit();
+    const n = try s.gpa.create(Node);
+    errdefer s.gpa.destroy(n);
+    const owned_name = try s.gpa.dupe(u8, name);
+    errdefer s.gpa.free(owned_name);
+    ctx.node = try s.core.network.addNode(options.addresses);
+    n.* = .{ .context = ctx, .name = owned_name };
+    if (s.fio) |fio| n.outer = .init(fio.io(), .{ .context = ctx });
+    s.core.contexts.appendAssumeCapacity(ctx);
+    s.nodes.appendAssumeCapacity(n);
+    return n;
 }

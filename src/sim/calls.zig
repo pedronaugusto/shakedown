@@ -2,8 +2,8 @@
 //!
 //! Tasks, groups, futexes, time, randomness, files and cancelation are simulated.
 //! Writes to the process's stdout and stderr, and stderr's lock, reach the
-//! real ones, which a run's outcome cannot depend on. Network and process calls
-//! fail with `error.Unexpected`. Files use the owning Core's disk model.
+//! real ones, which a run's outcome cannot depend on. Process calls fail with
+//! `error.Unexpected`. File and network calls use the node's owned models.
 //! Every call is a step and a record in the trace, and every call
 //! that can return `error.Canceled` is a cancelation point.
 const builtin = @import("builtin");
@@ -12,13 +12,14 @@ const Io = std.Io;
 const Core = @import("Core.zig");
 const Task = Core.Task;
 const fs_calls = @import("fs/calls.zig");
+const net_calls = @import("net/calls.zig");
 const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
 
 pub const vtable: Io.VTable = blk: {
     var table: Io.VTable = undefined;
     for (@typeInfo(Io.VTable).@"struct".field_names) |name| {
-        @field(table, name) = if (@hasDecl(slots, name)) @field(slots, name) else if (fs_calls.supports(name)) fs_calls.slot(name) else unsupported(name);
+        @field(table, name) = if (@hasDecl(slots, name)) @field(slots, name) else if (net_calls.supports(name)) net_calls.slot(name) else if (fs_calls.supports(name)) fs_calls.slot(name) else unsupported(name);
     }
     break :blk table;
 };
@@ -331,8 +332,16 @@ const slots = struct {
             c.record(callOf(operation), e, digest(error.Canceled));
             return error.Canceled;
         };
-        const result = perform(c, operation);
-        c.record(callOf(operation), e, 0);
+        const result = if (net_calls.isNetwork(operation) and c.options.net != null) blk: {
+            while (true) {
+                if (net_calls.perform(c, e.node, operation)) |result| break :blk result;
+                net_calls.wait(c, e.task, .never) catch {
+                    c.record(callOf(operation), e, digest(error.Canceled));
+                    return error.Canceled;
+                };
+            }
+        } else perform(c, operation);
+        c.record(callOf(operation), e, if (net_calls.isNetwork(operation) and c.options.net != null) net_calls.operationDigest(e.node, operation, result) else 0);
         return result;
     }
 
@@ -343,25 +352,34 @@ const slots = struct {
             c.record(.batchAwaitAsync, e, digest(error.Canceled));
             return error.Canceled;
         };
-        complete(c, b);
-        c.record(.batchAwaitAsync, e, 0);
+        var batch_digest: u64 = 0;
+        while (!complete(c, e.node, b, &batch_digest)) net_calls.wait(c, e.task, .never) catch {
+            c.record(.batchAwaitAsync, e, digest(error.Canceled));
+            return error.Canceled;
+        };
+        c.record(.batchAwaitAsync, e, batch_digest);
     }
 
-    pub fn batchAwaitConcurrent(userdata: ?*anyopaque, b: *Io.Batch, _: Io.Timeout) Io.Batch.AwaitConcurrentError!void {
+    pub fn batchAwaitConcurrent(userdata: ?*anyopaque, b: *Io.Batch, timeout: Io.Timeout) Io.Batch.AwaitConcurrentError!void {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         if (e.task) |t| if (Core.cancelPoint(t)) {
             c.record(.batchAwaitConcurrent, e, digest(error.Canceled));
             return error.Canceled;
         };
-        complete(c, b);
-        c.record(.batchAwaitConcurrent, e, 0);
+        const deadline = c.deadline(timeout);
+        var batch_digest: u64 = 0;
+        while (!complete(c, e.node, b, &batch_digest)) net_calls.wait(c, e.task, deadline) catch |err| {
+            c.record(.batchAwaitConcurrent, e, digest(err));
+            return err;
+        };
+        c.record(.batchAwaitConcurrent, e, batch_digest);
     }
 
     pub fn batchCancel(userdata: ?*anyopaque, _: *Io.Batch) void {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), true);
-        // Every operation completes when awaited, so none is ever pending.
+        // Readiness probes own no resources. Batch.cancel releases unstarted submissions.
         c.record(.batchCancel, e, 0);
     }
 
@@ -510,7 +528,7 @@ fn perform(c: *Core, operation: Io.Operation) Io.Operation.Result {
         },
         else => {},
     }
-    if (c.fs) |fs| {
+    if (c.disk(c.nodeId())) |fs| {
         fs.model.at = c.now(.real);
         if (fs_calls.perform(fs.model, operation)) |result| return result;
     }
@@ -534,24 +552,37 @@ fn failed(comptime tag: Io.Operation.Tag) Io.Operation.Result {
     });
 }
 
-/// Completes every submitted operation at once, in submission order.
-fn complete(c: *Core, b: *Io.Batch) void {
+/// Probe all submissions, leaving blocked operations available to retry or cancel.
+fn complete(c: *Core, node: u32, b: *Io.Batch, batch_digest: *u64) bool {
     var tail = b.completed.tail;
+    var pending: @TypeOf(b.submitted) = .{ .head = .none, .tail = .none };
     var index = b.submitted.head;
     while (index != .none) {
         const storage = &b.storage[index.toIndex()];
         const next = storage.submission.node.next;
-        const result = perform(c, storage.submission.operation);
-        switch (tail) {
-            .none => b.completed.head = index,
-            else => b.storage[tail.toIndex()].completion.node.next = index,
+        const op = storage.submission.operation;
+        const result = if (net_calls.isNetwork(op) and c.options.net != null) net_calls.perform(c, node, op) else perform(c, op);
+        if (result) |value| {
+            if (net_calls.isNetwork(op) and c.options.net != null) batch_digest.* = std.hash.int(batch_digest.* ^ net_calls.operationDigest(node, op, value) ^ index.toIndex());
+            switch (tail) {
+                .none => b.completed.head = index,
+                else => b.storage[tail.toIndex()].completion.node.next = index,
+            }
+            storage.* = .{ .completion = .{ .node = .{ .next = .none }, .result = value } };
+            tail = index;
+        } else {
+            switch (pending.tail) {
+                .none => pending.head = index,
+                else => b.storage[pending.tail.toIndex()].submission.node.next = index,
+            }
+            pending.tail = index;
+            storage.submission.node.next = .none;
         }
-        storage.* = .{ .completion = .{ .node = .{ .next = .none }, .result = result } };
-        tail = index;
         index = next;
     }
     b.completed.tail = tail;
-    b.submitted = .{ .head = .none, .tail = .none };
+    b.submitted = pending;
+    return b.completed.head != .none or b.submitted.head == .none;
 }
 
 // Everything else.

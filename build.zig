@@ -172,6 +172,7 @@ pub fn build(b: *std.Build) void {
             .bench = .{
                 .programs = &.{
                     .{ .name = "shakedown-bench", .source = "bench/main.zig" },
+                    .{ .name = "shakedown-net-bench", .source = "bench/net.zig" },
                     .{ .name = "shakedown-bench-compare", .source = "bench/compare.zig", .timed = false },
                 },
                 .imports = benchImports,
@@ -179,20 +180,6 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             },
         });
-        const tooling = b.dependencyLazy("preflight", .{}) catch return;
-        const host = b.graph.host;
-        const gantry = tooling.builder.dependencyLazy("gantry", .{ .target = host, .optimize = .safe }) catch return;
-        const plan_tool = b.addExecutable(.{ .name = "shakedown-ci-plan", .root_module = b.createModule(.{
-            .root_source_file = tooling.path("src/main.zig"),
-            .target = host,
-            .optimize = .safe,
-            .imports = &.{.{ .name = "gantry", .module = gantry.module("gantry") }},
-        }) });
-        const planner = b.addRunArtifact(plan_tool);
-        planner.addArg("plan");
-        planner.addPassthruArgs();
-        planner.setCwd(b.path("."));
-        b.step("plan", "Generate the hosted CI matrices").dependOn(&planner.step);
         // A project that depends on shakedown by path, with no packages to
         // fetch: the build a consumer gets.
         preflight.addConsumerCheck(b, .{ .package = "shakedown", .program = b.path("ci/consumer.zig") });
@@ -212,6 +199,8 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "shakedown", .module = module },
         .{ .name = "bench_options", .module = provenance.createModule() },
+        .{ .name = "network_model", .module = b.createModule(.{ .root_source_file = b.path("src/sim/net/Model.zig"), .target = target, .optimize = optimize }) },
+        .{ .name = "measuring", .module = b.createModule(.{ .root_source_file = b.path("src/bench.zig"), .target = target, .optimize = optimize }) },
         .{ .name = "bench_compare", .module = compare_driver },
     }) catch @panic("OOM");
 }

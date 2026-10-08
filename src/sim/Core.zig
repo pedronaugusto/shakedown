@@ -27,12 +27,21 @@ const TaskReport = options_mod.TaskReport;
 
 const Fs = @import("Fs.zig");
 const Disk = @import("fs/Model.zig");
+const Network = @import("net/Model.zig");
 const Core = @This();
+
+pub const Context = struct { core: *Core, node: u32 = 0, inherit: bool = false, disk: ?Fs = null };
 
 gpa: Allocator,
 options: Options,
 source: *Source,
 fs: ?Fs = null,
+network: Network,
+context: Context = undefined,
+vtable: *const Io.VTable = undefined,
+contexts: std.ArrayList(*Context) = .empty,
+active_node: u32 = 0,
+network_seen: u32 = 0,
 kind: executor.Kind,
 /// The `Io` handed to tasks the core starts itself (`Sim.at`).
 outer: Io = undefined,
@@ -110,6 +119,7 @@ pub const Job = union(enum) {
     member: *const fn (context: *const anyopaque) void,
     /// `Sim.run`'s function: its error, if any, ends the run.
     root: *const fn (context: *const anyopaque, result: *anyopaque) void,
+    node: *const fn (context: *const anyopaque, result: *anyopaque) void,
     /// `Sim.at`'s function, started when its timer fires.
     at: struct { ctx: *anyopaque, f: *const fn (io: Io, ctx: *anyopaque) void },
 };
@@ -134,6 +144,8 @@ pub const Wait = union(enum) {
 pub const Task = struct {
     core: *Core,
     id: u32 = 0,
+    node: u32 = 0,
+    io_node: u32 = 0,
     state: State = .idle,
     ctx: executor.Context,
     job: Job = undefined,
@@ -180,9 +192,10 @@ pub const Task = struct {
 
 const frame_align = 64;
 
-pub const InitError = error{ OutOfMemory, ExecutorUnavailable };
+pub const InitError = error{ OutOfMemory, ExecutorUnavailable, InvalidLink };
 
 pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
+    if (options.net) |net_options| try Network.validate(net_options.default_link);
     const kind: executor.Kind = switch (options.executor) {
         .auto => executor.best orelse return error.ExecutorUnavailable,
         .fibers => if (executor.available(.win32)) .win32 else if (executor.available(.fibers)) .fibers else return error.ExecutorUnavailable,
@@ -192,6 +205,7 @@ pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
     var c: Core = .{
         .gpa = gpa,
         .options = options,
+        .network = .init(gpa, options.net orelse .{}),
         .source = source,
         .kind = kind,
         .trace = .init(gpa, options.trace),
@@ -222,6 +236,12 @@ pub fn deinit(c: *Core) void {
         c.gpa.free(t.frame);
         c.gpa.destroy(t);
     }
+    c.network.deinit();
+    for (c.contexts.items) |ctx| {
+        if (ctx.disk) |fs_| fs_.model.deinit();
+        c.gpa.destroy(ctx);
+    }
+    c.contexts.deinit(c.gpa);
     c.tasks.deinit(c.gpa);
     c.idle.deinit(c.gpa);
     c.ready.deinit(c.gpa);
@@ -234,7 +254,27 @@ pub fn deinit(c: *Core) void {
 }
 
 pub fn of(userdata: ?*anyopaque) *Core {
-    return @ptrCast(@alignCast(userdata.?)); // safe: every Io the core hands out carries the core itself
+    const ctx: *Context = @ptrCast(@alignCast(userdata.?)); // safe: each simulation Io owns a stable Context
+    const c = ctx.core;
+    if (!ctx.inherit) {
+        if (c.current) |t| t.io_node = ctx.node else c.active_node = ctx.node;
+    }
+    return c;
+}
+
+pub fn nodeId(c: *Core) u32 {
+    return if (c.current) |t| t.io_node else c.active_node;
+}
+pub fn disk(c: *Core, id: u32) ?Fs {
+    return if (id == 0) c.fs else c.contexts.items[id - 1].disk;
+}
+pub fn notifyNetwork(c: *Core) void {
+    c.network.now = c.clocks[@backingInt(Kept.awake)];
+    c.network.pump();
+    if (c.network_seen != c.network.change) {
+        c.network_seen = c.network.change;
+        _ = c.wakeFutex(@intFromPtr(&c.network.change), std.math.maxInt(u32)); // safe: the network epoch has a stable address until Core.deinit
+    }
 }
 
 // Decisions.
@@ -281,6 +321,8 @@ pub fn spawn(
         .result_offset = t.result_offset,
         .result_len = result_len,
         .id = c.next_id,
+        .node = c.nodeId(),
+        .io_node = c.nodeId(),
         .job = job,
     };
     c.next_id += 1;
@@ -345,7 +387,7 @@ fn taskMain(arg: *anyopaque) callconv(.c) noreturn {
         switch (t.job) {
             .future => |f| f(t.contextPointer(), t.resultPointer()),
             .member => |f| f(t.contextPointer()),
-            .root => |f| f(t.contextPointer(), t.resultPointer()),
+            .root, .node => |f| f(t.contextPointer(), t.resultPointer()),
             .at => |a| a.f(t.core.outer, a.ctx),
         }
         t.core.finish(t);
@@ -372,6 +414,13 @@ fn finish(c: *Core, t: *Task) void {
         .root => {
             const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer())); // safe: a root's result is its error, written by its start function
             if (err.*) |e| c.outcome = .{ .failed = e };
+            c.release(t);
+        },
+        .node => {
+            const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer())); // safe: node callback writes an optional error
+            if (err.*) |e| if (e != error.Canceled or t.cancel != .delivered) {
+                c.outcome = .{ .failed = e };
+            };
             c.release(t);
         },
         .at => c.release(t),
@@ -506,6 +555,7 @@ fn next(c: *Core) ?*Task {
     while (true) {
         if (c.outcome != null) return null;
         if (c.mode == .step and c.step_taken) return null;
+        c.notifyNetwork();
         if (c.pickReady()) |t| {
             c.step_taken = true;
             return t;
@@ -515,8 +565,15 @@ fn next(c: *Core) ?*Task {
             c.outcome = .finished;
             return null;
         }
-        if (c.earliest()) |e| {
-            const at = c.clocks[@backingInt(Kept.awake)] +| e.remaining;
+        const remaining: ?i64 = blk: {
+            const timer = c.earliest();
+            const network = c.network.nextDeadline();
+            const network_remaining: ?i64 = if (network) |at| @max(0, at -| c.clocks[@backingInt(Kept.awake)]) else null;
+            if (timer) |e| break :blk if (network_remaining) |n| @min(e.remaining, n) else e.remaining;
+            break :blk network_remaining;
+        };
+        if (remaining) |by| {
+            const at = c.clocks[@backingInt(Kept.awake)] +| by;
             if (c.mode == .until and at > c.until) {
                 c.moveTo(c.until);
                 return null;
@@ -525,7 +582,7 @@ fn next(c: *Core) ?*Task {
                 c.outcome = .time_limit;
                 return null;
             }
-            c.advance(e.remaining);
+            c.advance(by);
             if (c.mode == .step) {
                 c.step_taken = true;
                 return null;
@@ -596,6 +653,7 @@ pub fn requestCancel(c: *Core, t: *Task) void {
         .ready, .running, .parked, .deferred => {},
     }
     if (t.cancel == .none) t.cancel = .requested;
+    if (t.state == .deferred) c.makeReady(t);
     if (t.state == .parked and t.cancelable and t.cancel == .requested) c.wake(t, .canceled);
 }
 
@@ -635,13 +693,13 @@ fn gatherReports(c: *Core) []const TaskReport {
     for (c.tasks.items) |t| {
         switch (t.state) {
             .parked => if (t.wait == .start) {
-                c.reports.appendAssumeCapacity(.{ .id = t.id, .spawned_at = t.spawned_at, .waiting = .unstarted });
+                c.reports.appendAssumeCapacity(.{ .id = t.id, .node = t.node, .spawned_at = t.spawned_at, .waiting = .unstarted });
             } else {
                 c.capturing = t;
                 executor.switchTo(&c.driver, &t.ctx);
                 c.reports.appendAssumeCapacity(t.report);
             },
-            .deferred => c.reports.appendAssumeCapacity(.{ .id = t.id, .spawned_at = t.spawned_at, .waiting = .unstarted }),
+            .deferred => c.reports.appendAssumeCapacity(.{ .id = t.id, .node = t.node, .spawned_at = t.spawned_at, .waiting = .unstarted }),
             .idle, .ready, .running, .done, .abandoned => {},
         }
     }
@@ -652,7 +710,7 @@ fn gatherReports(c: *Core) []const TaskReport {
 /// task's own stack.
 pub fn capture(c: *Core, t: *Task) void {
     _ = c;
-    t.report = .{ .id = t.id, .spawned_at = t.spawned_at, .waiting = switch (t.wait) {
+    t.report = .{ .id = t.id, .node = t.node, .spawned_at = t.spawned_at, .waiting = switch (t.wait) {
         .none => .none,
         .start => .unstarted,
         .futex => |address| .{ .futex = address },
@@ -726,7 +784,7 @@ fn earliest(c: *Core) ?Earliest {
 fn advance(c: *Core, by: i64) void {
     for (&c.clocks) |*clock| clock.* +|= by;
     while (c.earliest()) |e| {
-        if (e.remaining > 0) return;
+        if (e.remaining > 0) break;
         c.disarm(e.t);
         if (e.t.state != .parked) continue;
         if (e.t.wait == .start) {
@@ -735,6 +793,7 @@ fn advance(c: *Core, by: i64) void {
             c.makeReady(e.t);
         } else c.wake(e.t, .timeout);
     }
+    c.notifyNetwork();
 }
 
 fn moveTo(c: *Core, awake: i64) void {
@@ -808,7 +867,7 @@ pub fn wakeFutex(c: *Core, address: usize, max: u32) u32 {
 // Steps.
 
 /// A call in progress: who made it, and its step.
-pub const Call = struct { task: ?*Task, step: u64 };
+pub const Call = struct { task: ?*Task, step: u64, node: u32 };
 
 /// The start of every call: a step, the watchdog's count, and the step
 /// limit and the watchdog's verdict; under PCT, a change point; and, for a
@@ -819,9 +878,10 @@ pub fn enter(c: *Core, call_site: usize, yields: bool) Call {
     c.calls.store(c.steps, .monotonic);
     c.decision = null;
     const step = c.steps;
+    const node = c.nodeId();
     const t = c.current orelse {
         if (c.steps > c.options.max_steps and c.outcome == null) c.outcome = .step_limit;
-        return .{ .task = null, .step = step };
+        return .{ .task = null, .step = step, .node = node };
     };
     t.call_site = call_site;
     if (c.steps > c.options.max_steps) c.abandon(t, .step_limit);
@@ -837,13 +897,13 @@ pub fn enter(c: *Core, call_site: usize, yields: bool) Call {
     } else if (yields and c.chance(c.options.yield_per_million)) {
         c.yield(t);
     }
-    return .{ .task = t, .step = step };
+    return .{ .task = t, .step = step, .node = node };
 }
 
 /// The end of a call: its record in the trace.
 pub fn record(c: *Core, call: IoCall, entered: Call, outcome: u64) void {
     const id = if (entered.task) |t| t.id else 0;
-    const event: Event = .{ .call = call, .task = id, .decision = c.decision, .outcome = outcome };
+    const event: Event = .{ .call = call, .task = id, .node = entered.node, .decision = c.decision, .outcome = outcome };
     const at: Io.Timestamp = .fromNanoseconds(c.clocks[@backingInt(Kept.awake)]);
     // ziglint-ignore: Z026 a record that cannot be kept is dropped; the hash still counts it
     c.trace.append(.{ .step = entered.step, .task = id, .at = at, .event = event }) catch {};

@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- `Sim.Event` and `TaskReport` add `node`. The conformance golden changes because
+  every trace now records an Io namespace; scheduler choices are unchanged.
+  `Sim.init` and `DeterminismError` add `InvalidLink` for invalid network setup.
+
+
 - Benchmark JSONL uses the shared `bench.Result` schema, with ns/unit samples
   and provenance, replacing the repository's former aggregate-only rows.
 
@@ -25,6 +30,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a call of its own, so steps and counts of code that batches include them.
 
 ### Added
+
+- B5 simulated TCP, UDP, Unix sockets, node-local disks and DNS, deterministic
+  link latency/loss/duplication/reordering/bandwidth, partitions, hold/release,
+  resets, cooperative node kill/crash/restart, and replay/resource contract tests.
+- Network batches retain blocked operations and honor deadlines and cancellation.
+  Pooled packets and sockets avoid allocation during warmed transfer and reuse.
+- RPC, gossip and model message rows use the shared measuring module. CI and
+  workflow generation now use preflight's published integration seam directly.
 
 - `bench`: named workloads and units, warmup, bounded clock-resolution-aware
   batches, retained samples, best/median/p99, throughput and JSONL provenance.

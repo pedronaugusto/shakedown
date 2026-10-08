@@ -63,7 +63,7 @@ fn invoke(comptime name: []const u8, userdata: ?*anyopaque, args: anytype, ret: 
         c.record(call, e, std.hash.Wyhash.hash(0, "Canceled"));
         return error.Canceled;
     };
-    const disk = c.fs orelse {
+    const disk = c.disk(e.node) orelse {
         c.record(call, e, std.hash.Wyhash.hash(0, "Unexpected"));
         if (R == void) return;
         return mapped(@typeInfo(R).error_union.error_set, error.Unexpected);
