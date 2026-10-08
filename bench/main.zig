@@ -674,6 +674,6 @@ fn netGossip(ctx: *Context, ops: u64) !void {
         }
     };
     const outcome = sim.run(Work.run, .{ nodes, addresses, ops, &ctx.sink });
-    if (outcome == .failed) return outcome.failed;
+    if (outcome == .failed) return error.SimulationFailed;
     if (outcome != .finished) return error.SimulationFailed;
 }
