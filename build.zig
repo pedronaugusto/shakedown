@@ -191,14 +191,23 @@ pub fn build(b: *std.Build) void {
 /// the Debug module.
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     const module = b.createModule(.{ .root_source_file = b.path("src/shakedown.zig"), .target = target, .optimize = optimize });
-    const provenance = b.addOptions();
-    const revision = std.mem.trim(u8, b.run(&.{ "git", "rev-parse", "HEAD" }), "\r\n");
-    const dirty = b.run(&.{ "git", "status", "--porcelain", "--untracked-files=normal" }).len != 0;
-    provenance.addOption([]const u8, "commit", if (dirty) b.fmt("{s}-dirty", .{revision}) else revision);
+    // Git state is a build input, not a cached configuration-time observation.
+    const revision = b.addSystemCommand(&.{ "git", "rev-parse", "HEAD" });
+    revision.setCwd(b.path("."));
+    revision.has_side_effects = true;
+    const status = b.addSystemCommand(&.{ "git", "status", "--porcelain", "--untracked-files=normal" });
+    status.setCwd(b.path("."));
+    status.has_side_effects = true;
+    const provenance = b.addWriteFiles();
+    _ = provenance.addCopyFile(revision.captureStdOut(.{}), "revision.txt");
+    _ = provenance.addCopyFile(status.captureStdOut(.{}), "status.txt");
+    const options = provenance.add("options.zig", "const std = @import(\"std\");\n" ++
+        "pub const commit = std.mem.trim(u8, @embedFile(\"revision.txt\"), \"\\r\\n\") ++ (if (@embedFile(\"status.txt\").len != 0) \"-dirty\" else \"\");\n");
+    const provenance_module = b.createModule(.{ .root_source_file = options, .target = target, .optimize = optimize });
     const compare_driver = b.createModule(.{ .root_source_file = b.path("src/bench/compare.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "measuring", .module = b.createModule(.{ .root_source_file = b.path("src/bench.zig"), .target = target, .optimize = optimize }) }} });
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "shakedown", .module = module },
-        .{ .name = "bench_options", .module = provenance.createModule() },
+        .{ .name = "bench_options", .module = provenance_module },
         .{ .name = "network_model", .module = b.createModule(.{ .root_source_file = b.path("src/sim/net/Model.zig"), .target = target, .optimize = optimize }) },
         .{ .name = "measuring", .module = b.createModule(.{ .root_source_file = b.path("src/bench.zig"), .target = target, .optimize = optimize }) },
         .{ .name = "bench_compare", .module = compare_driver },

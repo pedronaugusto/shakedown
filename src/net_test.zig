@@ -574,3 +574,49 @@ test "Net UDP successful send survives sender close and stale handles cannot ali
     };
     try finished(sim.run(Work.run, .{ a, b, aa, ba }));
 }
+
+test "Net broadcast requires permission and reaches registered receivers" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const aa = try Io.net.IpAddress.parseIp4("10.11.0.1", 123);
+    const ba = try Io.net.IpAddress.parseIp4("10.11.0.2", 456);
+    const a = try sim.node("a", .{ .addresses = &.{aa} });
+    const b = try sim.node("b", .{ .addresses = &.{ba} });
+    const Work = struct {
+        fn run(left: *Sim.Node, right: *Sim.Node, x: Io.net.IpAddress, y: Io.net.IpAddress) !void {
+            const denied = try x.bind(left.io(), .{ .mode = .dgram });
+            const broadcast = try Io.net.IpAddress.parseIp4("255.255.255.255", 456);
+            try t.expectError(error.AccessDenied, denied.send(left.io(), &broadcast, "b"));
+            denied.close(left.io());
+            const send = try x.bind(left.io(), .{ .mode = .dgram, .allow_broadcast = true });
+            defer send.close(left.io());
+            const receive = try y.bind(right.io(), .{ .mode = .dgram });
+            defer receive.close(right.io());
+            try send.send(left.io(), &broadcast, "b");
+            var buf: [1]u8 = undefined;
+            var messages = [_]Io.net.IncomingMessage{.init};
+            const err, const count = (try right.io().operate(.{ .net_receive = .{ .socket_handle = receive.handle, .message_buffer = &messages, .data_buffer = &buf, .flags = .{} } })).net_receive;
+            if (err) |e| return e;
+            try t.expectEqual(1, count);
+            try t.expectEqual('b', buf[0]);
+        }
+    };
+    try finished(sim.run(Work.run, .{ a, b, aa, ba }));
+}
+
+test "Net saturated finite delivery hits the time limit instead of deadlock" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null, .net = .{ .default_link = .{ .latency = .{ .fixed = .fromNanoseconds(std.math.maxInt(i64)) } } } });
+    defer sim.deinit();
+    const address = try Io.net.IpAddress.parseIp4("10.12.0.2", 80);
+    const a = try sim.node("a", .{});
+    const b = try sim.node("b", .{ .addresses = &.{address} });
+    const Work = struct {
+        fn run(left: *Sim.Node, right: *Sim.Node, addr: Io.net.IpAddress) !void {
+            var server = try addr.listen(right.io(), .{});
+            defer server.deinit(right.io());
+            const client = try addr.connect(left.io(), .{ .mode = .stream });
+            defer client.close(left.io());
+        }
+    };
+    try t.expect(sim.run(Work.run, .{ a, b, address }) == .time_limit);
+}

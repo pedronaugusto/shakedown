@@ -18,7 +18,7 @@ pub const Link = struct {
     buffer: u32 = 256 * 1024,
 };
 pub const Options = struct { default_link: Link = .{}, max_packets: u32 = 1024 };
-pub const Error = error{ OutOfMemory, SystemResources, AddressInUse, AddressUnavailable, ConnectionRefused, ConnectionResetByPeer, ConnectionTimedOut, SocketUnconnected, MessageOversize, UnsupportedSocketMode, InvalidLink };
+pub const Error = error{ OutOfMemory, SystemResources, AddressInUse, AddressUnavailable, ConnectionRefused, ConnectionResetByPeer, ConnectionTimedOut, SocketUnconnected, MessageOversize, UnsupportedSocketMode, InvalidLink, AccessDenied };
 const State = struct { value: Link, held: bool = false, partitioned: bool = false, available: i64 = 0 };
 pub const Socket = struct {
     handle: Handle,
@@ -54,11 +54,13 @@ const Packet = struct {
     at: i64,
     born: i64,
     delivery: i64,
+    blocked: bool = false,
     seq: u64,
     len: usize = 0,
     data: [65536]u8 = undefined,
 };
 fn order(_: void, a: *Packet, b: *Packet) std.math.Order {
+    if (a.blocked != b.blocked) return if (a.blocked) .gt else .lt;
     return if (a.at == b.at) std.math.order(a.seq, b.seq) else std.math.order(a.at, b.at);
 }
 names: std.StringHashMapUnmanaged(u32) = .empty,
@@ -176,6 +178,7 @@ pub fn status(m: *Model, a: u32, b: u32, held: ?bool, partitioned: ?bool) void {
 fn adjust(m: *Model, p: *Packet) void {
     if (m.sockets.get(p.to)) |s| if (s.local) return;
     const state = m.links.getPtr(key(p.a, p.b)).?;
+    p.blocked = state.held and !state.partitioned;
     p.at = if (state.partitioned) p.born +| 60000000000 else if (state.held) std.math.maxInt(i64) else @max(m.now, p.delivery);
 }
 fn draw(m: *Model, max: u64) u64 {
@@ -400,12 +403,24 @@ pub fn read(m: *Model, s: *Socket, out: []u8) Error!?usize {
 pub fn send(m: *Model, s: *Socket, addr: Address, bytes: []const u8) Error!void {
     if (s.kind != .datagram or s.send_closed) return error.SocketUnconnected;
     if (bytes.len > 65535) return error.MessageOversize;
+    if (addr == .ip4 and std.mem.allEqual(u8, &addr.ip4.bytes, 255)) {
+        if (!s.allow_broadcast) return error.AccessDenied;
+        // Allocation order is stable across OS handle widths; hash-table order is not.
+        for (m.owned.items) |receiver| {
+            if (m.sockets.get(receiver.handle) != receiver or receiver.kind != .datagram or receiver.address != .ip4 or receiver.address.getPort() != addr.getPort()) continue;
+            try m.sendTo(s, receiver, bytes);
+        }
+        return;
+    }
     const destination = m.route(s.node, addr) orelse return; // UDP has no delivery guarantee
     const receiver = m.bound(destination, addr, .datagram) orelse return;
-    const l = m.links.getPtr(key(s.node, destination)).?.value;
+    try m.sendTo(s, receiver, bytes);
+}
+fn sendTo(m: *Model, sender: *Socket, receiver: *Socket, bytes: []const u8) Error!void {
+    const l = m.links.getPtr(key(sender.node, receiver.node)).?.value;
     if (m.chance(l.loss_per_million)) return;
-    try m.enqueue(s, receiver, bytes, .datagram);
-    if (m.chance(l.duplicate_per_million)) m.enqueue(s, receiver, bytes, .datagram) catch return; // A bounded receive queue may drop a duplicate.
+    try m.enqueue(sender, receiver, bytes, .datagram);
+    if (m.chance(l.duplicate_per_million)) m.enqueue(sender, receiver, bytes, .datagram) catch return; // A bounded receive queue may drop a duplicate.
 }
 pub const Received = struct { address: Address, len: usize, truncated: bool };
 pub fn receive(m: *Model, s: *Socket, out: []u8, peek: bool) ?Received {
@@ -475,7 +490,7 @@ pub fn kill(m: *Model, node: u32) void {
 }
 pub fn nextDeadline(m: *Model) ?i64 {
     const p = m.queue.peek() orelse return null;
-    return if (p.at == std.math.maxInt(i64)) null else p.at;
+    return if (p.blocked) null else p.at;
 }
 pub fn pump(m: *Model) void {
     while (m.queue.peek()) |p| {
