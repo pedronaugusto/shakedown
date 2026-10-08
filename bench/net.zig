@@ -4,7 +4,7 @@ const Io = std.Io;
 const Model = @import("network_model");
 const bench = @import("measuring");
 const Context = struct { model: Model, pair: [2]*Model.Socket, checksum: u64 = 0 };
-fn message(ctx: *Context, count: u64) !void {
+fn message(ctx: *Context, count: u64) Model.Error!void {
     var bytes: [32]u8 = @splat(42);
     for (0..count) |_| {
         _ = try ctx.model.write(ctx.pair[0], &bytes);
@@ -22,7 +22,7 @@ pub fn main(init: std.process.Init) !void {
     ctx.pair = try ctx.model.pair(0, 0, true);
     var buffer: [4096]u8 = undefined;
     var output = Io.File.stdout().writerStreaming(init.io, &buffer);
-    const rows = [_]bench.Row(Context){.{ .name = "net/message-32", .unit = "message", .run = message }};
-    try bench.run(init.gpa, init.io, &output.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, .{ .smoke = smoke });
+    const rows = [_]bench.Row(Context, Model.Error){.{ .name = "net/message-32", .unit = "message", .run = message }};
+    try bench.run(Model.Error, init.gpa, init.io, &output.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, .{ .smoke = smoke });
     std.mem.doNotOptimizeAway(ctx.checksum);
 }

@@ -18,13 +18,13 @@ const Work = struct {
     clock: *Clock,
     calls: usize = 0,
     units: u64 = 0,
-    fn run(self: *Work, units: u64) anyerror!void {
+    fn run(self: *Work, units: u64) error{}!void {
         self.calls += 1;
         self.units += units;
         self.clock.advance(.fromNanoseconds(@intCast(units * 10)));
     }
 };
-const rows = [_]bench.Row(Work){.{ .name = "quoted\"\nrow", .unit = "op", .smoke = 3, .run = Work.run }};
+const rows = [_]bench.Row(Work, error{}){.{ .name = "quoted\"\nrow", .unit = "op", .smoke = 3, .run = Work.run }};
 const metadata: bench.Metadata = .{ .commit = "commit\"\n", .zig = "zig", .cpu = "cpu", .os = "os" };
 
 test "bench warms up and batches above clock resolution, retaining JSONL provenance" {
@@ -32,7 +32,7 @@ test "bench warms up and batches above clock resolution, retaining JSONL provena
     var work: Work = .{ .clock = &clock };
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
-    try bench.run(std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{ .samples = 3, .minimum = .zero });
+    try bench.run(error{}, std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{ .samples = 3, .minimum = .zero });
     var parsed = try bench.parse(std.testing.allocator, output.written());
     defer parsed.deinit();
     const r = parsed.rows.items[0].value;
@@ -49,14 +49,14 @@ test "bench smoke runs each selected workload once without a clock or calibratio
     var work: Work = .{ .clock = &clock };
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
-    try bench.run(std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{ .smoke = true });
+    try bench.run(error{}, std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{ .smoke = true });
     try std.testing.expectEqual(@as(usize, 1), work.calls);
     try std.testing.expectEqual(@as(u64, 3), work.units);
     var parsed = try bench.parse(std.testing.allocator, output.written());
     defer parsed.deinit();
     try std.testing.expect(parsed.rows.items[0].value.smoke);
     try std.testing.expectError(error.SmokeRun, bench.compare(std.testing.allocator, parsed.rows.items[0].value, parsed.rows.items[0].value));
-    try std.testing.expectError(error.ClockUnavailable, bench.run(std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{}));
+    try std.testing.expectError(error.ClockUnavailable, bench.run(error{}, std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{}));
 }
 
 test "bench refuses an unresolved batch and duplicate rows, and filters prefixes" {
@@ -64,11 +64,11 @@ test "bench refuses an unresolved batch and duplicate rows, and filters prefixes
     var work: Work = .{ .clock = &clock };
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
-    try std.testing.expectError(error.Unmeasurable, bench.run(std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{ .max_batch = 8 }));
+    try std.testing.expectError(error.Unmeasurable, bench.run(error{}, std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{ .max_batch = 8 }));
     try std.testing.expectEqual(@as(usize, 0), output.written().len);
-    try std.testing.expectError(error.DuplicateRow, bench.run(std.testing.allocator, clock.io(), &output.writer, &work, &.{ rows[0], rows[0] }, metadata, .{}));
+    try std.testing.expectError(error.DuplicateRow, bench.run(error{}, std.testing.allocator, clock.io(), &output.writer, &work, &.{ rows[0], rows[0] }, metadata, .{}));
     const calls = work.calls;
-    try bench.run(std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{ .smoke = true, .prefix = "absent" });
+    try bench.run(error{}, std.testing.allocator, clock.io(), &output.writer, &work, &rows, metadata, .{ .smoke = true, .prefix = "absent" });
     try std.testing.expectEqual(calls, work.calls);
 }
 
@@ -141,4 +141,22 @@ test "bench parse owns rows through every allocation failure" {
     defer output.deinit();
     try bench.write(&output.writer, row);
     try std.testing.checkAllAllocationFailures(std.testing.allocator, parseAllocationCase, .{output.written()});
+}
+
+const FailingWork = struct {
+    fn run(_: *FailingWork, _: u64) error{WorkloadFailed}!void {
+        return error.WorkloadFailed;
+    }
+};
+test "bench callbacks retain finite workload errors in runner composition" {
+    const E = error{WorkloadFailed};
+    const Callback = @TypeOf(@as(bench.Row(FailingWork, E), undefined).run);
+    comptime std.debug.assert(@typeInfo(@typeInfo(@typeInfo(Callback).pointer.child).@"fn".return_type.?).error_union.error_set == E);
+    comptime std.debug.assert(bench.RunError(E) != anyerror);
+    var work: FailingWork = .{};
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    const failing_rows = [_]bench.Row(FailingWork, E){.{ .name = "failure", .unit = "op", .run = FailingWork.run }};
+    try std.testing.expectError(error.WorkloadFailed, bench.run(E, std.testing.allocator, std.testing.io, &out.writer, &work, &failing_rows, metadata, .{ .smoke = true }));
+    try std.testing.expectEqual(@as(usize, 0), out.written().len);
 }

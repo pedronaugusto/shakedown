@@ -2,7 +2,7 @@
 //! over std's own. `zig build bench` runs them in ReleaseFast and writes one
 //! JSON line per row to stdout.
 //!
-//! Timings are taken by hand, on an idle machine, never in CI, where
+//! Timings are taken by hand, on the shared machine, never in CI, where
 //! `zig build test` runs each row once at its smallest (`--smoke`).
 //! `zig-out/bench/shakedown-bench <row prefix>` runs the rows whose name
 //! starts with the prefix.
@@ -11,7 +11,14 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const shakedown = @import("shakedown");
 
-const Row = shakedown.bench.Row(Context);
+const WorkloadError = blk: {
+    var E: type = error{};
+    for (.{ netRpc, netGossip, fsCycleSim, fsCycleThreaded, fsCrashStates, fsSnapshot, nowThreaded, nowLayer, nowClock, nowFaultIo, checkCancelThreaded, checkCancelFaultIo, preadSim, preadThreaded, preadLayer, preadClock, preadFaultEmpty, preadFaultTrace, preadFaultPlan, allocRaw, allocCounting, allocFailing, allocFaultIo, allocQuarantine, randomThreaded, randomFaultIo, randomFaultSeeded, batchThreaded, batchFaultIo, everyFaultSweep, simNow, simSwitchFibers, simSwitchThreads, simSpawn, simContentionRandom, simContentionPct, simTimers, simNew, simDeterminism, simReplay, checkCases, checkSimCases, checkShrink }) |callback| {
+        E = E || @typeInfo(@typeInfo(@TypeOf(callback)).@"fn".return_type.?).error_union.error_set;
+    }
+    break :blk E;
+};
+const Row = shakedown.bench.Row(Context, WorkloadError);
 
 const Context = struct {
     io: Io,
@@ -88,7 +95,7 @@ pub fn main(init: std.process.Init) !void {
     defer file.close(io);
 
     var ctx: Context = .{ .io = io, .gpa = gpa, .dir = scratch, .file = file };
-    try shakedown.bench.run(gpa, io, &stdout.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, .{ .smoke = smoke, .prefix = prefix });
+    try shakedown.bench.run(WorkloadError, gpa, io, &stdout.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, .{ .smoke = smoke, .prefix = prefix });
     try stdout.interface.flush();
     std.mem.doNotOptimizeAway(ctx.sink);
 }
@@ -105,23 +112,23 @@ fn nowLoop(ctx: *Context, io: Io, ops: u64) void {
     ctx.sink +%= @truncate(@as(u96, @bitCast(sum)));
 }
 
-fn nowThreaded(ctx: *Context, ops: u64) anyerror!void {
+fn nowThreaded(ctx: *Context, ops: u64) !void {
     nowLoop(ctx, ctx.io, ops);
 }
 
 const Empty = shakedown.Layer(struct { unused: u8 = 0 }, .{});
 
-fn nowLayer(ctx: *Context, ops: u64) anyerror!void {
+fn nowLayer(ctx: *Context, ops: u64) !void {
     var layer: Empty = .init(ctx.io, .{});
     nowLoop(ctx, layer.io(), ops);
 }
 
-fn nowClock(ctx: *Context, ops: u64) anyerror!void {
+fn nowClock(ctx: *Context, ops: u64) !void {
     var clock: shakedown.Clock = .init(ctx.io, .{});
     nowLoop(ctx, clock.io(), ops);
 }
 
-fn nowFaultIo(ctx: *Context, ops: u64) anyerror!void {
+fn nowFaultIo(ctx: *Context, ops: u64) !void {
     const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
     defer fio.deinit();
     nowLoop(ctx, fio.io(), ops);
@@ -133,11 +140,11 @@ fn checkCancelLoop(io: Io, ops: u64) !void {
     for (0..ops) |_| try io.checkCancel();
 }
 
-fn checkCancelThreaded(ctx: *Context, ops: u64) anyerror!void {
+fn checkCancelThreaded(ctx: *Context, ops: u64) !void {
     try checkCancelLoop(ctx.io, ops);
 }
 
-fn checkCancelFaultIo(ctx: *Context, ops: u64) anyerror!void {
+fn checkCancelFaultIo(ctx: *Context, ops: u64) !void {
     const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
     defer fio.deinit();
     try checkCancelLoop(fio.io(), ops);
@@ -153,16 +160,16 @@ fn preadLoop(ctx: *Context, io: Io, ops: u64) !void {
     }
 }
 
-fn preadThreaded(ctx: *Context, ops: u64) anyerror!void {
+fn preadThreaded(ctx: *Context, ops: u64) !void {
     try preadLoop(ctx, ctx.io, ops);
 }
 
-fn preadLayer(ctx: *Context, ops: u64) anyerror!void {
+fn preadLayer(ctx: *Context, ops: u64) !void {
     var layer: Empty = .init(ctx.io, .{});
     try preadLoop(ctx, layer.io(), ops);
 }
 
-fn preadClock(ctx: *Context, ops: u64) anyerror!void {
+fn preadClock(ctx: *Context, ops: u64) !void {
     var clock: shakedown.Clock = .init(ctx.io, .{});
     try preadLoop(ctx, clock.io(), ops);
 }
@@ -173,15 +180,15 @@ fn preadFault(ctx: *Context, ops: u64, options: shakedown.FaultIo.Options) !void
     try preadLoop(ctx, fio.io(), ops);
 }
 
-fn preadFaultEmpty(ctx: *Context, ops: u64) anyerror!void {
+fn preadFaultEmpty(ctx: *Context, ops: u64) !void {
     try preadFault(ctx, ops, .{ .track_paths = false });
 }
 
-fn preadFaultTrace(ctx: *Context, ops: u64) anyerror!void {
+fn preadFaultTrace(ctx: *Context, ops: u64) !void {
     try preadFault(ctx, ops, .{ .track_paths = false, .trace = .all });
 }
 
-fn preadFaultPlan(ctx: *Context, ops: u64) anyerror!void {
+fn preadFaultPlan(ctx: *Context, ops: u64) !void {
     // Sixteen entries that never fire: each waits for a call no read makes.
     var entries: [16]shakedown.IoPlan.Entry = undefined;
     for (&entries, 0..) |*e, i| e.* = .{
@@ -201,27 +208,27 @@ fn allocLoop(ctx: *Context, gpa: std.mem.Allocator, ops: u64, len: usize) !void 
     }
 }
 
-fn allocRaw(ctx: *Context, ops: u64) anyerror!void {
+fn allocRaw(ctx: *Context, ops: u64) !void {
     try allocLoop(ctx, std.heap.smp_allocator, ops, 256);
 }
 
-fn allocCounting(ctx: *Context, ops: u64) anyerror!void {
+fn allocCounting(ctx: *Context, ops: u64) !void {
     var counting: shakedown.alloc.Counting = .init(std.heap.smp_allocator);
     try allocLoop(ctx, counting.allocator(), ops, 256);
 }
 
-fn allocFailing(ctx: *Context, ops: u64) anyerror!void {
+fn allocFailing(ctx: *Context, ops: u64) !void {
     var failing: std.testing.FailingAllocator = .init(std.heap.smp_allocator, .{});
     try allocLoop(ctx, failing.allocator(), ops, 256);
 }
 
-fn allocFaultIo(ctx: *Context, ops: u64) anyerror!void {
+fn allocFaultIo(ctx: *Context, ops: u64) !void {
     const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
     defer fio.deinit();
     try allocLoop(ctx, try fio.allocator(std.heap.smp_allocator), ops, 256);
 }
 
-fn allocQuarantine(ctx: *Context, ops: u64) anyerror!void {
+fn allocQuarantine(ctx: *Context, ops: u64) !void {
     var quarantine: shakedown.alloc.Quarantine = .init(.{});
     defer quarantine.deinit();
     try allocLoop(ctx, quarantine.allocator(), ops, 4096);
@@ -237,17 +244,17 @@ fn randomLoop(ctx: *Context, io: Io, ops: u64) void {
     }
 }
 
-fn randomThreaded(ctx: *Context, ops: u64) anyerror!void {
+fn randomThreaded(ctx: *Context, ops: u64) !void {
     randomLoop(ctx, ctx.io, ops);
 }
 
-fn randomFaultIo(ctx: *Context, ops: u64) anyerror!void {
+fn randomFaultIo(ctx: *Context, ops: u64) !void {
     const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
     defer fio.deinit();
     randomLoop(ctx, fio.io(), ops);
 }
 
-fn randomFaultSeeded(ctx: *Context, ops: u64) anyerror!void {
+fn randomFaultSeeded(ctx: *Context, ops: u64) !void {
     const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false, .random_seed = 1 });
     defer fio.deinit();
     randomLoop(ctx, fio.io(), ops);
@@ -270,11 +277,11 @@ fn batchLoop(ctx: *Context, io: Io, ops: u64) !void {
     }
 }
 
-fn batchThreaded(ctx: *Context, ops: u64) anyerror!void {
+fn batchThreaded(ctx: *Context, ops: u64) !void {
     try batchLoop(ctx, ctx.io, ops);
 }
 
-fn batchFaultIo(ctx: *Context, ops: u64) anyerror!void {
+fn batchFaultIo(ctx: *Context, ops: u64) !void {
     const fio = try shakedown.FaultIo.init(ctx.gpa, ctx.io, .{ .track_paths = false });
     defer fio.deinit();
     try batchLoop(ctx, fio.io(), ops);
@@ -312,7 +319,7 @@ const Sweep = struct {
     }
 };
 
-fn everyFaultSweep(ctx: *Context, ops: u64) anyerror!void {
+fn everyFaultSweep(ctx: *Context, ops: u64) !void {
     var sweep: Sweep = .{};
     for (0..ops) |_| {
         const report = try shakedown.everyFault(ctx.gpa, ctx.io, &sweep, .{});
@@ -346,7 +353,7 @@ fn nowCalls(ops: u64, io: Io) void {
     std.mem.doNotOptimizeAway(sum);
 }
 
-fn simNow(ctx: *Context, ops: u64) anyerror!void {
+fn simNow(ctx: *Context, ops: u64) !void {
     try simRun(ctx, quiet, nowCalls, .{ops});
 }
 
@@ -369,11 +376,11 @@ fn pingPong(ops: u64, io: Io) !void {
     try other.await(io);
 }
 
-fn simSwitchFibers(ctx: *Context, ops: u64) anyerror!void {
+fn simSwitchFibers(ctx: *Context, ops: u64) !void {
     try simRun(ctx, quiet, pingPong, .{ops});
 }
 
-fn simSwitchThreads(ctx: *Context, ops: u64) anyerror!void {
+fn simSwitchThreads(ctx: *Context, ops: u64) !void {
     var options = quiet;
     options.executor = .threads;
     try simRun(ctx, options, pingPong, .{ops});
@@ -393,7 +400,7 @@ fn spawnAwait(ops: u64, io: Io) !void {
     std.mem.doNotOptimizeAway(sum);
 }
 
-fn simSpawn(ctx: *Context, ops: u64) anyerror!void {
+fn simSpawn(ctx: *Context, ops: u64) !void {
     try simRun(ctx, quiet, spawnAwait, .{ops});
 }
 
@@ -420,11 +427,11 @@ fn contend(ops: u64, io: Io) !void {
     if (shared.count != ops / 100 * 100) return error.BenchFailed;
 }
 
-fn simContentionRandom(ctx: *Context, ops: u64) anyerror!void {
+fn simContentionRandom(ctx: *Context, ops: u64) !void {
     try simRun(ctx, .{ .watchdog = null }, contend, .{ops});
 }
 
-fn simContentionPct(ctx: *Context, ops: u64) anyerror!void {
+fn simContentionPct(ctx: *Context, ops: u64) !void {
     try simRun(ctx, .{ .schedule = .{ .pct = .{} }, .watchdog = null }, contend, .{ops});
 }
 
@@ -442,7 +449,7 @@ fn sleepers(ops: u64, io: Io) !void {
     try group.await(io);
 }
 
-fn simTimers(ctx: *Context, ops: u64) anyerror!void {
+fn simTimers(ctx: *Context, ops: u64) !void {
     try simRun(ctx, quiet, sleepers, .{ops});
 }
 
@@ -450,12 +457,12 @@ fn nothing(_: Io) void {}
 
 /// A simulation made, run on one task and torn down, ops times: what each
 /// case of a property over a simulation pays before its body.
-fn simNew(ctx: *Context, ops: u64) anyerror!void {
+fn simNew(ctx: *Context, ops: u64) !void {
     for (0..ops) |_| try simRun(ctx, quiet, nothing, .{});
 }
 
 /// The contention workload recorded on a tape, then replayed from it.
-fn simReplay(ctx: *Context, ops: u64) anyerror!void {
+fn simReplay(ctx: *Context, ops: u64) !void {
     var recording: shakedown.Source = try .initRecording(ctx.gpa, .{ .prng = 7 }, .{ .max_choices = 1 << 24 });
     defer recording.deinit();
     try simRun(ctx, .{ .source = &recording, .watchdog = null }, contend, .{ops});
@@ -484,7 +491,7 @@ fn sumCommutes(_: void, c: *shakedown.Case) !void {
     if (forward != backward) return error.BenchFailed;
 }
 
-fn checkCases(ctx: *Context, ops: u64) anyerror!void {
+fn checkCases(ctx: *Context, ops: u64) !void {
     try shakedown.check(ctx.gpa, {}, sumCommutes, .{ .cases = @intCast(ops), .seed = 1 });
 }
 
@@ -495,7 +502,7 @@ fn emptySim(_: void, c: *shakedown.Case) !void {
     if (sim.run(nothing, .{sim.io()}) != .finished) return error.BenchFailed;
 }
 
-fn checkSimCases(ctx: *Context, ops: u64) anyerror!void {
+fn checkSimCases(ctx: *Context, ops: u64) !void {
     try shakedown.check(ctx.gpa, {}, emptySim, .{ .cases = @intCast(ops), .seed = 1 });
 }
 
@@ -507,7 +514,7 @@ fn distinctBelowThree(_: void, c: *shakedown.Case) !void {
 }
 
 /// A failing property found and shrunk to [0, 1, -1], ops times.
-fn checkShrink(ctx: *Context, ops: u64) anyerror!void {
+fn checkShrink(ctx: *Context, ops: u64) !void {
     for (0..ops) |seed| {
         var report: shakedown.CheckReport = undefined;
         shakedown.check(ctx.gpa, {}, distinctBelowThree, .{ .seed = seed, .diagnostics = &report }) catch |err| switch (err) {
@@ -611,7 +618,7 @@ fn preadSim(ctx: *Context, ops: u64) !void {
 
 fn simDeterminism(ctx: *Context, ops: u64) !void {
     const Work = struct {
-        fn run(_: void, io: Io) anyerror!void {
+        fn run(_: void, io: Io) !void {
             try io.sleep(.fromMilliseconds(1), .awake);
         }
     };

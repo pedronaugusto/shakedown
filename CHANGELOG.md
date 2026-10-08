@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- `bench.Row(Context, WorkloadError)` and `bench.run(WorkloadError, ...)`
+  declare finite callback errors; `bench.RunError(WorkloadError)` composes them
+  with runner failures instead of widening the public API to `anyerror`.
+
 - `Sim.Event` and `TaskReport` add `node`. The conformance golden changes because
   every trace now records an Io namespace; scheduler choices are unchanged.
   `Sim.init` and `DeterminismError` add `InvalidLink` for invalid network setup.

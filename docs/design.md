@@ -36,7 +36,8 @@ broadcast. Reader and HTTP adapters use the supported Io surfaces directly.
 
 ## Measurement contracts
 
-`bench.Row.run` performs exactly the requested units, retains observable results
+`bench.Row(Context, WorkloadError)` declares finite callback errors; the runner
+returns their union with its named failures. `bench.Row.run` performs exactly the requested units, retains observable results
 and leaves its context reusable. A real monotonic clock measures the workload,
 independently of any simulated clock. Bounded calibration doubles the workload
 quantum until samples exceed the minimum duration and clock-resolution multiple;

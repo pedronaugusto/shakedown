@@ -52,13 +52,13 @@ pub fn statistics(gpa: std.mem.Allocator, samples: []const f64) StatisticsError!
 
 /// A named workload. `run` must do exactly `units` units, retain observable
 /// results, and leave its context ready for another invocation.
-pub fn Row(comptime Context: type) type {
+pub fn Row(comptime Context: type, comptime WorkloadError: type) type {
     return struct {
         name: []const u8,
         unit: []const u8,
         initial: u64 = 1,
         smoke: u64 = 1,
-        run: *const fn (*Context, u64) anyerror!void,
+        run: *const fn (*Context, u64) WorkloadError!void,
     };
 }
 
@@ -73,9 +73,17 @@ pub const Options = struct {
     resolution_multiple: u32 = 1000,
     max_batch: u64 = 1 << 40,
 };
-/// Includes the workload's errors: callbacks are arbitrary user test code.
-pub const RunError = anyerror;
-pub fn run(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, context: anytype, rows: []const Row(std.meta.Child(@TypeOf(context))), metadata: Metadata, options: Options) RunError!void {
+/// Runner failures composed with the workload's declared error set.
+pub fn RunError(comptime WorkloadError: type) type {
+    return WorkloadError || StatisticsError || Io.Writer.Error || Io.Clock.ResolutionError || error{
+        InvalidOptions,
+        DuplicateRow,
+        ClockUnavailable,
+        Unmeasurable,
+        NonMonotonicClock,
+    };
+}
+pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, context: anytype, rows: []const Row(std.meta.Child(@TypeOf(context)), WorkloadError), metadata: Metadata, options: Options) RunError(WorkloadError)!void {
     if (metadata.commit.len == 0 or metadata.zig.len == 0 or metadata.cpu.len == 0 or metadata.os.len == 0 or options.samples == 0 or options.warmup == 0 or options.resolution_multiple == 0 or options.minimum.nanoseconds < 0) return error.InvalidOptions;
     for (rows, 0..) |row, i| {
         if (row.name.len == 0 or row.unit.len == 0 or row.initial == 0 or row.smoke == 0 or row.initial > options.max_batch) return error.InvalidOptions;
@@ -101,14 +109,14 @@ pub fn run(gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, context: anytype,
         // Calibration is discarded, as is an entire sample set if its fastest
         // batch reveals that calibration was distorted by a cold cache.
         while (true) {
-            const elapsed = try time(io, context, row.run, batch);
+            const elapsed = try time(WorkloadError, io, context, row.run, batch);
             if (elapsed < target) {
                 batch = try larger(batch, options.max_batch);
                 continue;
             }
             var resolved = true;
             for (samples) |*sample| {
-                const ns = try time(io, context, row.run, batch);
+                const ns = try time(WorkloadError, io, context, row.run, batch);
                 if (ns < target) {
                     resolved = false;
                     break;
@@ -130,7 +138,7 @@ fn larger(batch: u64, limit: u64) error{Unmeasurable}!u64 {
     if (batch >= limit) return error.Unmeasurable;
     return batch + @min(batch, limit - batch);
 }
-fn time(io: Io, context: anytype, function: anytype, batch: u64) RunError!i96 {
+fn time(comptime WorkloadError: type, io: Io, context: anytype, function: anytype, batch: u64) RunError(WorkloadError)!i96 {
     const start = Io.Timestamp.now(io, .awake);
     try function(context, batch);
     const elapsed = start.durationTo(.now(io, .awake)).nanoseconds;

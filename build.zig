@@ -173,6 +173,7 @@ pub fn build(b: *std.Build) void {
                 .programs = &.{
                     .{ .name = "shakedown-bench", .source = "bench/main.zig" },
                     .{ .name = "shakedown-net-bench", .source = "bench/net.zig" },
+                    .{ .name = "shakedown-model-bench", .source = "bench/b6.zig" },
                     .{ .name = "shakedown-bench-compare", .source = "bench/compare.zig", .timed = false },
                 },
                 .imports = benchImports,

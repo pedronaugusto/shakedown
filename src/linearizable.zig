@@ -78,7 +78,6 @@ pub fn check(io: std.Io, gpa: std.mem.Allocator, comptime Model: type, initial: 
     const used = try gpa.alloc(bool, n);
     defer gpa.free(used);
     const order = try gpa.alloc(usize, n);
-    errdefer gpa.free(order);
     var keep_order = false;
     defer if (!keep_order) gpa.free(order);
     @memset(used, false);
