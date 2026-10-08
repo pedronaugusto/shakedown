@@ -1,7 +1,7 @@
 //! Deterministic stateful trace and model search costs, including setup/cleanup.
 const std = @import("std");
 const sd = @import("shakedown");
-const measuring = @import("measuring");
+const measuring = sd.bench;
 const lin = sd.linearizable;
 
 pub const Model = struct {
@@ -10,7 +10,8 @@ pub const Model = struct {
     pub const Output = u32;
     pub const Command = Input;
     pub const Response = Output;
-    pub fn generate(source: *sd.Source, _: State) Command {
+    pub const GenerateError = error{};
+    pub fn generate(_: std.mem.Allocator, source: *sd.Source, _: State) GenerateError!Command {
         return sd.gen.enumValue(source, Command);
     }
     pub fn precondition(_: State, _: Command) bool {
@@ -30,7 +31,7 @@ pub const Model = struct {
 const Driver = struct {
     pub const Error = error{};
     state: u32 = 0,
-    pub fn run(self: *Driver, _: std.Io, command: Model.Command) Error!Model.Response {
+    pub fn run(self: *Driver, _: std.Io, command: Model.Command) Driver.Error!Model.Response {
         self.state = Model.transition(self.state, command);
         return self.state;
     }
@@ -52,7 +53,7 @@ pub fn generate(ctx: *Context, count: u64) Error!void {
         ctx.source.restart(.{ .prng = 61 });
         var driver: Driver = .{};
         var machine: sd.Machine(Model) = .init(0);
-        try machine.run(ctx.io, &ctx.source, &driver, .{ .average_commands = 16 });
+        try machine.run(ctx.io, ctx.gpa, &ctx.source, &driver, .{ .average_commands = 16 });
         ctx.sink +%= machine.completed + machine.state;
     }
 }

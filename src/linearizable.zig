@@ -14,6 +14,9 @@ pub fn Operation(comptime Input: type, comptime Output: type) type {
 
 pub const Options = struct {
     max_operations: usize = 256,
+    /// Failed (placed-set, model-state) memo entries. Zero disables caching.
+    /// Capacity is reduced to fit max_bytes; a full cache only costs speed.
+    max_cache_entries: usize = 1024,
     /// Candidate examinations, including candidates rejected by ordering.
     max_steps: u64 = 1_000_000,
     /// Bound on allocated workspace and witness payload (allocator overhead excluded).
@@ -28,6 +31,7 @@ pub const Result = struct {
     limit: ?Limit = null,
     steps: u64 = 0,
     max_depth: usize = 0,
+    cache_hits: u64 = 0,
     /// Input indices in one legal sequential ordering; empty unless linearizable.
     order: []const usize = &.{},
     allocator: ?std.mem.Allocator = null,
@@ -49,7 +53,11 @@ pub const Result = struct {
 /// remaining response. Exhausting all legal branches proves violation; budgets
 /// and pending calls produce unknown. Pending operations are never silently
 /// dropped. Cancellation is checked between candidate examinations.
-/// Workspace is O(n * sizeof(State)); native stack usage is independent of n.
+/// Failed states are memoized with exact placed sets and Model.equal, or
+/// std.meta.eql for value models. Equal states must admit the same future
+/// responses. Hash collisions are confirmed by equality; a full cache cannot
+/// change correctness. Workspace is O(n * sizeof(State) + cache * (n +
+/// sizeof(State))); native stack usage is independent of n.
 // ziglint-ignore: Z023 blocking drivers take Io first; the history type depends on Model
 pub fn check(io: std.Io, gpa: std.mem.Allocator, comptime Model: type, initial: Model.State, history: []const Operation(Model.Input, Model.Output), options: Options) Error!Result {
     try io.checkCancel();
@@ -80,6 +88,12 @@ pub fn check(io: std.Io, gpa: std.mem.Allocator, comptime Model: type, initial: 
     const order = try gpa.alloc(usize, n);
     var keep_order = false;
     defer if (!keep_order) gpa.free(order);
+    const base_bytes = n * per_op + extra;
+    const cache_entry_bytes = @sizeOf(Cache(Model).Entry) + n;
+    const capacity = @min(options.max_cache_entries, (options.max_bytes - base_bytes) / cache_entry_bytes);
+    var cache = Cache(Model).init(capacity, n);
+    defer cache.deinit(gpa);
+    var placed_hash: u64 = 0;
     @memset(used, false);
     states[0] = initial;
     cursors[0] = 0;
@@ -97,8 +111,10 @@ pub fn check(io: std.Io, gpa: std.mem.Allocator, comptime Model: type, initial: 
         }
         if (cursors[depth] == n) {
             if (depth == 0) return result;
+            try cache.insert(gpa, states[depth], used, placed_hash);
             depth -= 1;
             used[order[depth]] = false;
+            placed_hash ^= choiceHash(order[depth]);
             continue;
         }
         if (result.steps == options.max_steps) {
@@ -114,6 +130,13 @@ pub fn check(io: std.Io, gpa: std.mem.Allocator, comptime Model: type, initial: 
         if (op.invocation > barriers[depth]) continue;
         const next = Model.step(states[depth], op.input, op.response.?.output) orelse continue;
         used[candidate] = true;
+        const next_hash = placed_hash ^ choiceHash(candidate);
+        if (cache.contains(next, used, next_hash)) {
+            used[candidate] = false;
+            result.cache_hits += 1;
+            continue;
+        }
+        placed_hash = next_hash;
         order[depth] = candidate;
         depth += 1;
         states[depth] = next;
@@ -129,4 +152,73 @@ fn firstResponse(comptime Model: type, history: []const Operation(Model.Input, M
         first = @min(first, op.response.?.at);
     };
     return first;
+}
+
+// A stable, order-independent fingerprint of the placed operation indices.
+// Hash matches are always confirmed with the exact set and model equality.
+fn choiceHash(index: usize) u64 {
+    var x = @as(u64, @intCast(index)) +% 0x9e3779b97f4a7c15;
+    x = (x ^ (x >> 30)) *% 0xbf58476d1ce4e5b9;
+    x = (x ^ (x >> 27)) *% 0x94d049bb133111eb;
+    return x ^ (x >> 31);
+}
+
+fn Cache(comptime Model: type) type {
+    return struct {
+        const Self = @This();
+        const Entry = struct { occupied: bool = false, hash: u64 = 0, state: Model.State = undefined };
+        entries: []Entry,
+        masks: []bool,
+        width: usize,
+        capacity: usize,
+
+        fn init(capacity: usize, width: usize) Self {
+            return .{ .entries = &.{}, .masks = &.{}, .width = width, .capacity = capacity };
+        }
+        fn allocate(self: *Self, gpa: std.mem.Allocator) Error!void {
+            const entries = try gpa.alloc(Entry, self.capacity);
+            errdefer gpa.free(entries);
+            const masks = try gpa.alloc(bool, self.capacity * self.width);
+            for (entries) |*entry| entry.* = .{};
+            self.entries = entries;
+            self.masks = masks;
+        }
+        fn deinit(self: *Self, gpa: std.mem.Allocator) void {
+            gpa.free(self.entries);
+            gpa.free(self.masks);
+        }
+        fn equal(a: Model.State, b: Model.State) bool {
+            if (@hasDecl(Model, "equal")) return Model.equal(a, b);
+            return std.meta.eql(a, b);
+        }
+        fn mask(self: *const Self, index: usize) []bool {
+            return self.masks[index * self.width ..][0..self.width];
+        }
+        fn contains(self: *const Self, state: Model.State, used: []const bool, hash: u64) bool {
+            if (self.entries.len == 0) return false;
+            var index: usize = @intCast(hash % self.entries.len);
+            for (0..self.entries.len) |_| {
+                const entry = self.entries[index];
+                if (!entry.occupied) return false;
+                if (entry.hash == hash and std.mem.eql(bool, self.mask(index), used) and equal(entry.state, state)) return true;
+                index = if (index + 1 == self.entries.len) 0 else index + 1;
+            }
+            return false;
+        }
+        fn insert(self: *Self, gpa: std.mem.Allocator, state: Model.State, used: []const bool, hash: u64) Error!void {
+            if (self.capacity == 0) return;
+            if (self.entries.len == 0) try self.allocate(gpa);
+            var index: usize = @intCast(hash % self.entries.len);
+            for (0..self.entries.len) |_| {
+                const entry = &self.entries[index];
+                if (!entry.occupied) {
+                    entry.* = .{ .occupied = true, .hash = hash, .state = state };
+                    @memcpy(self.mask(index), used);
+                    return;
+                }
+                if (entry.hash == hash and std.mem.eql(bool, self.mask(index), used) and equal(entry.state, state)) return;
+                index = if (index + 1 == self.entries.len) 0 else index + 1;
+            }
+        }
+    };
 }

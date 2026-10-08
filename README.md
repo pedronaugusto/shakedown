@@ -494,7 +494,8 @@ MIT. See [LICENSE](LICENSE).
 a driver and checks responses against pure model transitions. Use `case.source`
 inside `check` so inputs, commands and simulated schedules share replay and
 shrinking. The caller creates and cleans up a fresh driver per case. The model
-declares `State`, `Command`, `Response`, `generate`, `precondition`, `transition`
+declares `State`, `Command`, `Response`, `GenerateError`,
+`generate(gpa, source, state)`, `precondition`, `transition`
 and `postcondition`; a driver declares `Error` and `run(io, command)`.
 
 `Machine.replay` validates an explicit command trace before side effects. An
@@ -505,7 +506,9 @@ into `Unsatisfiable` to discard it. Generation retries invalid commands within
 insufficient coverage. Optional caller-owned trace storage retains executed
 commands and responses, including a postcondition failure. Model state advances
 only on success. Model values and retained responses borrow immutable data; the
-caller owns their lifetimes. No allocations occur in Machine itself.
+caller owns their lifetimes. No allocations occur in Machine itself. Generation receives an explicit
+allocator and propagates its declared errors; use `case.gpa` or a caller-owned
+arena for command arguments, cleaning up the arena on every outcome.
 
 `linearizable.Operation(Input, Output)` records invocation, input and optional
 response timestamp/output. `linearizable.check(io, gpa, Model, initial, history,
@@ -517,7 +520,10 @@ Closed intervals allow overlap at equal timestamps; use unique event ordinals
 when the observation gives exact ordering. Pending operations produce unknown;
 this version does not infer their responses or drop them. Search is iterative
 and deterministic, with operation, candidate-examination and workspace byte
-bounds. Cancellation and allocation failure are errors with full workspace
+bounds. A bounded cache remembers fully rejected prefixes; hash matches are
+confirmed by the exact placed set and model equality. `Model.equal` may define
+state equivalence; otherwise `std.meta.eql` is used. Cache capacity reduces to
+fit the byte budget, and saturation affects speed only. Cancellation and allocation failure are errors with full workspace
 cleanup. Model callbacks must terminate and keep their snapshots immutable.
 Large ambiguous histories can exhaust the search budget; this checker does not
 implement automatic partitioning or exhaustive schedule exploration. Independent

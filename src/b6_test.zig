@@ -8,7 +8,8 @@ const Stack = struct {
     pub const State = u8;
     pub const Command = enum { push, pop };
     pub const Response = u8;
-    pub fn generate(s: *sd.Source, _: State) Command {
+    pub const GenerateError = error{};
+    pub fn generate(_: std.mem.Allocator, s: *sd.Source, _: State) GenerateError!Command {
         return sd.gen.enumValue(s, Command);
     }
     pub fn precondition(state: State, command: Command) bool {
@@ -46,7 +47,7 @@ const Sm = sd.Machine(Stack);
 fn stackProperty(_: void, c: *sd.Case) !void {
     var driver: StackDriver = .{};
     var machine: Sm = .init(0);
-    machine.run(t.io, c.source, &driver, .{ .average_commands = 8, .max_commands = 128 }) catch |err| switch (err) {
+    machine.run(t.io, c.gpa, c.source, &driver, .{ .average_commands = 8, .max_commands = 128 }) catch |err| switch (err) {
         error.LimitExceeded => return error.Unsatisfiable,
         else => return err,
     };
@@ -79,23 +80,23 @@ test "B6 Machine deterministic tape replay and explicit generation exhaustion" {
     defer source.deinit();
     var a: StackDriver = .{};
     var machine: Sm = .init(0);
-    try machine.run(t.io, &source, &a, .{});
+    try machine.run(t.io, t.allocator, &source, &a, .{});
     try t.expectEqual(@as(u32, 2), a.calls);
     try t.expectEqualSlices(u64, &tape, source.tape().choices);
     source.restart(.{ .replay = &tape });
     var b: StackDriver = .{};
     machine = .init(0);
-    try machine.run(t.io, &source, &b, .{});
+    try machine.run(t.io, t.allocator, &source, &b, .{});
     try t.expectEqual(a.state, b.state);
     try t.expectEqual(a.calls, b.calls);
     source.restart(.{ .replay = &.{ 999999, 1 } });
     machine = .init(0);
-    try t.expectError(error.Unsatisfiable, machine.run(t.io, &source, &b, .{ .max_tries = 1 }));
+    try t.expectError(error.Unsatisfiable, machine.run(t.io, t.allocator, &source, &b, .{ .max_tries = 1 }));
     source.restart(.{ .replay = &tape });
-    try t.expectError(error.LimitExceeded, machine.run(t.io, &source, &b, .{ .max_commands = 0 }));
+    try t.expectError(error.LimitExceeded, machine.run(t.io, t.allocator, &source, &b, .{ .max_commands = 0 }));
     source.restart(.{ .replay = &tape });
     b.fail = true;
-    try t.expectError(error.DriverFailed, machine.run(t.io, &source, &b, .{}));
+    try t.expectError(error.DriverFailed, machine.run(t.io, t.allocator, &source, &b, .{}));
     try t.expectEqual(@as(u64, 0), machine.completed);
 }
 
@@ -105,7 +106,7 @@ const Shrinking = struct {
         var driver: StackDriver = .{ .broken = true };
         var machine: Sm = .init(0);
         defer self.calls = driver.calls;
-        try machine.run(t.io, c.source, &driver, .{ .max_tries = 1 });
+        try machine.run(t.io, c.gpa, c.source, &driver, .{ .max_tries = 1 });
     }
 };
 test "B6 Machine shrinking preserves prerequisite commands and same failure" {
@@ -124,7 +125,7 @@ test "B6 Machine shrinking preserves prerequisite commands and same failure" {
     defer source.deinit();
     var driver: StackDriver = .{ .broken = true };
     var machine: Sm = .init(0);
-    try t.expectError(error.PostconditionFailed, machine.run(t.io, &source, &driver, .{ .max_tries = 1 }));
+    try t.expectError(error.PostconditionFailed, machine.run(t.io, t.allocator, &source, &driver, .{ .max_tries = 1 }));
     try t.expectEqual(@as(u32, 2), driver.calls);
 }
 
@@ -133,7 +134,7 @@ test "B6 Machine tape capacity exhaustion discards rather than passes" {
     defer source.deinit();
     var driver: StackDriver = .{};
     var machine: Sm = .init(0);
-    try t.expectError(error.Unsatisfiable, machine.run(t.io, &source, &driver, .{}));
+    try t.expectError(error.Unsatisfiable, machine.run(t.io, t.allocator, &source, &driver, .{}));
     try t.expectEqual(@as(u32, 0), driver.calls);
 }
 
@@ -286,6 +287,8 @@ fn historyProperty(_: void, c: *sd.Case) !void {
     var order: [5]usize = undefined;
     const expected: lin.Status = if (oracle(&history, &order, 0)) .linearizable else .violation;
     try expectStatus(Register, 0, &history, expected, .{});
+    try expectStatus(Register, 0, &history, expected, .{ .max_cache_entries = 1 });
+    try expectStatus(Register, 0, &history, expected, .{ .max_cache_entries = 0 });
 }
 test "B6 linearizable matches independent exhaustive oracle over seeded histories" {
     try sd.check(t.allocator, {}, historyProperty, .{ .seed = 52, .cases = 400 });
@@ -329,4 +332,65 @@ test "B6 checker and Machine honor cancellation before and during work" {
     layer.state = .{ .after = 3 };
     try t.expectError(error.Canceled, machine.replay(layer.io(), &driver, &.{ .push, .pop }, .{}));
     try t.expectEqual(@as(u32, 0), driver.calls);
+}
+
+test "B6 memoization prunes ambiguous histories without changing bounded verdicts" {
+    var history: [9]Op = undefined;
+    for (&history) |*op| op.* = .{ .invocation = 0, .input = .read, .response = .{ .at = 10, .output = 0 } };
+    history[8].response.?.output = 1;
+    var cached = try lin.check(t.io, t.allocator, Register, 0, &history, .{ .max_steps = 3000 });
+    defer cached.deinit();
+    try t.expectEqual(lin.Status.violation, cached.status);
+    try t.expect(cached.cache_hits > 0);
+    var bounded = try lin.check(t.io, t.allocator, Register, 0, &history, .{ .max_steps = 3000, .max_cache_entries = 0 });
+    defer bounded.deinit();
+    try t.expectEqual(lin.Status.unknown, bounded.status);
+    try t.expectEqual(lin.Limit.search, bounded.limit.?);
+    try t.expectEqual(@as(u64, 3000), bounded.steps);
+}
+
+const Bytes = struct {
+    pub const State = usize;
+    pub const Command = []const u8;
+    pub const Response = usize;
+    pub const GenerateError = error{OutOfMemory};
+    fn element(source: *sd.Source) u8 {
+        return sd.gen.int(source, u8);
+    }
+    pub fn generate(gpa: std.mem.Allocator, source: *sd.Source, _: State) GenerateError!Command {
+        return sd.gen.slice(source, u8, element, gpa, .{ .min_len = 16, .max_len = 16 });
+    }
+    pub fn precondition(_: State, command: Command) bool {
+        return command.len == 16;
+    }
+    pub fn transition(state: State, command: Command) State {
+        return state + command.len;
+    }
+    pub fn postcondition(_: State, command: Command, response: Response, _: State) bool {
+        return command.len == response;
+    }
+};
+const BytesDriver = struct {
+    pub const Error = error{};
+    pub fn run(_: *BytesDriver, _: std.Io, command: Bytes.Command) Error!usize {
+        return command.len;
+    }
+};
+fn generatedAllocationWork(gpa: std.mem.Allocator) !void {
+    var no_resize: sd.alloc.NoResize = .init(gpa);
+    var arena: std.heap.ArenaAllocator = .init(no_resize.allocator());
+    defer arena.deinit();
+    // more, 16 byte draws, stop: fixed shape independent of allocation failure.
+    var choices: [18]u64 = @splat(0);
+    choices[0] = 999999;
+    var source = try sd.Source.init(gpa, .{ .replay = &choices });
+    defer source.deinit();
+    var driver: BytesDriver = .{};
+    var machine: sd.Machine(Bytes) = .init(0);
+    try machine.run(t.io, arena.allocator(), &source, &driver, .{});
+    try t.expectEqual(@as(usize, 16), machine.state);
+    try t.expectEqual(@as(u64, 1), machine.completed);
+}
+test "B6 Machine generated arguments use explicit arena and finite allocation errors" {
+    try t.checkAllAllocationFailures(t.allocator, generatedAllocationWork, .{});
 }

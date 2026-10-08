@@ -18,6 +18,9 @@ const WorkloadError = blk: {
     }
     break :blk E;
 };
+comptime {
+    std.debug.assert(WorkloadError != anyerror);
+}
 const Row = shakedown.bench.Row(Context, WorkloadError);
 
 const Context = struct {

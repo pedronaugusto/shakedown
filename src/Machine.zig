@@ -2,10 +2,12 @@
 const std = @import("std");
 const Source = @import("Source.zig");
 
-/// Model declares State, Command and Response, and pure generate(source, state),
+/// Model declares State, Command, Response, GenerateError, generate(gpa, source, state),
 /// precondition(state, command), transition(state, command), and
 /// postcondition(before, command, response, after). State is a value snapshot;
 /// borrowed data must remain immutable. Generation may draw only from Source.
+/// Generated argument storage belongs to the supplied allocator's lifetime;
+/// use a Case arena, or a caller-owned arena cleaned up even on generator error.
 /// Driver declares Error and run(io, command) Error!Response. The caller owns
 /// driver setup, cleanup and any response storage, including on failure.
 pub fn Machine(comptime Model: type) type {
@@ -39,7 +41,7 @@ pub fn Machine(comptime Model: type) type {
         /// generated commands are retried; exhaustion discards the case through
         /// check's Unsatisfiable vocabulary. A length bound is an explicit error,
         /// never a successful truncated trace. No storage is allocated here.
-        pub fn run(self: *Self, io: std.Io, source: *Source, driver: anytype, options: Options) (Error || @TypeOf(driver.*).Error)!void {
+        pub fn run(self: *Self, io: std.Io, gpa: std.mem.Allocator, source: *Source, driver: anytype, options: Options) (Error || Model.GenerateError || @TypeOf(driver.*).Error)!void {
             self.recorded = 0;
             var count: u32 = 0;
             while (true) {
@@ -50,16 +52,16 @@ pub fn Machine(comptime Model: type) type {
                 if (source.overrun()) return error.Unsatisfiable;
                 if (!more) return;
                 if (count == options.max_commands) return error.LimitExceeded;
-                const command = try self.draw(io, source, options.max_tries);
+                const command = try self.draw(io, gpa, source, options.max_tries);
                 try self.execute(io, driver, command, options.trace);
                 count += 1;
             }
         }
 
-        fn draw(self: *const Self, io: std.Io, source: *Source, tries: u32) Error!Model.Command {
+        fn draw(self: *const Self, io: std.Io, gpa: std.mem.Allocator, source: *Source, tries: u32) (Error || Model.GenerateError)!Model.Command {
             for (0..tries) |_| {
                 try io.checkCancel();
-                const command = Model.generate(source, self.state);
+                const command = try Model.generate(gpa, source, self.state);
                 if (source.overrun()) return error.Unsatisfiable;
                 if (Model.precondition(self.state, command)) return command;
             }
