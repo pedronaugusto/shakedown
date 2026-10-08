@@ -16,6 +16,13 @@ exactly-once untimed smoke, escaped JSONL and provenance, duplicate and malforme
 rows, inconsistent statistics, both directions of comparison, observed noise,
 insufficient sample evidence, and ownership under every allocation failure.
 
+An isolated consumer containing only the shipped files exposed an artifact
+registration bug at 6e11f9c: creating an executable does not make it available
+through Dependency.artifact. The regression fixture now requests that artifact
+with fetching disabled and expects the exact beyond-noise comparison output
+and a successful exit. Registering it through installArtifact fixes the build
+contract without changing the measured workload or measuring algorithm.
+
 Local checks use Zig 0.17.0: `zig build test -Dtest-filter="bench "`,
 `zig build lint`, `zig build check`, and `zig build check-consumer`. The build
 also preserves the existing wasm32/x86 draw compile fixtures and native portable

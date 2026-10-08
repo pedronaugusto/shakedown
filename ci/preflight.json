@@ -30,6 +30,11 @@
       "zig",
       "build",
       "check-source32"
+    ],
+    [
+      "zig",
+      "build",
+      "check-bench-consumer"
     ]
   ],
   "unreachable_exceptions": "ci/unreachable-exceptions.json",

@@ -17,7 +17,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // Available to build tools without fetching preflight or building tests.
-    _ = b.addExecutable(.{
+    const comparison = b.addExecutable(.{
         .name = "shakedown-bench-compare",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/bench/compare.zig"),
@@ -26,6 +26,8 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+
+    b.installArtifact(comparison);
 
     // Everything below is this repository's own: a project depending on
     // shakedown builds the module and nothing else, and fetches nothing for
@@ -58,6 +60,17 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run the tests, the fault programs and the example");
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // A build-time API contract: an isolated consumer requests the comparator
+    // artifact, using only a path dependency and with package fetching off.
+    const empty_packages = b.addWriteFiles();
+    _ = empty_packages.add("README", "No packages.\n");
+    const comparison_consumer = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--build-file", "ci/bench-consumer/build.zig", "--system" });
+    comparison_consumer.addDirectoryArg2(empty_packages.getDirectory(), .{});
+    comparison_consumer.setEnvironmentVariable("ZIG_GLOBAL_CACHE_DIR", ".zig-cache/bench-consumer-global");
+    comparison_consumer.setCwd(b.path("."));
+    comparison_consumer.has_side_effects = true;
+    b.step("check-bench-consumer", "Smoke-run the comparator as an isolated dependency artifact").dependOn(&comparison_consumer.step);
 
     const check_step = b.step("check", "Compile the tests, programs and example without running them");
     check_step.dependOn(&tests.step);
