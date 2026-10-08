@@ -500,19 +500,19 @@ fn standard(file: Io.File) bool {
     return file.handle == Io.File.stdout().handle or file.handle == Io.File.stderr().handle;
 }
 
-/// An operation's result: writes to stdout and stderr reach them; anything
-/// else fails as without the parts of the system it needs.
+/// An operation's result: standard output reaches the process, file operations
+/// reach this simulation's disk, and unavailable parts fail.
 fn perform(c: *Core, operation: Io.Operation) Io.Operation.Result {
-    if (c.fs) |fs| {
-        fs.model.at = c.now(.real);
-        if (fs_calls.perform(fs.model, operation)) |result| return result;
-    }
     switch (operation) {
         .file_write_streaming => |w| if (standard(w.file)) {
             const r = real();
             if (r.vtable.operate(r.userdata, operation)) |result| return result else |_| {}
         },
         else => {},
+    }
+    if (c.fs) |fs| {
+        fs.model.at = c.now(.real);
+        if (fs_calls.perform(fs.model, operation)) |result| return result;
     }
     return switch (operation) {
         inline else => |_, tag| failed(tag),

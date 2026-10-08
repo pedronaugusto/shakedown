@@ -702,3 +702,64 @@ test "Fs symlinks, hard links, timestamps and atomic files use the same Io tree"
     try t.expect(sim.run(Work.run, .{sim.io()}) == .finished);
     try bytesEqual(sim.fs(), "hard", "contents");
 }
+
+test "Fs preserves standard output operation routing" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const Work = struct {
+        fn run(io: Io) !void {
+            for ([_]Io.File{ .stdout(), .stderr() }) |file| {
+                const result = try io.operate(.{ .file_write_streaming = .{ .file = file, .data = &.{""} } });
+                try t.expectEqual(0, try result.file_write_streaming);
+            }
+        }
+    };
+    try t.expectEqual(Sim.Outcome.finished, sim.run(Work.run, .{sim.io()}));
+}
+
+test "Fs setup mkdir rejects a file" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const fs = sim.fs();
+    try fs.write("file", "x");
+    try t.expectError(error.NotDir, fs.mkdir("file"));
+}
+
+test "Fs read faults stop at EOF" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const fs = sim.fs();
+    try fs.write("file", "x");
+    try fs.failReads("file", 8, 1);
+    const id = try fs.model.resolve(0, "file", true);
+    var bytes: [16]u8 = undefined;
+    try t.expectEqual(1, try fs.model.get(id, 0, &bytes));
+    try t.expectEqual(0, try fs.model.get(id, 2, &bytes));
+    try fs.failReads("file", 0, 32);
+    try t.expectEqual(0, try fs.model.get(id, 2, &bytes));
+}
+
+test "Fs create follows dangling symlinks and exclusive create refuses them" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const Work = struct {
+        fn run(io: Io) !void {
+            const cwd = Io.Dir.cwd();
+            _ = try cwd.createDirPath(io, "dir");
+            try cwd.symLink(io, "target", "dir/sym", .{});
+            try t.expectError(error.PathAlreadyExists, cwd.createFile(io, "dir/sym", .{ .exclusive = true }));
+            const file = try cwd.createFile(io, "dir/sym", .{});
+            defer file.close(io);
+            try file.writePositionalAll(io, "through", 0);
+            try cwd.symLink(io, "loop", "loop", .{});
+            try t.expectError(error.PathAlreadyExists, cwd.createFile(io, "loop", .{ .exclusive = true }));
+            try t.expectError(error.SymLinkLoop, cwd.createFile(io, "loop", .{}));
+        }
+    };
+    switch (sim.run(Work.run, .{sim.io()})) {
+        .finished => {},
+        .failed => |err| return err,
+        else => return error.TestUnexpectedResult,
+    }
+    try bytesEqual(sim.fs(), "dir/target", "through");
+}

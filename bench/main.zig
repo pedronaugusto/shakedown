@@ -42,6 +42,7 @@ const rows = [_]Row{
     .{ .name = "now/faultio", .ops = 10_000_000, .run = nowFaultIo },
     .{ .name = "checkcancel/threaded", .ops = 10_000_000, .run = checkCancelThreaded },
     .{ .name = "checkcancel/faultio", .ops = 10_000_000, .run = checkCancelFaultIo },
+    .{ .name = "pread4k/sim", .ops = 1_000_000, .run = preadSim },
     .{ .name = "pread4k/threaded", .ops = 1_000_000, .run = preadThreaded },
     .{ .name = "pread4k/layer", .ops = 1_000_000, .run = preadLayer },
     .{ .name = "pread4k/clock", .ops = 1_000_000, .run = preadClock },
@@ -602,4 +603,23 @@ fn fsSnapshot(ctx: *Context, ops: u64) !void {
         std.mem.doNotOptimizeAway(snap.root);
         snap.deinit();
     }
+}
+
+fn preadSim(ctx: *Context, ops: u64) !void {
+    const sim = try shakedown.Sim.init(ctx.gpa, .{ .watchdog = null, .trace = .off });
+    defer sim.deinit();
+    const page: [4096]u8 = @splat(0x5a);
+    try sim.fs().write("data", &page);
+    const Work = struct {
+        fn run(io: Io, count: u64, sink: *u64) !void {
+            const file = try Io.Dir.cwd().openFile(io, "data", .{});
+            defer file.close(io);
+            var buffer: [4096]u8 = undefined;
+            for (0..count) |_| {
+                if (try file.readPositionalAll(io, &buffer, 0) != buffer.len) return error.ShortRead;
+                sink.* +%= buffer[0];
+            }
+        }
+    };
+    if (sim.run(Work.run, .{ sim.io(), ops, &ctx.sink }) != .finished) return error.SimulationFailed;
 }

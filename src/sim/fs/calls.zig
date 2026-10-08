@@ -223,9 +223,7 @@ const slots = struct {
     }
     pub fn dirCreateFile(c: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, options: Io.Dir.CreateFileOptions) !Io.File {
         const base = try fs.directory(dir);
-        const existing = fs.resolve(base, path, true) catch |err| if (err == error.FileNotFound) null else return err;
-        if (existing != null and options.exclusive) return error.PathAlreadyExists;
-        const id = existing orelse try fs.create(base, path, .file, options.permissions, null);
+        const id = try fs.openOrCreate(base, path, options.permissions, options.exclusive);
         if (fs.root.nodes.items[id].kind == .directory) return error.IsDir;
         if (!canWrite(fs.root.nodes.items[id].meta.permissions)) return error.AccessDenied;
         const file = try fs.openHandle(id, options.read, true, false, false);

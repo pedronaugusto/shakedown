@@ -304,6 +304,10 @@ fn entryEffect(fs: *Model, changes: []const Change, data_inode: ?u32) !void {
 pub fn create(fs: *Model, base: u32, path: []const u8, kind: Io.File.Kind, permissions: Io.File.Permissions, target: ?[]const u8) Error!u32 {
     const p = try fs.parent(base, path);
     if (fs.find(fs.root.entries.items, p.inode, p.name) != null) return error.PathAlreadyExists;
+    return fs.createIn(p, kind, permissions, target);
+}
+fn createIn(fs: *Model, p: Parent, kind: Io.File.Kind, permissions: Io.File.Permissions, target: ?[]const u8) Error!u32 {
+    std.debug.assert(fs.find(fs.root.entries.items, p.inode, p.name) == null);
     try fs.unique();
     const name = try Name.create(fs.gpa, p.name);
     defer name.release(fs.gpa);
@@ -313,6 +317,25 @@ pub fn create(fs: *Model, base: u32, path: []const u8, kind: Io.File.Kind, permi
     const id = try fs.newNode(kind, permissions, target);
     try fs.entryEffect(&.{.{ .parent = p.inode, .name = name, .inode = id }}, id);
     return id;
+}
+/// Follow a dangling final symlink for ordinary create, but treat the link
+/// itself as existing for an exclusive create, as std's file opens do.
+pub fn openOrCreate(fs: *Model, base: u32, path: []const u8, permissions: Io.File.Permissions, exclusive: bool) Error!u32 {
+    if (exclusive) {
+        if (fs.resolve(base, path, false)) |_| return error.PathAlreadyExists else |err| if (err != error.FileNotFound) return err;
+        return fs.create(base, path, .file, permissions, null);
+    }
+    return fs.createTarget(base, path, permissions, 0);
+}
+fn createTarget(fs: *Model, base: u32, path: []const u8, permissions: Io.File.Permissions, depth: u8) Error!u32 {
+    if (depth >= 40) return error.SymLinkLoop;
+    if (fs.resolve(base, path, true)) |id| return id else |err| if (err != error.FileNotFound) return err;
+    const p = try fs.parent(base, path);
+    if (fs.find(fs.root.entries.items, p.inode, p.name)) |i| {
+        const node = fs.root.nodes.items[fs.root.entries.items[i].inode];
+        if (node.kind == .sym_link) return fs.createTarget(p.inode, node.target.?.bytes, permissions, depth + 1);
+    }
+    return fs.createIn(p, .file, permissions, null);
 }
 pub fn remove(fs: *Model, base: u32, path: []const u8, directory_only: bool) Error!void {
     const p = try fs.parent(base, path);
@@ -436,7 +459,8 @@ pub fn get(fs: *Model, inode: u32, offset: u64, out: []u8) Error!usize {
     if (out.len == 0) return 0;
     const n = fs.root.nodes.items[inode];
     if (n.kind == .directory) return error.IsDir;
-    const end = offset +| @as(u64, out.len);
+    if (offset >= n.live.size) return 0;
+    const end = offset +| @min(@as(u64, out.len), n.live.size -| offset);
     if (n.bad_len != 0 and offset < n.bad_start +| n.bad_len and end > n.bad_start) return error.InputOutput;
     return n.live.read(offset, out);
 }
@@ -448,14 +472,15 @@ pub fn metadata(fs: *Model, inode: u32, meta: state.Meta) !void {
 /// Populate a file before a run, including missing parents, and make the setup durable.
 pub fn write(fs: *Model, path: []const u8, bytes: []const u8) !void {
     try fs.setupParents(path);
-    const id = fs.resolve(0, path, true) catch try fs.create(0, path, .file, .default_file, null);
+    const id = try fs.openOrCreate(0, path, .default_file, false);
     try fs.setLength(id, 0);
     _ = try fs.put(id, 0, bytes);
     try fs.syncSetup();
 }
 pub fn mkdir(fs: *Model, path: []const u8) !void {
     try fs.setupParents(path);
-    _ = fs.resolve(0, path, true) catch try fs.create(0, path, .directory, .default_dir, null);
+    const id = fs.resolve(0, path, true) catch |err| if (err == error.FileNotFound) try fs.create(0, path, .directory, .default_dir, null) else return err;
+    if (fs.root.nodes.items[id].kind != .directory) return error.NotDir;
     try fs.syncSetup();
 }
 fn setupParents(fs: *Model, path: []const u8) !void {
