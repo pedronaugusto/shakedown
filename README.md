@@ -360,9 +360,8 @@ statistical significance claim and never makes a timing change pass or fail.
 Added and removed rows are named. Malformed rows, mismatched units or platforms,
 and smoke rows cannot be compared. Build tools can use the fetched package's
 `shakedown-bench-compare` artifact. CI smoke-checks and compiles measuring,
-with no timing thresholds. Measuring and network simulation remain work in
-progress until their implementation batches land; stateful models, simulated
-processes and exhaustive schedule search remain planned.
+with no timing thresholds. The package remains work in progress: network simulation, stateful models,
+simulated processes and exhaustive schedule search remain planned.
 
 ## Platforms
 
