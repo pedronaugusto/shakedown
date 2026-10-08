@@ -13,8 +13,8 @@
     },
     .dependencies = .{
         .preflight = .{
-            .url = "git+https://github.com/pedronaugusto/preflight#045cd2d68a7a9be3c03a6175744f639fc4751718",
-            .hash = "preflight-0.1.0-LX1ZwnBQBgBceaBSMsgOeQ7SHX_0AinOBImDX4xKQvI-",
+            .url = "git+https://github.com/pedronaugusto/preflight#77f962bc4c0fbbbb50d396fd5178aa1c53b47dd9",
+            .hash = "preflight-0.1.0-LX1ZwipfBgC2uEmcxnCJlGRQqWyGA4XVgSEBDBETBT6F",
             .lazy = true,
         },
     },

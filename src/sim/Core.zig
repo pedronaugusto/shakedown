@@ -25,11 +25,14 @@ const Event = options_mod.Event;
 const Outcome = options_mod.Outcome;
 const TaskReport = options_mod.TaskReport;
 
+const Fs = @import("Fs.zig");
+const Disk = @import("fs/Model.zig");
 const Core = @This();
 
 gpa: Allocator,
 options: Options,
 source: *Source,
+fs: ?Fs = null,
 kind: executor.Kind,
 /// The `Io` handed to tasks the core starts itself (`Sim.at`).
 outer: Io = undefined,
@@ -196,6 +199,9 @@ pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
         .start = monotonic,
         .driver = .{ .kind = kind },
     };
+    if (options.fs) |fs_options| {
+        c.fs = .{ .model = try Disk.init(gpa, source, fs_options) };
+    }
     switch (options.schedule) {
         .pct => |pct| {
             std.debug.assert(pct.depth >= 1 and pct.depth <= max_depth and pct.length >= 1);
@@ -221,6 +227,9 @@ pub fn deinit(c: *Core) void {
     c.ready.deinit(c.gpa);
     c.reports.deinit(c.gpa);
     c.trace.deinit();
+    if (c.fs) |fs| {
+        fs.model.deinit();
+    }
     c.* = undefined;
 }
 

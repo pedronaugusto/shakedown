@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- `Sim` now simulates file and directory calls by default. Set `Options.fs = null`
+  to disable storage. Its conformance trace digest includes filesystem inputs.
+- `EveryFaultReport` adds `bounded`, the count of crash points whose disk-image
+  enumeration exceeded the requested bound.
+
 - `IoFault` has `fail_after`, `spurious_wake` and `stall`: a switch over it names
   them.
 - A planned `cancel` lands only where std would deliver one: under blocked cancel
@@ -17,6 +22,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a call of its own, so steps and counts of code that batches include them.
 
 ### Added
+
+- `Sim.Fs`: a directory tree, synthetic handles, sparse copy-on-write pages,
+  symlinks, hard links, permissions, virtual timestamps, locks and explicit mmap
+  synchronization, all through the simulation's existing `Io`.
+- Separate live and persisted state, sector tearing, reordered writes, strict
+  and ordered metadata, `crashStates`, snapshots, and raw `flush`/`flushDir`
+  writeout, barrier, data and full durability for seams. Materializing crashes
+  and iterators returns allocation errors explicitly. `os_crash` distinguishes
+  writeout durability from power loss.
+- `everyCrash` checks recovery at every call boundary over bounded, distinct
+  persisted disk images; reports include incomplete bounds and recovery traces.
+  `IoFault.crash` abandons simulation tasks without executing defers.
+- Storage corruption, latent read errors, misdirected writes, byte capacity,
+  POSIX/Darwin/Windows names and configurable timestamp granularity.
+- File conformance against std's Threaded Io, differential operation properties,
+  airlock durability-contract checks and filesystem benchmark rows.
 
 - `IoFault.fail_after`, a lost answer: the call is made, then returns the error.
   `EveryFaultOptions.lost_answers` tries it at every step that can lose its

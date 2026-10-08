@@ -3,6 +3,8 @@
 //! A test-only dependency: nothing here belongs in a program's production
 //! build.
 
+const every = @import("every.zig");
+
 /// An `Io` that overrides some vtable slots and forwards the rest to a base.
 pub const Layer = @import("layer.zig").Layer;
 /// The override set of a `Layer`: one optional function per `Io.VTable` slot.
@@ -37,15 +39,15 @@ pub const IoTrace = FaultIo.IoTrace;
 /// An `Io` that counts, traces and faults every call it forwards.
 pub const FaultIo = @import("FaultIo.zig");
 /// Every single fault at every step of an operation, with a determinism check.
-pub const everyFault = @import("every_fault.zig").everyFault;
+pub const everyFault = every.fault.everyFault;
 /// What `everyFault` tries, and what it keeps when a run fails.
-pub const EveryFaultOptions = @import("every_fault.zig").EveryFaultOptions;
+pub const EveryFaultOptions = every.fault.EveryFaultOptions;
 /// Why `everyFault` failed.
-pub const EveryFaultError = @import("every_fault.zig").EveryFaultError;
+pub const EveryFaultError = every.fault.EveryFaultError;
 /// What `everyFault` did, and how a failing run failed.
-pub const EveryFaultReport = @import("every_fault.zig").EveryFaultReport;
+pub const EveryFaultReport = every.fault.EveryFaultReport;
 /// The fault one of `everyFault`'s runs injected, and where.
-pub const Injected = @import("every_fault.zig").Injected;
+pub const Injected = every.fault.Injected;
 /// Values drawn from a `Source`, a smaller tape a simpler value.
 pub const gen = @import("gen.zig");
 /// A recorded run's choices and spans.
@@ -76,3 +78,7 @@ pub const DeterminismError = @import("determinism.zig").DeterminismError;
 pub const conformance = @import("conformance.zig");
 /// A panic handler that names the simulation a panicking task ran in.
 pub const panic = Sim.panic;
+
+/// Recover every reachable disk state before each call and after return.
+pub const everyCrash = every.crash.everyCrash;
+pub const CrashEveryFaultOptions = every.crash.CrashEveryFaultOptions;

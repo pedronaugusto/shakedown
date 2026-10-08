@@ -6,6 +6,7 @@ const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
 const Plan = @import("../plan.zig").Plan;
 const Trace = @import("../trace.zig").Trace;
+const Fs = @import("Fs.zig");
 const Watchdog = @import("Watchdog.zig");
 
 pub const Executor = enum {
@@ -46,6 +47,8 @@ pub const AsyncStart = enum {
 };
 
 pub const Options = struct {
+    /// The node-zero filesystem; null leaves file slots unavailable.
+    fs: ?Fs.Options = .{},
     /// The seed of the simulation's own source, unless `source` is given.
     seed: u64 = 0,
     /// Draw every decision from this source instead: a `Case` passes its own,

@@ -274,9 +274,52 @@ and a `FaultIo` all pass it. `pub const panic = shakedown.panic;` in a test's
 root prints the seed, the tape and the last calls of the simulation a task
 panicked in.
 
-Once a run's tasks exist, a step allocates nothing: timers, futex waits and run
-queue slots live in the tasks, and a task that ended is kept, with its stack,
-for the next.
+Scheduler steps allocate nothing once a run's tasks exist: timers, futex waits
+and run queue slots live in the tasks, and a task that ended is kept, with its
+stack, for the next. File mutations allocate their tree versions, persistence
+records and changed pages.
+
+`sim.fs()` owns the disk used by the same `sim.io()`: files, directories,
+symlinks, hard links, permissions, timestamps, advisory locks and explicit mmap
+`read`/`write` calls. Setup with `fs.write` and `fs.mkdir` creates durable data.
+Snapshots retain the tree in O(1); sparse images share a radix index and 4 KiB
+pages. Name rules can be POSIX, Darwin case folding with canonical Unicode
+normalization, or Windows case folding, separators and reserved names. The
+Unicode tables use Unicode 14. Timestamp granularity and byte capacity are
+configurable. Simulated handles cannot address real OS files.
+
+An inode's live contents and metadata differ from its persisted state. `fileSync`
+syncs that inode; on a directory handle it syncs its entry operations.
+`fs.flush(handle, kind)` and `fs.flushDir(handle, kind)` let raw-call seams
+express durability: `writeout` hands changes to the device, `barrier` orders
+previous writeouts before subsequent effects, `data` persists contents and
+length, and `full` persists metadata too. A device flush also persists earlier
+writeouts on this disk. `writeout` includes retrieval metadata, as Darwin
+`fsync` and Windows `NO_SYNC` do; Linux `sync_file_range` must not map to it.
+The model represents one device, and assumes a successful barrier is honoured.
+
+`fs.crash(.lose_all)` keeps only synced effects; `.keep_all` keeps all pending
+effects; `.random` draws sectors, subsets and order from the simulation's source.
+`.os_crash` retains completed writeouts without promising power-loss durability.
+Crashes invalidate handles and locks. Under `.strict`, pending sectors and entry
+operations may persist in any order; `.ordered_metadata` requires a publication's
+earlier data first. A rename is indivisible except a Windows rename across
+directories, whose two name changes can persist separately. `crashStates(limit)`
+returns distinct persisted snapshots, in increasing retained-effect count, with
+all allowed sectors and orders. Release each snapshot and the iterator with
+`deinit`. Crash materialization and iteration can return `OutOfMemory`.
+
+`everyCrash(gpa, ctx, options)` calls `ctx.setUp(sim)` and `ctx.run(io)`, stops at
+every call boundary and after return, then runs `ctx.recover(io)` and
+`ctx.check(io)` on each allowed disk image in a fresh simulation. The prefix must
+match the clean trace. `max_states` bounds images per point; the returned report's
+`bounded` count says how many points exceeded it. `diagnostics` records a failed
+recovery's crash point, error and trace. Optional `ctx.tearDown()` releases state
+owned by the context. Abandoned tasks do not execute defers, including with an
+`IoFault.crash` plan, which is accepted only on a Sim with its filesystem enabled.
+Application heap state that must survive abandonment belongs to the context.
+`corrupt`, `failReads` and `misdirectNextWrite` inject storage faults by inode;
+a zero-length `failReads` clears the current bad range.
 
 `corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
 draws, `corpus.entries` a whole fuzz corpus of them, and `corpus.encode` a whole
@@ -287,9 +330,11 @@ quota.
 
 ## Scope
 
-- The simulation does not simulate a file system, a network or processes yet:
-  those calls fail with `error.Unexpected`, except writes to stdout and stderr,
-  which reach them.
+- Network and process calls fail with `error.Unexpected`; writes to stdout and
+  stderr reach the real process. `Options.fs = null` disables the disk as well.
+- Memory maps synchronize with files only at their explicit `read` and `write`
+  calls. Native page faults and implicit mapped-write coherence are outside the
+  model. Its name dialects do not model a particular volume's Unicode version.
 - It does not reach code that bypasses `Io`: `std.Thread`, spin loops on atomics
   and raw system calls run for real, and a task waiting on them waits in real
   time. Switches happen only at `Io` calls, so a race between two calls is not
@@ -299,7 +344,7 @@ quota.
 
 ## Platforms
 
-`Clock`, `Layer`, `FaultIo`, `everyFault`, `check`, `Counting`, `NoResize` and
+`Clock`, `Layer`, `FaultIo`, `everyFault`, `everyCrash`, `check`, `Counting`, `NoResize` and
 `corpus` are portable Zig. A `Sim` runs its tasks on fibers on x86_64 and aarch64
 outside Windows, on Win32 fibers on Windows, and on threads elsewhere; the
 threads executor runs wherever threads do, and gives the same run of a seed.

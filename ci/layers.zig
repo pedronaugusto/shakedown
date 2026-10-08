@@ -22,6 +22,10 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/shrink.zig",
         "src/trace.zig",
     } },
+    .{ .name = "disk pages", .patterns = &.{ "src/sim/fs/Image.zig", "src/sim/fs/names.zig" } },
+    .{ .name = "disk state", .patterns = &.{"src/sim/fs/state.zig"} },
+    .{ .name = "disk model", .patterns = &.{"src/sim/fs/Model.zig"} },
+    .{ .name = "disk", .patterns = &.{"src/sim/Fs.zig"} },
     .{ .name = "simulation parts", .patterns = &.{
         "src/sim/options.zig",
     } },
@@ -32,6 +36,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/Clock.zig",
         "src/FaultIo.zig",
         "src/sim/calls.zig",
+        "src/sim/fs/calls.zig",
     } },
     .{ .name = "simulation", .patterns = &.{
         "src/Sim.zig",
@@ -40,8 +45,11 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/alloc.zig",
         "src/check.zig",
         "src/conformance.zig",
+        "src/conformance/files.zig",
         "src/determinism.zig",
-        "src/every_fault.zig",
+        "src/every/fault.zig",
+        "src/every.zig",
+        "src/every/crash.zig",
     } },
     .{ .name = "public", .patterns = &.{
         "src/shakedown.zig",

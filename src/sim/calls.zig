@@ -1,24 +1,24 @@
 //! The simulation's `Io` vtable.
 //!
-//! Tasks, groups, futexes, time, randomness and cancelation are simulated.
+//! Tasks, groups, futexes, time, randomness, files and cancelation are simulated.
 //! Writes to the process's stdout and stderr, and stderr's lock, reach the
-//! real ones, which a run's outcome cannot depend on. Every other call (the
-//! file system, the network, processes) fails as an `Io` without them
-//! would, with `error.Unexpected`, until those parts of the simulation
-//! exist. Every call is a step and a record in the trace, and every call
+//! real ones, which a run's outcome cannot depend on. Network and process calls
+//! fail with `error.Unexpected`. Files use the owning Core's disk model.
+//! Every call is a step and a record in the trace, and every call
 //! that can return `error.Canceled` is a cancelation point.
 const builtin = @import("builtin");
 const std = @import("std");
 const Io = std.Io;
 const Core = @import("Core.zig");
 const Task = Core.Task;
+const fs_calls = @import("fs/calls.zig");
 const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
 
 pub const vtable: Io.VTable = blk: {
     var table: Io.VTable = undefined;
     for (@typeInfo(Io.VTable).@"struct".field_names) |name| {
-        @field(table, name) = if (@hasDecl(slots, name)) @field(slots, name) else unsupported(name);
+        @field(table, name) = if (@hasDecl(slots, name)) @field(slots, name) else if (fs_calls.supports(name)) fs_calls.slot(name) else unsupported(name);
     }
     break :blk table;
 };
@@ -331,7 +331,7 @@ const slots = struct {
             c.record(callOf(operation), e, digest(error.Canceled));
             return error.Canceled;
         };
-        const result = perform(operation);
+        const result = perform(c, operation);
         c.record(callOf(operation), e, 0);
         return result;
     }
@@ -343,7 +343,7 @@ const slots = struct {
             c.record(.batchAwaitAsync, e, digest(error.Canceled));
             return error.Canceled;
         };
-        complete(b);
+        complete(c, b);
         c.record(.batchAwaitAsync, e, 0);
     }
 
@@ -354,7 +354,7 @@ const slots = struct {
             c.record(.batchAwaitConcurrent, e, digest(error.Canceled));
             return error.Canceled;
         };
-        complete(b);
+        complete(c, b);
         c.record(.batchAwaitConcurrent, e, 0);
     }
 
@@ -502,7 +502,11 @@ fn standard(file: Io.File) bool {
 
 /// An operation's result: writes to stdout and stderr reach them; anything
 /// else fails as without the parts of the system it needs.
-fn perform(operation: Io.Operation) Io.Operation.Result {
+fn perform(c: *Core, operation: Io.Operation) Io.Operation.Result {
+    if (c.fs) |fs| {
+        fs.model.at = c.now(.real);
+        if (fs_calls.perform(fs.model, operation)) |result| return result;
+    }
     switch (operation) {
         .file_write_streaming => |w| if (standard(w.file)) {
             const r = real();
@@ -531,13 +535,13 @@ fn failed(comptime tag: Io.Operation.Tag) Io.Operation.Result {
 }
 
 /// Completes every submitted operation at once, in submission order.
-fn complete(b: *Io.Batch) void {
+fn complete(c: *Core, b: *Io.Batch) void {
     var tail = b.completed.tail;
     var index = b.submitted.head;
     while (index != .none) {
         const storage = &b.storage[index.toIndex()];
         const next = storage.submission.node.next;
-        const result = perform(storage.submission.operation);
+        const result = perform(c, storage.submission.operation);
         switch (tail) {
             .none => b.completed.head = index,
             else => b.storage[tail.toIndex()].completion.node.next = index,

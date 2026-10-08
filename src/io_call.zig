@@ -235,7 +235,7 @@ pub const IoFault = union(enum) {
                 if (kindAt(call) == .foreign) return error.FaultNotApplicable;
                 if (c.then) |then| try then.check(call);
             },
-            .crash => return error.FaultNotApplicable,
+            .crash => {},
         }
     }
 };

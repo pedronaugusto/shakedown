@@ -120,6 +120,12 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             },
         });
+        const tooling = b.dependencyLazy("preflight", .{ .@"repo-root" = (b.root.joinString(b.allocator, ".") catch @panic("OOM")) }) catch return;
+        const planner = b.addRunArtifact(tooling.artifact("preflight"));
+        planner.addArg("plan");
+        planner.addPassthruArgs();
+        planner.setCwd(b.path("."));
+        b.step("plan", "Generate the hosted CI matrices").dependOn(&planner.step);
         // A project that depends on shakedown by path, with no packages to
         // fetch: the build a consumer gets.
         preflight.addConsumerCheck(b, .{ .package = "shakedown", .program = b.path("ci/consumer.zig") });

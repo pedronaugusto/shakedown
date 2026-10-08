@@ -1,4 +1,4 @@
-//! `Sim`: one simulated `Io` that owns time, tasks and randomness.
+//! `Sim`: one simulated `Io` that owns time, tasks, randomness and storage.
 //!
 //! Code written against `std.Io` runs on it unchanged. Its tasks run one at
 //! a time, switching only at `Io` calls, and every choice between legal
@@ -12,9 +12,9 @@
 //!
 //! What it cannot reach is what does not go through `Io`: `std.Thread`,
 //! spin loops on atomics, raw system calls, and data races between `Io`
-//! calls, which are ThreadSanitizer's. The file system, the network and
-//! processes are not simulated yet: those calls fail with
-//! `error.Unexpected`.
+//! calls, which are ThreadSanitizer's. Files, directories and explicit mmap
+//! read/write synchronization use its disk model. Network and process calls
+//! still fail with `error.Unexpected`.
 //!
 //! A `Sim` must not move; `init` allocates it.
 const std = @import("std");
@@ -30,6 +30,7 @@ const options_mod = @import("sim/options.zig");
 
 const Sim = @This();
 
+pub const Fs = @import("sim/Fs.zig");
 pub const Options = options_mod.Options;
 pub const Executor = options_mod.Executor;
 pub const Schedule = options_mod.Schedule;
@@ -68,8 +69,12 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     const drawn_from = options.source orelse &s.own_source;
     s.core = try .init(gpa, options, drawn_from);
     errdefer s.core.deinit();
+    if (s.core.fs) |*fs_| fs_.clock = &s.core.clocks[@backingInt(Core.Kept.real)];
     if (options.faults.len > 0) {
-        const fio = try FaultIo.init(gpa, s.coreIo(), .{ .plan = options.faults, .source = drawn_from });
+        const fio = try FaultIo.init(gpa, s.coreIo(), .{ .source = drawn_from });
+        errdefer fio.deinit();
+        fio.tasks.on_crash = if (options.fs != null) crashOf else null;
+        try fio.setPlan(options.faults);
         // A cancel the fault part lands is held for the simulation's task.
         fio.tasks.id = taskOf;
         fio.tasks.blocked = blockedOf;
@@ -77,6 +82,15 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     }
     s.core.outer = s.io();
     return s;
+}
+
+fn crashOf(base: Io) void {
+    const c = Core.of(base.userdata);
+    c.fs.?.crash(.random) catch |err| {
+        if (c.current) |t| c.abandon(t, .{ .failed = err });
+        return;
+    };
+    if (c.current) |t| c.abandon(t, .finished);
 }
 
 fn taskOf(base: Io) u64 {
@@ -220,6 +234,11 @@ pub fn allocator(s: *Sim) Allocator {
 }
 
 /// Calls made so far.
+/// Node zero's simulated disk. Requires Options.fs != null.
+pub fn fs(s: *Sim) *Fs {
+    return &s.core.fs.?;
+}
+
 pub fn steps(s: *const Sim) u64 {
     return s.core.steps;
 }

@@ -11,6 +11,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const files = @import("conformance/files.zig");
 const IoCall = @import("io_call.zig").IoCall;
 
 pub const Options = struct {
@@ -50,6 +51,7 @@ fn skipped(c: Check, skip: []const IoCall) bool {
 }
 
 pub const checks = [_]Check{
+    .{ .name = "files, names, open descriptions, hard links and mmap", .needs = &.{ .dirCreateFile, .fileReadPositional, .fileWritePositional, .dirHardLink, .fileMemoryMapCreate }, .run = files.run },
     .{ .name = "time moves forward, by at least a sleep", .needs = &.{ .now, .sleep }, .run = timeMoves },
     .{ .name = "a futex wait returns when the word is not what was expected", .needs = &.{.futexWait}, .run = futexMismatch },
     .{ .name = "a futex wait ends at its timeout", .needs = &.{ .futexWait, .now }, .run = futexTimeout },

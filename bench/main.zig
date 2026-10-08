@@ -7,6 +7,7 @@
 //! `zig-out/bench/shakedown-bench <row prefix>` runs the rows whose name
 //! starts with the prefix.
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const shakedown = @import("shakedown");
 
@@ -31,6 +32,10 @@ const Context = struct {
 };
 
 const rows = [_]Row{
+    .{ .name = "fs_cycle/sim", .ops = 100_000, .run = fsCycleSim },
+    .{ .name = "fs_cycle/threaded", .ops = 100_000, .run = fsCycleThreaded },
+    .{ .name = "fs/crash-states-30", .ops = 100, .run = fsCrashStates },
+    .{ .name = "fs/snapshot", .ops = 10_000_000, .run = fsSnapshot },
     .{ .name = "now/threaded", .ops = 10_000_000, .run = nowThreaded },
     .{ .name = "now/layer", .ops = 10_000_000, .run = nowLayer },
     .{ .name = "now/clock", .ops = 10_000_000, .run = nowClock },
@@ -528,5 +533,73 @@ fn checkShrink(ctx: *Context, ops: u64) anyerror!void {
             else => return err,
         };
         return error.BenchFailed;
+    }
+}
+
+fn fsCycleRoot(io: Io, sim: *shakedown.Sim, ops: u64) !void {
+    const cwd = Io.Dir.cwd();
+    const page: [4096]u8 = @splat(0x5a);
+    for (0..ops) |_| {
+        const file = try cwd.createFile(io, "temp", .{});
+        try file.writePositionalAll(io, &page, 0);
+        try file.sync(io);
+        try cwd.rename("temp", cwd, "saved", io);
+        try sim.fs().flushDir(cwd.handle, .full);
+        file.close(io);
+    }
+}
+fn fsCycleSim(ctx: *Context, ops: u64) !void {
+    const sim = try shakedown.Sim.init(ctx.gpa, .{ .watchdog = null, .trace = .off });
+    defer sim.deinit();
+    if (sim.run(fsCycleRoot, .{ sim.io(), sim, ops }) != .finished) return error.SimulationFailed;
+    ctx.sink +%= sim.steps();
+}
+fn fsCycleThreaded(ctx: *Context, ops: u64) !void {
+    const page: [4096]u8 = @splat(0x5a);
+    for (0..ops) |_| {
+        const file = try ctx.dir.createFile(ctx.io, "temp", .{});
+        try file.writePositionalAll(ctx.io, &page, 0);
+        try file.sync(ctx.io);
+        try ctx.dir.rename("temp", ctx.dir, "saved", ctx.io);
+        file.close(ctx.io);
+        // std has no portable directory sync. A read-only directory file
+        // descriptor is syncable on POSIX; Windows requires airlock's seam.
+        if (builtin.os.tag != .windows) {
+            const dir_file = try ctx.dir.openFile(ctx.io, ".", .{});
+            defer dir_file.close(ctx.io);
+            try dir_file.sync(ctx.io);
+        }
+    }
+}
+fn fsCrashStates(ctx: *Context, ops: u64) !void {
+    const sim = try shakedown.Sim.init(ctx.gpa, .{ .watchdog = null, .trace = .off, .fs = .{ .sector = 1 } });
+    defer sim.deinit();
+    const fs = sim.fs();
+    const zeros: [30]u8 = @splat(0);
+    try fs.write("data", &zeros);
+    const Work = struct {
+        fn run(io: Io) !void {
+            const file = try Io.Dir.cwd().openFile(io, "data", .{ .mode = .read_write });
+            defer file.close(io);
+            for (0..30) |i| try file.writePositionalAll(io, &.{1}, i);
+        }
+    };
+    if (sim.run(Work.run, .{sim.io()}) != .finished) return error.SimulationFailed;
+    for (0..ops) |_| {
+        var states = try fs.crashStates(256);
+        defer states.deinit();
+        while (try states.next()) |snap| {
+            snap.deinit();
+            ctx.sink +%= 1;
+        }
+    }
+}
+fn fsSnapshot(ctx: *Context, ops: u64) !void {
+    const sim = try shakedown.Sim.init(ctx.gpa, .{ .watchdog = null, .trace = .off });
+    defer sim.deinit();
+    for (0..ops) |_| {
+        const snap = try sim.fs().snapshot();
+        std.mem.doNotOptimizeAway(snap.root);
+        snap.deinit();
     }
 }

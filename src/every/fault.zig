@@ -11,10 +11,10 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const io_call = @import("io_call.zig");
+const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
 const IoFault = io_call.IoFault;
-const FaultIo = @import("FaultIo.zig");
+const FaultIo = @import("../FaultIo.zig");
 const IoTrace = FaultIo.IoTrace;
 
 /// What `everyFault` tries, and what it keeps when a run fails.
@@ -59,6 +59,8 @@ pub const EveryFaultReport = struct {
     steps: u64 = 0,
     /// Runs made, the clean one included.
     runs: u64 = 0,
+    /// everyCrash: crash points at which the state bound stopped exploration.
+    bounded: u64 = 0,
     failure: ?Failure = null,
     /// Private: what `failure.trace` was allocated with.
     gpa: ?Allocator = null,

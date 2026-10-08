@@ -164,17 +164,25 @@ pub fn io(f: *FaultIo) Io {
 
 /// Replaces the plan and forgets the old one's matches. Not to be called
 /// while calls are in flight.
+fn hasCrash(fault: IoFault) bool {
+    return switch (fault) {
+        .crash => true,
+        .call => |c| if (c.then) |then| hasCrash(then.*) else false,
+        else => false,
+    };
+}
+
 pub fn setPlan(f: *FaultIo, entries: []const IoPlan.Entry) InitError!void {
     var planned: Calls = .empty;
     for (entries) |entry| {
-        if (entry.fault == .crash) return error.FaultNotApplicable;
+        if (hasCrash(entry.fault) and f.tasks.on_crash == null) return error.FaultNotApplicable;
         const call = switch (entry.at) {
             .step => null,
             .nth => |nth| nth.call,
             .chance => |c| c.call,
         };
         if (call) |c| {
-            try entry.fault.check(c);
+            if (entry.fault != .crash) try entry.fault.check(c);
             planned.insert(c);
         } else {
             planned = .full;
@@ -528,7 +536,11 @@ fn prelude(f: *FaultIo, fault: ?IoFault, cancelation_point: bool) Io.Cancelable!
             };
             return null;
         },
-        .fail, .fail_after, .short, .cancel, .spurious_wake, .stall, .crash => return x,
+        .crash => {
+            f.tasks.on_crash.?(f.base);
+            return null;
+        },
+        .fail, .fail_after, .short, .cancel, .spurious_wake, .stall => return x,
     };
     return null;
 }
@@ -884,6 +896,8 @@ const Held = struct { task: u64, rearmed: bool = false };
 
 /// How a `FaultIo` sees the calling task.
 const Tasks = struct {
+    /// Internal: installed only by a Sim with an Fs.
+    on_crash: ?*const fn (base: Io) void = null,
     /// Which task is calling: its thread, by default.
     id: *const fn (base: Io) u64 = threadOf,
     /// Whether the calling task's cancel protection is blocked: asked of
