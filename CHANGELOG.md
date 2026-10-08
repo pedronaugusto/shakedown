@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- Benchmark JSONL uses the shared `bench.Result` schema, with ns/unit samples
+  and provenance, replacing the repository's former aggregate-only rows.
+
 - `Sim` now simulates file and directory calls by default. Set `Options.fs = null`
   to disable storage. Its conformance trace digest includes filesystem inputs.
 - `EveryFaultReport` adds `bounded`, the count of crash points whose disk-image
@@ -22,6 +25,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a call of its own, so steps and counts of code that batches include them.
 
 ### Added
+
+- `bench`: named workloads and units, warmup, bounded clock-resolution-aware
+  batches, retained samples, best/median/p99, throughput and JSONL provenance.
+  Smoke runs execute each workload once without timing.
+- The `shakedown-bench-compare` executable and dependency artifact compare two
+  JSONL runs, report observed noise and flag changes outside it without timing
+  pass/fail. Deterministic statistics, serialization, comparison and fake-clock
+  contracts cover measuring; shakedown's own rows use it.
 
 - `Sim.Fs`: a directory tree, synthetic handles, sparse copy-on-write pages,
   symlinks, hard links, permissions, virtual timestamps, locks and explicit mmap

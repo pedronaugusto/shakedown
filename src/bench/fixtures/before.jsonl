@@ -1,0 +1,1 @@
+{"row":"fixture/quoted\"row","unit":"op","samples":[100,100,100],"best":100,"median":100,"p99":100,"ops_per_second":10000000.0,"commit":"before","zig":"fixture","cpu":"fixture","os":"fixture","batch":10,"clock_resolution_ns":1,"smoke":false}

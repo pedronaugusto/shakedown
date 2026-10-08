@@ -11,17 +11,7 @@ const builtin = @import("builtin");
 const Io = std.Io;
 const shakedown = @import("shakedown");
 
-/// Each row is timed this many times; the median is reported.
-const repeats = 7;
-
-const Row = struct {
-    name: []const u8,
-    /// Operations per timed run.
-    ops: u64,
-    /// Operations in the one run of `--smoke`: the fewest the row runs.
-    smoke: u64 = 1,
-    run: *const fn (ctx: *Context, ops: u64) anyerror!void,
-};
+const Row = shakedown.bench.Row(Context);
 
 const Context = struct {
     io: Io,
@@ -32,47 +22,47 @@ const Context = struct {
 };
 
 const rows = [_]Row{
-    .{ .name = "fs_cycle/sim", .ops = 100_000, .run = fsCycleSim },
-    .{ .name = "fs_cycle/threaded", .ops = 100_000, .run = fsCycleThreaded },
-    .{ .name = "fs/crash-states-30", .ops = 100, .run = fsCrashStates },
-    .{ .name = "fs/snapshot", .ops = 10_000_000, .run = fsSnapshot },
-    .{ .name = "now/threaded", .ops = 10_000_000, .run = nowThreaded },
-    .{ .name = "now/layer", .ops = 10_000_000, .run = nowLayer },
-    .{ .name = "now/clock", .ops = 10_000_000, .run = nowClock },
-    .{ .name = "now/faultio", .ops = 10_000_000, .run = nowFaultIo },
-    .{ .name = "checkcancel/threaded", .ops = 10_000_000, .run = checkCancelThreaded },
-    .{ .name = "checkcancel/faultio", .ops = 10_000_000, .run = checkCancelFaultIo },
-    .{ .name = "pread4k/sim", .ops = 1_000_000, .run = preadSim },
-    .{ .name = "pread4k/threaded", .ops = 1_000_000, .run = preadThreaded },
-    .{ .name = "pread4k/layer", .ops = 1_000_000, .run = preadLayer },
-    .{ .name = "pread4k/clock", .ops = 1_000_000, .run = preadClock },
-    .{ .name = "pread4k/faultio-empty", .ops = 1_000_000, .run = preadFaultEmpty },
-    .{ .name = "pread4k/faultio-trace", .ops = 1_000_000, .run = preadFaultTrace },
-    .{ .name = "pread4k/faultio-plan16", .ops = 1_000_000, .run = preadFaultPlan },
-    .{ .name = "alloc256/raw", .ops = 10_000_000, .run = allocRaw },
-    .{ .name = "alloc256/counting", .ops = 10_000_000, .run = allocCounting },
-    .{ .name = "alloc256/failing", .ops = 10_000_000, .run = allocFailing },
-    .{ .name = "alloc256/faultio", .ops = 10_000_000, .run = allocFaultIo },
-    .{ .name = "alloc4k/quarantine", .ops = 100_000, .run = allocQuarantine },
-    .{ .name = "random16/threaded", .ops = 1_000_000, .run = randomThreaded },
-    .{ .name = "random16/faultio", .ops = 1_000_000, .run = randomFaultIo },
-    .{ .name = "random16/faultio-seeded", .ops = 1_000_000, .run = randomFaultSeeded },
-    .{ .name = "batch1/threaded", .ops = 200_000, .run = batchThreaded },
-    .{ .name = "batch1/faultio", .ops = 200_000, .run = batchFaultIo },
-    .{ .name = "everyfault/alloc16-random", .ops = 2_000, .run = everyFaultSweep },
-    .{ .name = "sim/now", .ops = 10_000_000, .run = simNow },
-    .{ .name = "sim/switch-fibers", .ops = 1_000_000, .smoke = 2, .run = simSwitchFibers },
-    .{ .name = "sim/switch-threads", .ops = 20_000, .smoke = 2, .run = simSwitchThreads },
-    .{ .name = "sim/spawn-await", .ops = 1_000_000, .run = simSpawn },
-    .{ .name = "sim/contention-random", .ops = 100_000, .smoke = 100, .run = simContentionRandom },
-    .{ .name = "sim/contention-pct", .ops = 100_000, .smoke = 100, .run = simContentionPct },
-    .{ .name = "sim/timers", .ops = 100_000, .smoke = 1000, .run = simTimers },
-    .{ .name = "sim/new", .ops = 10_000, .run = simNew },
-    .{ .name = "sim/determinism", .ops = 2_000, .run = simDeterminism },
-    .{ .name = "sim/replay", .ops = 100_000, .smoke = 100, .run = simReplay },
-    .{ .name = "check/sum-cases", .ops = 25_600, .run = checkCases },
-    .{ .name = "check/sim-cases", .ops = 2_560, .run = checkSimCases },
-    .{ .name = "check/shrink-distinct", .ops = 20, .run = checkShrink },
+    .{ .name = "fs_cycle/sim", .unit = "op", .run = fsCycleSim },
+    .{ .name = "fs_cycle/threaded", .unit = "op", .run = fsCycleThreaded },
+    .{ .name = "fs/crash-states-30", .unit = "op", .run = fsCrashStates },
+    .{ .name = "fs/snapshot", .unit = "op", .run = fsSnapshot },
+    .{ .name = "now/threaded", .unit = "op", .run = nowThreaded },
+    .{ .name = "now/layer", .unit = "op", .run = nowLayer },
+    .{ .name = "now/clock", .unit = "op", .run = nowClock },
+    .{ .name = "now/faultio", .unit = "op", .run = nowFaultIo },
+    .{ .name = "checkcancel/threaded", .unit = "op", .run = checkCancelThreaded },
+    .{ .name = "checkcancel/faultio", .unit = "op", .run = checkCancelFaultIo },
+    .{ .name = "pread4k/sim", .unit = "op", .run = preadSim },
+    .{ .name = "pread4k/threaded", .unit = "op", .run = preadThreaded },
+    .{ .name = "pread4k/layer", .unit = "op", .run = preadLayer },
+    .{ .name = "pread4k/clock", .unit = "op", .run = preadClock },
+    .{ .name = "pread4k/faultio-empty", .unit = "op", .run = preadFaultEmpty },
+    .{ .name = "pread4k/faultio-trace", .unit = "op", .run = preadFaultTrace },
+    .{ .name = "pread4k/faultio-plan16", .unit = "op", .run = preadFaultPlan },
+    .{ .name = "alloc256/raw", .unit = "op", .run = allocRaw },
+    .{ .name = "alloc256/counting", .unit = "op", .run = allocCounting },
+    .{ .name = "alloc256/failing", .unit = "op", .run = allocFailing },
+    .{ .name = "alloc256/faultio", .unit = "op", .run = allocFaultIo },
+    .{ .name = "alloc4k/quarantine", .unit = "op", .run = allocQuarantine },
+    .{ .name = "random16/threaded", .unit = "op", .run = randomThreaded },
+    .{ .name = "random16/faultio", .unit = "op", .run = randomFaultIo },
+    .{ .name = "random16/faultio-seeded", .unit = "op", .run = randomFaultSeeded },
+    .{ .name = "batch1/threaded", .unit = "op", .run = batchThreaded },
+    .{ .name = "batch1/faultio", .unit = "op", .run = batchFaultIo },
+    .{ .name = "everyfault/alloc16-random", .unit = "op", .run = everyFaultSweep },
+    .{ .name = "sim/now", .unit = "op", .run = simNow },
+    .{ .name = "sim/switch-fibers", .unit = "op", .initial = 2, .smoke = 2, .run = simSwitchFibers },
+    .{ .name = "sim/switch-threads", .unit = "op", .initial = 2, .smoke = 2, .run = simSwitchThreads },
+    .{ .name = "sim/spawn-await", .unit = "op", .run = simSpawn },
+    .{ .name = "sim/contention-random", .unit = "op", .initial = 100, .smoke = 100, .run = simContentionRandom },
+    .{ .name = "sim/contention-pct", .unit = "op", .initial = 100, .smoke = 100, .run = simContentionPct },
+    .{ .name = "sim/timers", .unit = "op", .initial = 1000, .smoke = 1000, .run = simTimers },
+    .{ .name = "sim/new", .unit = "op", .run = simNew },
+    .{ .name = "sim/determinism", .unit = "op", .run = simDeterminism },
+    .{ .name = "sim/replay", .unit = "op", .initial = 100, .smoke = 100, .run = simReplay },
+    .{ .name = "check/sum-cases", .unit = "op", .run = checkCases },
+    .{ .name = "check/sim-cases", .unit = "op", .run = checkSimCases },
+    .{ .name = "check/shrink-distinct", .unit = "op", .run = checkShrink },
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -96,24 +86,8 @@ pub fn main(init: std.process.Init) !void {
     defer file.close(io);
 
     var ctx: Context = .{ .io = io, .gpa = gpa, .dir = scratch, .file = file };
-    for (rows) |row| {
-        if (!std.mem.startsWith(u8, row.name, prefix)) continue;
-        if (smoke) {
-            try row.run(&ctx, row.smoke);
-            continue;
-        }
-        var samples: [repeats]u64 = undefined;
-        for (&samples) |*sample| {
-            const start = Io.Timestamp.now(io, .awake);
-            try row.run(&ctx, row.ops);
-            sample.* = @intCast(start.durationTo(.now(io, .awake)).nanoseconds);
-        }
-        std.mem.sort(u64, &samples, {}, std.sort.asc(u64));
-        const median = samples[repeats / 2];
-        const per_op = @as(f64, @floatFromInt(median)) / @as(f64, @floatFromInt(row.ops));
-        try stdout.interface.print("{{\"row\":\"{s}\",\"ops\":{d},\"median_ns\":{d},\"min_ns\":{d},\"ns_per_op\":{d:.2}}}\n", .{ row.name, row.ops, median, samples[0], per_op });
-        try stdout.interface.flush();
-    }
+    try shakedown.bench.run(gpa, io, &stdout.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, .{ .smoke = smoke, .prefix = prefix });
+    try stdout.interface.flush();
     std.mem.doNotOptimizeAway(ctx.sink);
 }
 
@@ -121,7 +95,11 @@ pub fn main(init: std.process.Init) !void {
 
 fn nowLoop(ctx: *Context, io: Io, ops: u64) void {
     var sum: i96 = 0;
-    for (0..ops) |_| sum +%= Io.Timestamp.now(io, .awake).nanoseconds;
+    for (0..ops) |_| {
+        const timestamp = Io.Timestamp.now(io, .awake).nanoseconds;
+        std.mem.doNotOptimizeAway(timestamp);
+        sum +%= timestamp;
+    }
     ctx.sink +%= @truncate(@as(u96, @bitCast(sum)));
 }
 
@@ -358,7 +336,11 @@ const quiet: shakedown.Sim.Options = .{ .schedule = .fifo, .spurious_wake_per_mi
 
 fn nowCalls(ops: u64, io: Io) void {
     var sum: i96 = 0;
-    for (0..ops) |_| sum +%= Io.Timestamp.now(io, .awake).nanoseconds;
+    for (0..ops) |_| {
+        const timestamp = Io.Timestamp.now(io, .awake).nanoseconds;
+        std.mem.doNotOptimizeAway(timestamp);
+        sum +%= timestamp;
+    }
     std.mem.doNotOptimizeAway(sum);
 }
 

@@ -7,6 +7,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/alloc/NoResize.zig",
         "src/alloc/Quarantine.zig",
         "src/corpus.zig",
+        "src/bench.zig",
         "src/io_call.zig",
         "src/layer.zig",
         "src/match.zig",
@@ -43,6 +44,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     } },
     .{ .name = "drivers and namespaces", .patterns = &.{
         "src/alloc.zig",
+        "src/bench/compare.zig",
         "src/check.zig",
         "src/conformance.zig",
         "src/conformance/files.zig",
@@ -56,9 +58,9 @@ pub const layers: []const gantry.rules.Layer = &.{
     } },
 };
 
-pub const entries: []const []const u8 = &.{};
+pub const entries: []const []const u8 = &.{"src/bench/compare.zig"};
 
-pub const modules: []const gantry.NamedModule = &.{};
+pub const modules: []const gantry.NamedModule = &.{.{ .name = "measuring", .path = "src/bench.zig" }};
 
 pub const references: []const gantry.rules.ReferenceRule = &.{
     .{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{

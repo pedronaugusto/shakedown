@@ -345,6 +345,25 @@ quota.
 - It does not detect data races. That is ThreadSanitizer's job.
 - It is not a test runner and sets no per-test timeouts.
 
+## Measuring
+
+`shakedown.bench` measures named workloads with a unit, warmup and batches long
+compared with the monotonic clock's resolution. JSONL rows retain samples in
+acquisition order, best, median, nearest-rank p99 and units per second, with
+commit, Zig version, target CPU model and OS. The build marks dirty commits.
+`--smoke` executes each selected row once and emits an explicitly untimed row.
+
+`shakedown-bench-compare before.jsonl after.jsonl` reports median changes and a
+conservative noise band: the sum of each run's largest sample deviation from
+its median, with at least three samples in each run before flagging. A beyond-noise flag describes observed variation; it is not a
+statistical significance claim and never makes a timing change pass or fail.
+Added and removed rows are named. Malformed rows, mismatched units or platforms,
+and smoke rows cannot be compared. Build tools can use the fetched package's
+`shakedown-bench-compare` artifact. CI smoke-checks and compiles measuring,
+with no timing thresholds. Measuring and network simulation remain work in
+progress until their implementation batches land; stateful models, simulated
+processes and exhaustive schedule search remain planned.
+
 ## Platforms
 
 `Clock`, `Layer`, `FaultIo`, `everyFault`, `everyCrash`, `check`, `Counting`, `NoResize` and

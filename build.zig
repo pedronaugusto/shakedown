@@ -16,6 +16,17 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Available to build tools without fetching preflight or building tests.
+    _ = b.addExecutable(.{
+        .name = "shakedown-bench-compare",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench/compare.zig"),
+            .imports = &.{.{ .name = "measuring", .module = b.createModule(.{ .root_source_file = b.path("src/bench.zig"), .target = target, .optimize = optimize }) }},
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+
     // Everything below is this repository's own: a project depending on
     // shakedown builds the module and nothing else, and fetches nothing for
     // it.
@@ -146,7 +157,10 @@ pub fn build(b: *std.Build) void {
             // `zig build bench` runs them in ReleaseFast, by hand; never
             // timed in CI, where `zig build test` runs each once.
             .bench = .{
-                .programs = &.{.{ .name = "shakedown-bench", .source = "bench/main.zig" }},
+                .programs = &.{
+                    .{ .name = "shakedown-bench", .source = "bench/main.zig" },
+                    .{ .name = "shakedown-bench-compare", .source = "bench/compare.zig", .timed = false },
+                },
                 .imports = benchImports,
                 .target = target,
                 .optimize = optimize,
@@ -177,5 +191,14 @@ pub fn build(b: *std.Build) void {
 /// the Debug module.
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     const module = b.createModule(.{ .root_source_file = b.path("src/shakedown.zig"), .target = target, .optimize = optimize });
-    return b.allocator.dupe(std.Build.Module.Import, &.{.{ .name = "shakedown", .module = module }}) catch @panic("OOM");
+    const provenance = b.addOptions();
+    const revision = std.mem.trim(u8, b.run(&.{ "git", "rev-parse", "HEAD" }), "\r\n");
+    const dirty = b.run(&.{ "git", "status", "--porcelain", "--untracked-files=normal" }).len != 0;
+    provenance.addOption([]const u8, "commit", if (dirty) b.fmt("{s}-dirty", .{revision}) else revision);
+    const compare_driver = b.createModule(.{ .root_source_file = b.path("src/bench/compare.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "measuring", .module = b.createModule(.{ .root_source_file = b.path("src/bench.zig"), .target = target, .optimize = optimize }) }} });
+    return b.allocator.dupe(std.Build.Module.Import, &.{
+        .{ .name = "shakedown", .module = module },
+        .{ .name = "bench_options", .module = provenance.createModule() },
+        .{ .name = "bench_compare", .module = compare_driver },
+    }) catch @panic("OOM");
 }

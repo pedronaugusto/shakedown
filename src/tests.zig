@@ -40,3 +40,7 @@ test {
     _ = @import("sim_determinism_test.zig");
     _ = @import("conformance_test.zig");
 }
+
+test {
+    _ = @import("bench_test.zig");
+}
