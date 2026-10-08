@@ -330,7 +330,7 @@ pub fn isNetwork(op: Io.Operation) bool {
 }
 
 fn number(hash: *std.hash.Wyhash, value: anytype) void {
-    const portable: u64 = @intCast(value);
+    const portable: u64 = if (@typeInfo(@TypeOf(value)) == .pointer) @intFromPtr(value) else @intCast(value); // safe: opaque socket handles encode virtual identifiers, never host addresses
     const bytes = std.mem.toBytes(std.mem.nativeToLittle(u64, portable));
     hash.update(&bytes);
 }

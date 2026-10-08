@@ -654,3 +654,17 @@ test "Net exponential latency agrees with independent inverse CDF landmarks" {
     try t.expectEqual(1, (try model.read(pair[1], &byte)).?);
     try t.expectEqual('b', byte[0]);
 }
+
+test "Net accept returns queued connections in virtual handle order" {
+    var model = Model.init(t.allocator, .{});
+    defer model.deinit();
+    _ = try model.addNode(&.{});
+    const listener = try model.bind(0, model.address(0), .listener);
+    const first = try model.connect(0, listener.address);
+    const second = try model.connect(0, listener.address);
+    model.now = 200000;
+    model.pump();
+    try t.expectEqual(first.peer.?, model.accept(listener).?.handle);
+    try t.expectEqual(second.peer.?, model.accept(listener).?.handle);
+    try t.expectEqual(null, model.accept(listener));
+}

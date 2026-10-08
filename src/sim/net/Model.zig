@@ -225,14 +225,33 @@ fn packet(m: *Model) Error!*Packet {
 fn recycle(m: *Model, p: *Packet) void {
     m.free_packets.appendAssumeCapacity(p);
 }
+fn handleFromId(id: u32) Handle {
+    return switch (@typeInfo(Handle)) {
+        .pointer => @ptrFromInt(id), // safe: virtual opaque handles are identifiers, never dereferenced
+        .int => @intCast(id),
+        else => @compileError("unsupported Io socket handle representation"),
+    };
+}
+fn handleId(handle: Handle) u64 {
+    return switch (@typeInfo(Handle)) {
+        .pointer => @intFromPtr(handle), // safe: recover a virtual identifier, not a memory address
+        .int => @intCast(handle),
+        else => @compileError("unsupported Io socket handle representation"),
+    };
+}
 fn socket(m: *Model, node: u32, kind: @FieldType(Socket, "kind"), address_: Address, capacity: usize) Error!*Socket {
-    if (@as(u64, m.next_handle) >= @min(std.math.maxInt(u32), std.math.maxInt(Handle))) return error.SystemResources;
+    const limit = switch (@typeInfo(Handle)) {
+        .pointer => std.math.maxInt(u32),
+        .int => @min(std.math.maxInt(u32), std.math.maxInt(Handle)),
+        else => @compileError("unsupported Io socket handle representation"),
+    };
+    if (m.next_handle >= limit) return error.SystemResources;
     try m.sockets.ensureUnusedCapacity(m.gpa, 1);
     try m.idle.ensureTotalCapacity(m.gpa, m.owned.items.len + 1);
     const s = if (m.idle.pop()) |old| old else blk: {
         try m.owned.ensureUnusedCapacity(m.gpa, 1);
         const fresh = try m.gpa.create(Socket);
-        fresh.* = .{ .handle = 0, .node = node, .kind = kind, .address = address_ };
+        fresh.* = .{ .handle = undefined, .node = node, .kind = kind, .address = address_ };
         m.owned.appendAssumeCapacity(fresh);
         break :blk fresh;
     };
@@ -244,7 +263,7 @@ fn socket(m: *Model, node: u32, kind: @FieldType(Socket, "kind"), address_: Addr
     }
     try s.datagrams.ensureTotalCapacity(m.gpa, m.options.max_packets);
     m.gpa.free(s.path);
-    s.* = .{ .handle = @intCast(m.next_handle), .node = node, .kind = kind, .address = address_, .bytes = s.bytes, .datagrams = s.datagrams };
+    s.* = .{ .handle = handleFromId(m.next_handle), .node = node, .kind = kind, .address = address_, .bytes = s.bytes, .datagrams = s.datagrams };
     s.datagrams.clearRetainingCapacity();
     m.next_handle += 1;
     m.sockets.putAssumeCapacity(s.handle, s);
@@ -329,7 +348,7 @@ pub fn accept(m: *Model, listener: *Socket) ?*Socket {
     var it = m.sockets.valueIterator();
     while (it.next()) |item| {
         const s = item.*;
-        if (s.listener == listener.handle and s.connected and !s.accepted and !s.reset and (first == null or s.handle < first.?.handle)) first = s;
+        if (s.listener == listener.handle and s.connected and !s.accepted and !s.reset and (first == null or handleId(s.handle) < handleId(first.?.handle))) first = s;
     }
     if (first) |s| s.accepted = true;
     return first;
