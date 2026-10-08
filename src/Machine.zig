@@ -53,7 +53,11 @@ pub fn Machine(comptime Model: type) type {
                 if (!more) return;
                 if (count == options.max_commands) return error.LimitExceeded;
                 const command = try self.draw(io, gpa, source, options.max_tries);
-                try self.execute(io, driver, command, options.trace);
+                self.execute(io, driver, command, options.trace) catch |err| {
+                    if (source.overrun()) return error.Unsatisfiable;
+                    return err;
+                };
+                if (source.overrun()) return error.Unsatisfiable;
                 count += 1;
             }
         }

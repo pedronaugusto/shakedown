@@ -394,3 +394,19 @@ fn generatedAllocationWork(gpa: std.mem.Allocator) !void {
 test "B6 Machine generated arguments use explicit arena and finite allocation errors" {
     try t.checkAllAllocationFailures(t.allocator, generatedAllocationWork, .{});
 }
+
+const ExhaustingDriver = struct {
+    pub const Error = error{};
+    source: *sd.Source,
+    pub fn run(self: *ExhaustingDriver, _: std.Io, _: Stack.Command) Error!u8 {
+        _ = self.source.below(255);
+        return 99;
+    }
+};
+test "B6 Machine driver choice exhaustion discards an apparent postcondition failure" {
+    var source = try sd.Source.initRecording(t.allocator, .{ .replay = &.{ 999999, 0, 0 } }, .{ .max_choices = 2 });
+    defer source.deinit();
+    var driver: ExhaustingDriver = .{ .source = &source };
+    var machine: Sm = .init(0);
+    try t.expectError(error.Unsatisfiable, machine.run(t.io, t.allocator, &source, &driver, .{}));
+}

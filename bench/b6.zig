@@ -54,6 +54,7 @@ pub fn generate(ctx: *Context, count: u64) Error!void {
         var driver: Driver = .{};
         var machine: sd.Machine(Model) = .init(0);
         try machine.run(ctx.io, ctx.gpa, &ctx.source, &driver, .{ .average_commands = 16 });
+        if (machine.completed == 0) return error.UnexpectedResult;
         ctx.sink +%= machine.completed + machine.state;
     }
 }
