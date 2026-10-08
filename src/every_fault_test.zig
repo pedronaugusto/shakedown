@@ -317,8 +317,10 @@ const Protected = struct {
     }
 
     pub fn run(p: *Protected, io: Io) !void {
-        var task = try io.concurrent(work, .{ io, p.dir });
-        try task.await(io);
+        // Only the child's file calls and sleep belong to the compared trace.
+        // Tracing the parent's await races those calls on native threads.
+        var task = try testing.io.concurrent(work, .{ io, p.dir });
+        try task.await(testing.io);
     }
 
     pub fn check(p: *Protected, io: Io, result: anyerror!void, injected: ?shakedown.Injected) !void {
@@ -339,16 +341,18 @@ const Protected = struct {
 };
 
 test "a cancel the protection keeps out is no fault, and its run is checked as a clean one" {
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var protected: Protected = .{ .dir = tmp.dir };
-    const report = try shakedown.everyFault(testing.allocator, testing.io, &protected, .{ .errors = &.{}, .short = false });
-    // Every cancelation point was tried; only the sleep's and the task's
-    // own landed. The clean run, and each one inside the protection, were
-    // checked as clean.
-    try testing.expectEqual(report.runs, protected.faulted + protected.clean);
-    try testing.expect(protected.clean > 1);
-    try testing.expect(protected.faulted >= 1);
+    for (0..64) |_| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        var protected: Protected = .{ .dir = tmp.dir };
+        const report = try shakedown.everyFault(testing.allocator, testing.io, &protected, .{ .errors = &.{}, .short = false });
+        // Every cancelation point in the child was tried; only its sleep's
+        // landed. The clean run, and each one inside the protection, were
+        // checked as clean.
+        try testing.expectEqual(report.runs, protected.faulted + protected.clean);
+        try testing.expect(protected.clean > 1);
+        try testing.expect(protected.faulted >= 1);
+    }
 }
 
 test "lost answers are tried where asked, and a save through a rename survives them" {
