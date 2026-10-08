@@ -620,3 +620,37 @@ test "Net saturated finite delivery hits the time limit instead of deadlock" {
     };
     try t.expect(sim.run(Work.run, .{ a, b, address }) == .time_limit);
 }
+
+test "Net exponential latency agrees with independent inverse CDF landmarks" {
+    const Draw = struct {
+        fn half(_: *anyopaque, _: u64) u64 {
+            return (1 << 31) - 1;
+        }
+    };
+    var token: u8 = 0;
+    var model = Model.init(t.allocator, .{ .default_link = .{ .latency = .{ .exponential = .{ .mean = .fromSeconds(1) } } } });
+    defer model.deinit();
+    model.drawn_by = &token;
+    model.draw_fn = Draw.half;
+    _ = try model.addNode(&.{});
+    _ = try model.addNode(&.{});
+    const pair = try model.pair(0, 1, false);
+    _ = try model.write(pair[0], "a");
+    // -ln(1/2) seconds, rounded down to nanoseconds. This is independent
+    // of the fixed-point series used by the production distribution.
+    try t.expectEqual(693147180, model.nextDeadline().?);
+    model.now = 693147179;
+    model.pump();
+    var byte: [1]u8 = undefined;
+    try t.expectEqual(null, try model.read(pair[1], &byte));
+    model.now += 1;
+    model.pump();
+    try t.expectEqual(1, (try model.read(pair[1], &byte)).?);
+    try t.expectEqual('a', byte[0]);
+    try model.configure(0, 1, .{ .latency = .{ .exponential = .{ .mean = .zero } } });
+    _ = try model.write(pair[0], "b");
+    try t.expectEqual(model.now, model.nextDeadline().?);
+    model.pump();
+    try t.expectEqual(1, (try model.read(pair[1], &byte)).?);
+    try t.expectEqual('b', byte[0]);
+}

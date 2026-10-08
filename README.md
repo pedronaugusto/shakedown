@@ -353,7 +353,9 @@ backoff starting at 200 ms. Each direction has bounded buffering and partial
 writes; full buffers wait through the scheduler. UDP can lose, duplicate and
 reorder datagrams. Bandwidth serializes bytes per directed link. A receive
 reports datagram truncation and supports peek; sent datagrams survive sender
-close. Unsupported protocols and socket modes return their named Io errors.
+close. IPv4 limited broadcast requires `allow_broadcast` and reaches registered
+IPv4 receivers on the destination port; subnet-directed broadcast is not modeled.
+Unsupported protocols and socket modes return their named Io errors.
 
 `partition` queues packets until healing or a 60-second virtual expiry, which
 leaves streams timed out. `hold` queues without expiry and `release` resumes
