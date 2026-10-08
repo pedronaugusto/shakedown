@@ -67,3 +67,32 @@ Preflight's `Config.bench` owns ReleaseFast build and untimed smoke registration
 The package supplies workload drivers and the comparison artifact; preflight
 owns CI planning and build/test wiring. Timing never gates correctness. Manual
 benchmark commands and comparator usage are documented in the README.
+
+## Stateful testing and linearizability
+
+Machine has no entropy or storage of its own: the caller supplies a Source and
+optional output buffer. Model transitions are pure value snapshots, and the
+driver owns real state and cleanup. Command spans encompass driver draws, so a
+Case tape shrinks inputs and schedule choices together. Preconditions are checked
+before driver calls. Explicit replay validates the entire trace before execution;
+a removed prerequisite cannot become a spurious driver failure. Trace and length
+limits are explicit errors, and generator rejection exhaustion is Unsatisfiable.
+
+The concurrent-history checker borrows closed invocation/response intervals.
+A response strictly before another invocation imposes precedence; equality permits
+overlap. A pure model accepts or rejects each candidate response. Iterative DFS
+keeps one snapshot per depth and considers candidates in input order. Only an
+operation whose invocation precedes or equals the earliest remaining response can
+be selected: all of its real-time predecessors must already have been placed.
+This pruning preserves exactly the legal topological orderings. A full accepting
+ordering is a witness; complete rejection is a violation. Search, operation and
+workspace limits and pending calls are unknown, never a successful truncated
+proof. Cancellation is checked between candidates; all owned arrays unwind on
+error, and only a successful witness transfers to the result. Model callbacks
+are responsible for terminating and keeping referenced state immutable.
+
+Fixtures independently model register reads/writes, journal append sequence and
+reader cursors, and ledger visibility/revisions. A separate whole-permutation
+oracle checks randomized small histories. These fixtures do not import consumers
+and do not establish their adoption or correctness. B7 schedule exploration and
+process simulation remain outside this implementation.

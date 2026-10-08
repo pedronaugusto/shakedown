@@ -85,3 +85,8 @@ pub const CrashEveryFaultOptions = every.crash.CrashEveryFaultOptions;
 
 /// Named benchmark workloads, resolution-aware measurement and run comparison.
 pub const bench = @import("bench.zig");
+
+/// Stateful command generation, replay and postcondition checking.
+pub const Machine = @import("Machine.zig").Machine;
+/// Bounded model-based checking of concurrent operation histories.
+pub const linearizable = @import("linearizable.zig");

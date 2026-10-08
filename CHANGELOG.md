@@ -31,6 +31,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `Machine(Model)`: bounded stateful command generation, preconditions, pure
+  transitions, driver postconditions, validated replay and shared tape shrinking.
+- `linearizable`: deterministic model checking of invocation/response histories,
+  real-time ordering, witnesses and explicit unknown outcomes for incomplete or
+  bounded searches, with cancellation and allocation failure cleanup.
+
 - B5 simulated TCP, UDP, Unix sockets, node-local disks and DNS, deterministic
   link latency/loss/duplication/reordering/bandwidth, partitions, hold/release,
   resets, cooperative node kill/crash/restart, and replay/resource contract tests.

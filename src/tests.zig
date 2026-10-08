@@ -1,6 +1,7 @@
 //! The test root: every unit test, and the tests that drive the package
 //! from outside.
 test {
+    _ = @import("b6_test.zig");
     _ = @import("fs_test.zig");
     _ = @import("net_test.zig");
     _ = @import("shakedown.zig");

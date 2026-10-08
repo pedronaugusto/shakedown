@@ -1,7 +1,8 @@
 # shakedown
 
-Work in progress: the network phase is implemented here; stateful models,
-simulated processes and exhaustive schedule search are still planned.
+Work in progress: network simulation, stateful models and bounded linearizability
+checking are implemented. Simulated processes and exhaustive schedule search
+are still planned.
 
 shakedown tests Zig code written against `std.Io`. A `Sim` is a simulated `Io`
 that runs the code's tasks one at a time and owns their time, so one seed
@@ -486,3 +487,38 @@ Windows as well, plus the Linux Debug suite on Zig master, which never blocks. `
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
+
+## Stateful models and concurrent histories
+
+`Machine(Model)` generates commands from a `Source`, checks preconditions, calls
+a driver and checks responses against pure model transitions. Use `case.source`
+inside `check` so inputs, commands and simulated schedules share replay and
+shrinking. The caller creates and cleans up a fresh driver per case. The model
+declares `State`, `Command`, `Response`, `generate`, `precondition`, `transition`
+and `postcondition`; a driver declares `Error` and `run(io, command)`.
+
+`Machine.replay` validates an explicit command trace before side effects. An
+invalid shrink candidate returns `InvalidTrace`; a property can translate this
+into `Unsatisfiable` to discard it. Generation retries invalid commands within
+`max_tries`, then returns `Unsatisfiable`. Exceeding `max_commands` returns
+`LimitExceeded`, so a caller must choose whether to discard that case or report
+insufficient coverage. Optional caller-owned trace storage retains executed
+commands and responses, including a postcondition failure. Model state advances
+only on success. Model values and retained responses borrow immutable data; the
+caller owns their lifetimes. No allocations occur in Machine itself.
+
+`linearizable.Operation(Input, Output)` records invocation, input and optional
+response timestamp/output. `linearizable.check(io, gpa, Model, initial, history,
+options)` checks a pure `Model.step(state, input, output) ?State`. It returns
+`linearizable` with a witness of input indices, `violation` only after complete
+search, or `unknown` with a limit reason. Free the result with `deinit`.
+
+Closed intervals allow overlap at equal timestamps; use unique event ordinals
+when the observation gives exact ordering. Pending operations produce unknown;
+this version does not infer their responses or drop them. Search is iterative
+and deterministic, with operation, candidate-examination and workspace byte
+bounds. Cancellation and allocation failure are errors with full workspace
+cleanup. Model callbacks must terminate and keep their snapshots immutable.
+Large ambiguous histories can exhaust the search budget; this checker does not
+implement automatic partitioning or exhaustive schedule exploration. Independent
+journal and ledger fixtures test contracts, without claiming consumer adoption.
