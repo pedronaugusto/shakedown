@@ -322,7 +322,8 @@ match the clean trace. `max_states` bounds images per point; the returned report
 `bounded` count says how many points exceeded it. `diagnostics` records a failed
 recovery's crash point, error and trace. Optional `ctx.tearDown()` releases state
 owned by the context. Abandoned tasks do not execute defers, including with an
-`IoFault.crash` plan, which is accepted only on a Sim with its filesystem enabled.
+root-namespace `IoFault.crash` plan, which requires its filesystem enabled.
+Explicit nodes use cooperative cancellation through their crash/kill lifecycle.
 Application heap state that must survive abandonment belongs to the context.
 `corrupt`, `failReads` and `misdirectNextWrite` inject storage faults by inode;
 a zero-length `failReads` clears the current bad range.
