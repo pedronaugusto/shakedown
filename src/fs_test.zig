@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Sim = @import("Sim.zig");
 const Io = std.Io;
 const t = std.testing;
@@ -426,24 +427,38 @@ fn apply(io: Io, dir: Io.Dir, op: Operation) !void {
         },
     }
 }
-fn resultError(result: anyerror!void) ?anyerror {
-    return if (result) |_| null else |err| err;
+const Content = struct { bytes: [64]u8, len: usize };
+fn contents(io: Io, dir: Io.Dir, name: []const u8) !Content {
+    const bytes = try dir.readFileAlloc(io, name, t.allocator, .limited(64));
+    defer t.allocator.free(bytes);
+    var result: Content = .{ .bytes = undefined, .len = bytes.len };
+    @memcpy(result.bytes[0..bytes.len], bytes);
+    return result;
 }
 const Differential = struct {
     operations: []const Operation,
-    real_dir: Io.Dir,
+    results: [64]anyerror!void = undefined,
+    images: [64][4]anyerror!Content = undefined,
     fn run(io: Io, ctx: *Differential) !void {
-        for (ctx.operations) |op| {
-            try t.expectEqual(resultError(apply(t.io, ctx.real_dir, op)), resultError(apply(io, .cwd(), op)));
+        for (ctx.operations, 0..) |op, step| {
+            ctx.results[step] = apply(io, .cwd(), op);
             for (0..4) |i| {
                 const name = filename(@intCast(i));
-                const real = ctx.real_dir.readFileAlloc(t.io, &name, t.allocator, .limited(64));
-                const fake = Io.Dir.cwd().readFileAlloc(io, &name, t.allocator, .limited(64));
-                if (real) |a| {
-                    defer t.allocator.free(a);
+                ctx.images[step][i] = contents(io, .cwd(), &name);
+            }
+        }
+    }
+    fn compare(ctx: *Differential, dir: Io.Dir) !void {
+        // Native Windows pathname conversion needs large stack buffers. Native
+        // calls belong on this OS thread, outside the simulated fiber's stack.
+        for (ctx.operations, 0..) |op, step| {
+            if (apply(t.io, dir, op)) |_| try ctx.results[step] else |err| try t.expectError(err, ctx.results[step]);
+            for (0..4) |i| {
+                const name = filename(@intCast(i));
+                const fake = ctx.images[step][i];
+                if (contents(t.io, dir, &name)) |a| {
                     const b = try fake;
-                    defer t.allocator.free(b);
-                    try t.expectEqualSlices(u8, a, b);
+                    try t.expectEqualSlices(u8, a.bytes[0..a.len], b.bytes[0..b.len]);
                 } else |err| try t.expectError(err, fake);
             }
         }
@@ -455,7 +470,7 @@ fn differential(_: void, case: *shakedown.Case) !void {
     for (ops[0..count]) |*op| {
         const a = shakedown.gen.intRange(case.source, u8, 0, 3);
         const b = shakedown.gen.intRange(case.source, u8, 0, 3);
-        op.* = switch (shakedown.gen.intRange(case.source, u8, 0, 4)) {
+        op.* = switch (shakedown.gen.intRange(case.source, u8, 0, if (builtin.os.tag == .windows) 3 else 4)) {
             0 => .{ .write = .{ .name = a, .offset = shakedown.gen.intRange(case.source, u8, 0, 12), .value = shakedown.gen.int(case.source, u8) } },
             1 => .{ .remove = a },
             2 => .{ .rename = .{ .from = a, .to = b } },
@@ -466,10 +481,11 @@ fn differential(_: void, case: *shakedown.Case) !void {
     var real = t.tmpDir(.{});
     defer real.cleanup();
     const sim = try case.sim(.{ .watchdog = null });
-    var ctx: Differential = .{ .operations = ops[0..count], .real_dir = real.dir };
+    var ctx: Differential = .{ .operations = ops[0..count] };
     const outcome = sim.run(Differential.run, .{ sim.io(), &ctx });
     if (outcome == .failed) return outcome.failed;
     try t.expect(outcome == .finished);
+    try ctx.compare(real.dir);
 }
 test "Fs random file sequences conform to Threaded" {
     try shakedown.check(t.allocator, {}, differential, .{ .seed = 0xb4, .cases = 256 });

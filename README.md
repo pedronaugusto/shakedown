@@ -297,6 +297,9 @@ length, and `full` persists metadata too. A device flush also persists earlier
 writeouts on this disk. `writeout` includes retrieval metadata, as Darwin
 `fsync` and Windows `NO_SYNC` do; Linux `sync_file_range` must not map to it.
 The model represents one device, and assumes a successful barrier is honoured.
+std's Threaded currently reports `OperationUnsupported` for both hard-link
+slots on Windows; the shared conformance checks accept that contract while
+checking hard-link identity wherever the operation succeeds.
 
 `fs.crash(.lose_all)` keeps only synced effects; `.keep_all` keeps all pending
 effects; `.random` draws sectors, subsets and order from the simulation's source.

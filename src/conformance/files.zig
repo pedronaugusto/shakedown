@@ -39,19 +39,22 @@ pub fn run(gpa: std.mem.Allocator, io: Io) !void {
     try dir.rename("nested/deep/file", dir, "renamed", io);
     // An open description still reads its inode after a rename and unlink.
     if (try file.readPositionalAll(io, &bytes, 0) != 3) return error.RenameClosedHandle;
-    try dir.hardLink("renamed", dir, "linked", io, .{});
+    // OperationUnsupported is part of std's contract: Threaded has no
+    // Windows hard-link implementation. Continue checking the file itself.
+    const hard_links = if (dir.hardLink("renamed", dir, "linked", io, .{})) |_| true else |err| if (err == error.OperationUnsupported) false else return err;
+    const path: []const u8 = if (hard_links) "linked" else "renamed";
     const before = try file.stat(io);
-    const linked = try dir.statFile(io, "linked", .{});
-    if (before.inode != linked.inode or before.nlink < 2) return error.LinkNotSameInode;
-    try dir.deleteFile(io, "renamed");
+    const linked = try dir.statFile(io, path, .{});
+    if (before.inode != linked.inode or (hard_links and before.nlink < 2)) return error.LinkNotSameInode;
+    if (hard_links) try dir.deleteFile(io, "renamed");
     if (try file.readPositionalAll(io, &bytes, 0) != 3) return error.UnlinkClosedHandle;
     var listing = dir.iterate();
     var seen = false;
-    while (try listing.next(io)) |entry| if (std.mem.eql(u8, entry.name, "linked")) {
+    while (try listing.next(io)) |entry| if (std.mem.eql(u8, entry.name, path)) {
         seen = true;
     };
     if (!seen) return error.ListingMissedFile;
-    const opened = try dir.openFile(io, "linked", .{ .mode = .read_write });
+    const opened = try dir.openFile(io, path, .{ .mode = .read_write });
     defer opened.close(io);
     var map = try Io.File.MemoryMap.create(io, opened, .{ .len = 3 });
     defer map.destroy(io);
@@ -61,7 +64,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io) !void {
     try opened.writePositionalAll(io, "Q", 1);
     try map.read(io);
     if (map.memory[1] != 'Q') return error.MapReadStale;
-    const content = try dir.readFileAlloc(io, "linked", gpa, .limited(32));
+    const content = try dir.readFileAlloc(io, path, gpa, .limited(32));
     defer gpa.free(content);
     if (!std.mem.eql(u8, content, "MQZ")) return error.ReaderWrongData;
 }
