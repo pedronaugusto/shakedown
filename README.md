@@ -285,7 +285,7 @@ symlinks, hard links, permissions, timestamps, advisory locks and explicit mmap
 Snapshots retain the tree in O(1); sparse images share a radix index and 4 KiB
 pages. Name rules can be POSIX, Darwin case folding with canonical Unicode
 normalization, or Windows case folding, separators and reserved names. The
-Unicode tables use Unicode 14. Timestamp granularity and byte capacity are
+Unicode tables use Unicode 16. Timestamp granularity and byte capacity are
 configurable. Simulated handles cannot address real OS files.
 
 An inode's live contents and metadata differ from its persisted state. `fileSync`
