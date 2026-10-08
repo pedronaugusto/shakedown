@@ -55,6 +55,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Portable `Source.integer` and enum, choice and float generators compile on
+  32-bit targets while preserving seeded draws and replay.
+
 - Determinism captures a tagged outcome; successful runs do not compare an
   inactive error field.
 

@@ -51,6 +51,38 @@ pub fn build(b: *std.Build) void {
     const check_step = b.step("check", "Compile the tests, programs and example without running them");
     check_step.dependOn(&tests.step);
 
+    // The 32-bit draw regression compiles enabled portable APIs without a
+    // hosted Io. Both targets exercise pointer-sized indexing independently.
+    const source32_step = b.step("check-source32", "Compile portable draws for wasm32 and x86 Linux");
+    for ([_][]const u8{ "wasm32-freestanding", "x86-linux-musl" }) |triple| {
+        const cross_target = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = triple }) catch @panic("invalid target"));
+        const cross_module = b.createModule(.{ .root_source_file = b.path("src/shakedown.zig"), .target = cross_target, .optimize = optimize });
+        const fixture = b.addObject(.{
+            .name = "source32",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("ci/source32.zig"),
+                .target = cross_target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "shakedown", .module = cross_module }},
+            }),
+        });
+        source32_step.dependOn(&fixture.step);
+    }
+    check_step.dependOn(source32_step);
+    test_step.dependOn(source32_step);
+    const source32_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("ci/source32.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "shakedown", .module = module }},
+        }),
+    });
+    const source32_test_step = b.step("test-source32", "Run the portable draw regression");
+    source32_test_step.dependOn(&b.addRunArtifact(source32_tests).step);
+    test_step.dependOn(source32_test_step);
+    check_step.dependOn(&source32_tests.step);
+
     // A use after free and a one-byte overflow on a quarantine must kill the
     // process, so they run in a child: the program spawns itself once per
     // case and passes only when every child died of its access.
@@ -120,8 +152,16 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             },
         });
-        const tooling = b.dependencyLazy("preflight", .{ .@"repo-root" = (b.root.joinString(b.allocator, ".") catch @panic("OOM")) }) catch return;
-        const planner = b.addRunArtifact(tooling.artifact("preflight"));
+        const tooling = b.dependencyLazy("preflight", .{}) catch return;
+        const host = b.graph.host;
+        const gantry = tooling.builder.dependencyLazy("gantry", .{ .target = host, .optimize = .safe }) catch return;
+        const plan_tool = b.addExecutable(.{ .name = "shakedown-ci-plan", .root_module = b.createModule(.{
+            .root_source_file = tooling.path("src/main.zig"),
+            .target = host,
+            .optimize = .safe,
+            .imports = &.{.{ .name = "gantry", .module = gantry.module("gantry") }},
+        }) });
+        const planner = b.addRunArtifact(plan_tool);
         planner.addArg("plan");
         planner.addPassthruArgs();
         planner.setCwd(b.path("."));

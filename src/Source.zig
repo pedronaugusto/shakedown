@@ -221,7 +221,7 @@ fn leaning(prng: *std.Random.Xoshiro256, max: u64) u64 {
     // value below it: a small value as likely as a large one.
     const reach = 64 - @clz(max);
     const widths = [_]u7{ 8, 16, 32, 64 };
-    var count: u64 = 1;
+    var count: usize = 1;
     while (count < widths.len and widths[count - 1] < reach) count += 1;
     const width = widths[@intCast((r >> 8) % count)];
     const cap = if (width >= 64) max else @min(max, (@as(u64, 1) << @intCast(width)) - 1);

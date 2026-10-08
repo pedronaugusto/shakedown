@@ -86,7 +86,7 @@ pub fn float(s: *Source, comptime T: type) T {
     const top = std.math.maxInt(u64);
     const choice = s.integer(top);
     const specials = comptime edgeFloats(T);
-    if (choice > top - specials.len) return specials[@intCast(top - choice)];
+    if (choice > top - @as(u64, specials.len)) return specials[@intCast(top - choice)];
     const whole: T = @floatFromInt(signed(i64, choice));
     const halvings = s.integer(@min(std.math.floatMantissaBits(T), 63));
     return whole / std.math.pow(T, 2, @floatFromInt(halvings));
@@ -101,7 +101,7 @@ pub fn enumValue(s: *Source, comptime E: type) E {
     if (values.len == 1) return values[0];
     const mark = s.begin();
     defer s.end(mark);
-    return values[s.below(values.len - 1)];
+    return values[@intCast(s.below(values.len - 1))];
 }
 
 /// One of `items`, the first one simplest. `items` must not be empty.
@@ -110,7 +110,7 @@ pub fn oneOf(s: *Source, comptime T: type, items: []const T) T {
     if (items.len == 1) return items[0];
     const mark = s.begin();
     defer s.end(mark);
-    return items[s.below(items.len - 1)];
+    return items[@intCast(s.below(items.len - 1))];
 }
 
 /// An index into `weights`, each drawn in proportion to its weight; the
