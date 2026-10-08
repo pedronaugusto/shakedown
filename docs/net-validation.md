@@ -4,7 +4,7 @@ The measuring batch landed first at published main
 `9357a9ab398ac25fa8a408a71e77a124bc51d311`, after successful exact-head
 fast run 37817170226 and merge run 37818062956. B5 began from that verified
 green main in the same standalone clone and a new branch. Its measured source
-head is `87022d597f0bbf1895612e134f4bf3f6b300cfb4`; subsequent report commits do
+head is `39f91fe8fb2e0cedd474740b83bfbe231d712125`; subsequent report commits do
 not change the implementation measured here.
 
 ## Contracts and regression evidence
@@ -14,7 +14,7 @@ API were absent. The implementation supplies owned model state below the Io
 slots, public Net/Node facades, and Layer-based node routing through one shared
 FaultIo. It adds no package-owned planner or compatibility adapter.
 
-Twenty-three network contracts cover byte preservation and half close; isolated
+Twenty-four network contracts cover byte preservation and half close; isolated
 node disks; handshake latency, bandwidth and bounded partial writes; Unix
 namespaces; normalized DNS with canonical-name and queue-close behavior; UDP
 loss, duplication, hand-derived reordering, truncation, peek and broadcast;
@@ -23,7 +23,7 @@ connect endpoint cleanup and canceled blocked writers; timed batch cancellation
 and reuse; saturated finite deadlines; stale handles and sender-close delivery;
 allocation-failure cleanup; allocation-free warmed message/socket reuse; shared
 outer fault counters; trace byte/node identity; invalid configuration; exact
-TCP retransmission; and independently calculated exponential latency. Standard
+TCP retransmission; queued-accept ordering; and independently calculated exponential latency. Standard
 `std.http.Client` and `std.http.Server` communicate over simulated DNS and TCP.
 Twelve recorded seeds replay loss/duplication/reordering/bandwidth on both fibers
 and threads. No host network resources are involved.
@@ -39,6 +39,13 @@ configuration retained the old Git revision. Revision/status are now uncached
 build commands feeding generated module files. Rebuilding after committing,
 without another source edit, reported the exact clean new head. All retained
 rows assert their source commit, 31 samples and measured mode.
+
+Fast run 37829772894 caught a Windows compile regression before landing:
+`Io.net.Socket.Handle` is an opaque pointer there. Virtual handles now encode
+monotonic IDs in the platform handle representation, order accepts by those IDs,
+and hash IDs as portable little-endian u64 values. Opaque handles are never
+dereferenced. The queued-accept contract and local Windows `ci-check` pass.
+The three A/B pairs above were refreshed after this fix.
 
 Local validation uses Zig 0.17.0: targeted network tests, the 1000-seed golden,
 `zig build lint`, `zig build check`, ReleaseFast bench builds and untimed smoke.
@@ -60,23 +67,21 @@ three runs, and median range shows run-to-run variation.
 
 | Row | Baseline best | Candidate best | Candidate median range |
 | --- | ---: | ---: | ---: |
-| sim/new | 2454.672 | 2555.664 | 2666.830–2915.527 |
-| sim/now | 12.621 | 13.790 | 13.931–14.017 |
-| sim/switch-fibers | 54.972 | 45.572 | 46.700–47.128 |
-| sim/spawn-await | 83.687 | 70.473 | 70.966–71.579 |
-| sim/contention-pct | 133.493 | 129.509 | 133.350–135.661 |
-| pread4k/sim | 66.246 | 66.470 | 72.146–74.379 |
-| net/message-32 | new row | 23.705 | 24.028–26.053 |
-| net/rpc-32 | new row | 235.270 | 238.302–320.943 |
-| net/gossip-3 | new row | 472.005 | 478.973–483.765 |
+| sim/new | 2808.594 | 2848.064 | 2957.764–3267.008 |
+| sim/now | 13.247 | 14.384 | 14.431–15.408 |
+| sim/switch-fibers | 58.032 | 48.272 | 48.848–51.491 |
+| sim/spawn-await | 87.786 | 73.041 | 73.321–75.221 |
+| sim/contention-pct | 160.690 | 156.374 | 159.193–175.755 |
+| pread4k/sim | 70.015 | 69.837 | 76.714–81.296 |
+| net/message-32 | new row | 24.647 | 24.795–25.703 |
+| net/rpc-32 | new row | 224.726 | 250.036–259.979 |
+| net/gossip-3 | new row | 489.054 | 508.728–521.342 |
 
 The comparator reports median changes and full observed sample noise, without
-choosing performance pass/fail. No existing row has a slower beyond-noise flag
-in all three pairs. `sim/now` is flagged slower in pair three only (+6.21%, noise
-5.88%). Fiber switching and spawn/await are flagged faster in all three pairs;
-these measurements do not establish a causal explanation for those changes.
-Cold Sim construction's best sample is 2.556 microseconds; model message
-transfer is 23.705 ns, below the design's 100 ns plus byte-copy cost estimate.
+choosing performance pass/fail. No existing row has a slower beyond-noise flag in all three pairs.
+These measurements do not establish a causal explanation for those changes.
+Cold Sim construction’s best sample is 2.848 microseconds; model message
+transfer is 24.647 ns, below the design’s 100 ns plus byte-copy cost estimate.
 
 ## Published dependency and preflight seam
 
