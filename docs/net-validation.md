@@ -4,7 +4,7 @@ The measuring batch landed first at published main
 `9357a9ab398ac25fa8a408a71e77a124bc51d311`, after successful exact-head
 fast run 37817170226 and merge run 37818062956. B5 began from that verified
 green main in the same standalone clone and a new branch. Its measured source
-head is `39f91fe8fb2e0cedd474740b83bfbe231d712125`; subsequent report commits do
+head is `39f91fe8fb2e0cedd474740b83bfbe231d712125`; subsequent validation commits do
 not change the implementation measured here.
 
 ## Contracts and regression evidence
@@ -14,7 +14,7 @@ API were absent. The implementation supplies owned model state below the Io
 slots, public Net/Node facades, and Layer-based node routing through one shared
 FaultIo. It adds no package-owned planner or compatibility adapter.
 
-Twenty-four network contracts cover byte preservation and half close; isolated
+Twenty-five network contracts cover byte preservation and half close; isolated
 node disks; handshake latency, bandwidth and bounded partial writes; Unix
 namespaces; normalized DNS with canonical-name and queue-close behavior; UDP
 loss, duplication, hand-derived reordering, truncation, peek and broadcast;
@@ -23,7 +23,9 @@ connect endpoint cleanup and canceled blocked writers; timed batch cancellation
 and reuse; saturated finite deadlines; stale handles and sender-close delivery;
 allocation-failure cleanup; allocation-free warmed message/socket reuse; shared
 outer fault counters; trace byte/node identity; invalid configuration; exact
-TCP retransmission; queued-accept ordering; and independently calculated exponential latency. Standard
+TCP retransmission; queued-accept ordering; file-to-socket headers, limits, partial writes, EOF and
+cancellation without consuming unsent bytes; and independently calculated
+exponential latency. Standard
 `std.http.Client` and `std.http.Server` communicate over simulated DNS and TCP.
 Twelve recorded seeds replay loss/duplication/reordering/bandwidth on both fibers
 and threads. No host network resources are involved.

@@ -668,3 +668,56 @@ test "Net accept returns queued connections in virtual handle order" {
     try t.expectEqual(second.peer.?, model.accept(listener).?.handle);
     try t.expectEqual(null, model.accept(listener));
 }
+
+test "Net file transfer honors headers limits partial writes EOF and cancellation" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null, .schedule = .fifo, .net = .{ .default_link = .{ .buffer = 2 } } });
+    defer sim.deinit();
+    try sim.fs().write("payload", "abcd");
+    const Work = struct {
+        fn send(io: Io, stream: Io.net.Stream, reader: *Io.File.Reader) !usize {
+            return io.vtable.netWriteFile(io.userdata, stream.socket.handle, &.{}, reader, .unlimited);
+        }
+        fn run(io: Io) !void {
+            const file = try Io.Dir.cwd().openFile(io, "payload", .{});
+            defer file.close(io);
+            var file_buffer: [4]u8 = undefined;
+            var reader = file.reader(io, &file_buffer);
+            const pair = try Io.net.Socket.createPair(io, .{});
+            defer pair[0].close(io);
+            defer pair[1].close(io);
+            const outgoing: Io.net.Stream = .{ .socket = pair[0] };
+            const incoming: Io.net.Stream = .{ .socket = pair[1] };
+            try t.expectEqual(1, try io.vtable.netWriteFile(io.userdata, pair[0].handle, "H", &reader, .nothing));
+            try t.expectEqual(0, reader.logicalPos());
+            try t.expectEqual(1, try send(io, outgoing, &reader));
+            try t.expectEqual(1, reader.logicalPos());
+            var bytes: [2]u8 = undefined;
+            try t.expectEqual(2, try read(io, incoming, &bytes));
+            try t.expectEqualStrings("Ha", &bytes);
+            try t.expectEqual(1, try io.vtable.netWriteFile(io.userdata, pair[0].handle, &.{}, &reader, .limited(1)));
+            try t.expectEqual(1, try send(io, outgoing, &reader));
+            try t.expectEqual(3, reader.logicalPos());
+            try t.expectEqual(2, try read(io, incoming, &bytes));
+            try t.expectEqualStrings("bc", &bytes);
+            try t.expectEqual(1, try send(io, outgoing, &reader));
+            try t.expectEqual(4, reader.logicalPos());
+            try t.expectEqual(1, try read(io, incoming, &bytes));
+            try t.expectEqual('d', bytes[0]);
+            try t.expectError(error.EndOfStream, send(io, outgoing, &reader));
+            try t.expectEqual(0, try io.vtable.netWriteFile(io.userdata, pair[0].handle, &.{}, &reader, .nothing));
+            try reader.seekTo(0);
+            try t.expectEqual(2, try write(io, outgoing, "zz"));
+            var blocked = try io.concurrent(send, .{ io, outgoing, &reader });
+            try io.sleep(.fromNanoseconds(1), .awake);
+            try t.expectError(error.Canceled, blocked.cancel(io));
+            try t.expectEqual(0, reader.logicalPos());
+            try t.expectEqual(2, try read(io, incoming, &bytes));
+            try t.expectEqualStrings("zz", &bytes);
+            try t.expectEqual(2, try send(io, outgoing, &reader));
+            try t.expectEqual(2, reader.logicalPos());
+            try t.expectEqual(2, try read(io, incoming, &bytes));
+            try t.expectEqualStrings("ab", &bytes);
+        }
+    };
+    try finished(sim.run(Work.run, .{sim.io()}));
+}
