@@ -76,13 +76,22 @@ pub fn expectDeterministic(
 /// What one run left to compare: its outcome, its records with the hash
 /// after each, and its checksums.
 const Run = struct {
-    outcome: Tag,
-    failed: ?anyerror = null,
+    outcome: Outcome,
     records: std.ArrayList(Record) = .empty,
     hashes: std.ArrayList(u64) = .empty,
     checksums: std.ArrayList(u64) = .empty,
 
     const Tag = std.meta.Tag(Sim.Outcome);
+    // Capture the result without borrowing a deadlock report from the Sim.
+    // Failure belongs to its tag; successful outcomes have no error field.
+    const Outcome = union(Tag) {
+        finished,
+        failed: anyerror,
+        deadlock,
+        step_limit,
+        time_limit,
+        stuck,
+    };
     const Record = std.meta.Child(@TypeOf(@as(*Sim, undefined).trace().records()));
 
     fn go(gpa: Allocator, ctx: anytype, comptime body: anytype, options: anytype) DeterminismError!Run {
@@ -102,8 +111,10 @@ const Run = struct {
                 if (step) |o| break :stepped o;
             }
         } else sim.run(body, .{ ctx, sim.io() });
-        r.outcome = outcome;
-        if (outcome == .failed) r.failed = outcome.failed;
+        r.outcome = switch (outcome) {
+            .failed => |err| .{ .failed = err },
+            inline else => |_, tag| @unionInit(Outcome, @tagName(tag), {}),
+        };
         const records = sim.trace().records();
         try r.records.appendSlice(gpa, records);
         try r.hashes.ensureTotalCapacityPrecise(gpa, records.len);
@@ -131,7 +142,7 @@ const Run = struct {
         } else if (std.mem.findDiff(u64, a.checksums.items, b.checksums.items)) |i| at: {
             w.print("shakedown: two runs of one seed made the same calls, but their states differ after step {d}\n", .{i}) catch return error.OutOfMemory;
             break :at i;
-        } else if (a.outcome != b.outcome or a.failed != b.failed) at: {
+        } else if (std.meta.activeTag(a.outcome) != std.meta.activeTag(b.outcome) or (a.outcome == .failed and a.outcome.failed != b.outcome.failed)) at: {
             w.print("shakedown: two runs of one seed ended differently: {t} and {t}\n", .{ a.outcome, b.outcome }) catch return error.OutOfMemory;
             break :at a.records.items.len;
         } else {

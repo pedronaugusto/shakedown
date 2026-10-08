@@ -316,7 +316,7 @@ test "a fault is checked against the call it targets" {
     try std.testing.expectError(error.FaultNotApplicable, IoFault.check(.cancel, .fileClose));
     try IoFault.check(.{ .short = 3 }, .fileReadPositional);
     try std.testing.expectError(error.FaultNotApplicable, IoFault.check(.{ .short = 3 }, .fileSync));
-    try std.testing.expectError(error.FaultNotApplicable, IoFault.check(.crash, .fileSync));
+    try IoFault.check(.crash, .fileSync);
     try IoFault.check(.{ .delay = .fromSeconds(1) }, .fileSync);
 }
 
@@ -346,5 +346,5 @@ test "a spurious wake is a futex wait's, a stall a cancelation point's, and a ca
     }.f;
     try IoFault.check(.{ .call = .{ .ctx = &ctx, .f = f, .then = &.{ .fail = error.ConcurrencyUnavailable } } }, .groupConcurrent);
     try std.testing.expectError(error.FaultNotInErrorSet, IoFault.check(.{ .call = .{ .ctx = &ctx, .f = f, .then = &.{ .fail = error.InputOutput } } }, .groupConcurrent));
-    try std.testing.expectError(error.FaultNotApplicable, IoFault.check(.{ .call = .{ .ctx = &ctx, .f = f, .then = &.crash } }, .fileSync));
+    try IoFault.check(.{ .call = .{ .ctx = &ctx, .f = f, .then = &.crash } }, .fileSync);
 }

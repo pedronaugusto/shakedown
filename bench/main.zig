@@ -68,6 +68,7 @@ const rows = [_]Row{
     .{ .name = "sim/contention-pct", .ops = 100_000, .smoke = 100, .run = simContentionPct },
     .{ .name = "sim/timers", .ops = 100_000, .smoke = 1000, .run = simTimers },
     .{ .name = "sim/new", .ops = 10_000, .run = simNew },
+    .{ .name = "sim/determinism", .ops = 2_000, .run = simDeterminism },
     .{ .name = "sim/replay", .ops = 100_000, .smoke = 100, .run = simReplay },
     .{ .name = "check/sum-cases", .ops = 25_600, .run = checkCases },
     .{ .name = "check/sim-cases", .ops = 2_560, .run = checkSimCases },
@@ -622,4 +623,13 @@ fn preadSim(ctx: *Context, ops: u64) !void {
         }
     };
     if (sim.run(Work.run, .{ sim.io(), ops, &ctx.sink }) != .finished) return error.SimulationFailed;
+}
+
+fn simDeterminism(ctx: *Context, ops: u64) !void {
+    const Work = struct {
+        fn run(_: void, io: Io) anyerror!void {
+            try io.sleep(.fromMilliseconds(1), .awake);
+        }
+    };
+    for (0..ops) |_| try shakedown.expectDeterministic(ctx.gpa, {}, Work.run, .{ .sim = .{ .watchdog = null } });
 }

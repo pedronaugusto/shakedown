@@ -55,6 +55,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Determinism captures a tagged outcome; successful runs do not compare an
+  inactive error field.
+
 - `recancel` after a cancel `FaultIo` landed re-arms it for the task's next
   cancelation point, instead of reaching a base that never canceled the task,
   where std's threaded `Io` panics. std's `Queue` does so after a partial put.
