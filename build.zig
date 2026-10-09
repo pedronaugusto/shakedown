@@ -200,6 +200,10 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     status.setCwd(b.path("."));
     status.has_side_effects = true;
     const provenance = b.addWriteFiles();
+    // Every benchmark requests these files. Identical cached output paths can
+    // be rewritten while a sibling compiler reads them; give each writer its
+    // own temporary directory, with Git state still observed on every build.
+    provenance.mode = .tmp;
     _ = provenance.addCopyFile(revision.captureStdOut(.{}), "revision.txt");
     _ = provenance.addCopyFile(status.captureStdOut(.{}), "status.txt");
     const options = provenance.add("options.zig", "const std = @import(\"std\");\n" ++

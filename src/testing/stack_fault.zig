@@ -6,7 +6,7 @@
 //! Run with no argument, the program spawns itself once per case and passes
 //! only when each child died as it had to: of the overflow, by the fault
 //! handler below (which exits with `faulted`), by the signal itself, or, on
-//! Windows, by the stack overflow exception; of the panic, with the
+//! Windows, by the stack overflow or guard-page access exception; of the panic, with the
 //! simulation's report on its stderr. Run with a case name, it is that
 //! child.
 const builtin = @import("builtin");
@@ -29,6 +29,7 @@ const faulted = 86;
 
 /// Windows ends a thread whose stack overflowed with this status.
 const stack_overflow: u32 = 0xC00000FD;
+const access_violation: u32 = 0xC0000005;
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -36,21 +37,35 @@ pub fn main(init: std.process.Init) !void {
     if (args.len == 2) {
         if (std.mem.eql(u8, args[1], "overflow")) return overflow(init.gpa);
         if (std.mem.eql(u8, args[1], "panic")) return panicking(init.gpa);
+        if (std.mem.eql(u8, args[1], "ordinary-exit")) std.process.exit(5);
         return error.UnknownCase;
     }
     if (args.len != 1) return error.Usage;
     const self = try std.process.executablePathAlloc(init.io, arena);
 
     var child = try std.process.spawn(init.io, .{ .argv = &.{ self, "overflow" } });
+    defer child.kill(init.io);
+    // std.process.Child.Term truncates Windows exit statuses to u8. Read the
+    // native exception status before wait closes its handle: ordinary exit 5
+    // must never stand in for an access violation on the guard page.
+    const native_status: ?u32 = if (builtin.os.tag == .windows) try waitWindowsStatus(&child) else null;
     const term = try child.wait(init.io);
     const died = switch (term) {
-        .exited => |code| code == faulted or (builtin.os.tag == .windows and @as(u32, @bitCast(@as(i32, code))) == stack_overflow),
+        .exited => |code| if (native_status) |status| status == faulted or overflowStatus(status) else code == faulted,
         .signal => true,
         .stopped, .unknown => false,
     };
     if (!died) {
         std.debug.print("the child {f}, where its task had to fault on its stack's guard page\n", .{term});
         return error.Survived;
+    }
+
+    if (builtin.os.tag == .windows) {
+        var ordinary = try std.process.spawn(init.io, .{ .argv = &.{ self, "ordinary-exit" } });
+        defer ordinary.kill(init.io);
+        const status = try waitWindowsStatus(&ordinary);
+        _ = try ordinary.wait(init.io);
+        if (status != 5 or overflowStatus(status)) return error.FalsePositive;
     }
 
     const run = try std.process.run(arena, init.io, .{ .argv = &.{ self, "panic" } });
@@ -60,6 +75,20 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("the panicking child {f}, and wrote:\n{s}\n", .{ run.term, run.stderr });
         return error.PanicNotReported;
     }
+}
+
+fn overflowStatus(status: u32) bool {
+    return status == stack_overflow or status == access_violation;
+}
+
+/// This death-test child is intentionally awaited outside the Io backend so
+/// its full NTSTATUS remains available until Child.wait performs cleanup.
+fn waitWindowsStatus(child: *std.process.Child) error{NativeWaitFailed}!u32 {
+    const windows = std.os.windows;
+    if (windows.ntdll.NtWaitForSingleObject(child.id.?, .FALSE, null) != .SUCCESS) return error.NativeWaitFailed;
+    var info: windows.PROCESS.BASIC_INFORMATION = undefined;
+    if (windows.ntdll.NtQueryInformationProcess(child.id.?, .BasicInformation, &info, @sizeOf(windows.PROCESS.BASIC_INFORMATION), null) != .SUCCESS) return error.NativeWaitFailed;
+    return @backingInt(info.ExitStatus);
 }
 
 fn overflow(gpa: std.mem.Allocator) !void {

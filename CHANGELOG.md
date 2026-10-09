@@ -89,6 +89,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Isolate generated benchmark provenance files and check full native Windows stack-fault statuses, rejecting ordinary exit code 5.
+
 - Portable `Source.integer` and enum, choice and float generators compile on
   32-bit targets while preserving seeded draws and replay.
 
