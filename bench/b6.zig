@@ -85,7 +85,7 @@ pub fn ordered(ctx: *Context, count: u64) Error!void {
 }
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    const smoke = args.len > 1 and std.mem.eql(u8, args[1], "--smoke");
+    const options = try measuring.Options.fromArguments(args[1..]);
     var ctx: Context = .{ .gpa = init.gpa, .io = init.io, .source = try .init(init.gpa, .{ .prng = 61 }) };
     defer ctx.source.deinit();
     var buffer: [4096]u8 = undefined;
@@ -96,6 +96,6 @@ pub fn main(init: std.process.Init) !void {
         .{ .name = "linearizable/ambiguous-9", .unit = "history", .run = search },
         .{ .name = "linearizable/ordered-64", .unit = "history", .run = ordered },
     };
-    try measuring.run(Error, init.gpa, init.io, &output.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, .{ .smoke = smoke });
+    try measuring.run(Error, init.gpa, init.io, &output.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, options);
     std.mem.doNotOptimizeAway(ctx.sink);
 }

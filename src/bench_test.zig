@@ -79,6 +79,21 @@ fn fixture(samples: []const f64) !bench.Result {
     return .{ .row = "row", .unit = "op", .samples = samples, .best = stats.best, .median = stats.median, .p99 = stats.p99, .ops_per_second = 1e9 / stats.median, .commit = "commit", .zig = "zig", .cpu = "cpu", .os = "os", .batch = 1, .clock_resolution_ns = 1 };
 }
 
+test "bench options come from a program's arguments, as bench-ab passes them" {
+    const none = try bench.Options.fromArguments(&.{});
+    try std.testing.expect(!none.smoke);
+    try std.testing.expectEqualStrings("", none.prefix);
+    const smoke = try bench.Options.fromArguments(&.{"--smoke"});
+    try std.testing.expect(smoke.smoke);
+    const row = try bench.Options.fromArguments(&.{ "--row", "sim/" });
+    try std.testing.expectEqualStrings("sim/", row.prefix);
+    const bare = try bench.Options.fromArguments(&.{ "--smoke", "net/" });
+    try std.testing.expect(bare.smoke);
+    try std.testing.expectEqualStrings("net/", bare.prefix);
+    try std.testing.expectError(error.InvalidOptions, bench.Options.fromArguments(&.{"--row"}));
+    try std.testing.expectError(error.InvalidOptions, bench.Options.fromArguments(&.{"--rows"}));
+}
+
 test "bench comparison flags either direction only beyond observed variation" {
     const before = try fixture(&.{ 99, 100, 101 });
     const after = try fixture(&.{ 119, 120, 121 });

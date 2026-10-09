@@ -79,6 +79,30 @@ pub const Options = struct {
     minimum: Io.Duration = .fromMilliseconds(1),
     resolution_multiple: u32 = 1000,
     max_batch: u64 = 1 << 40,
+
+    /// The options a benchmark program's arguments ask for, without its
+    /// own name: `--smoke` runs each row once, untimed; `--row PREFIX`, or a
+    /// bare PREFIX, runs the rows whose names start with it, as preflight's
+    /// `bench-ab` passes it.
+    pub fn fromArguments(arguments: []const []const u8) error{InvalidOptions}!Options {
+        var options: Options = .{};
+        var i: usize = 0;
+        while (i < arguments.len) : (i += 1) {
+            const argument = arguments[i];
+            if (std.mem.eql(u8, argument, "--smoke")) {
+                options.smoke = true;
+            } else if (std.mem.eql(u8, argument, "--row")) {
+                i += 1;
+                if (i == arguments.len) return error.InvalidOptions;
+                options.prefix = arguments[i];
+            } else if (std.mem.startsWith(u8, argument, "--")) {
+                return error.InvalidOptions;
+            } else {
+                options.prefix = argument;
+            }
+        }
+        return options;
+    }
 };
 /// Runner failures composed with the workload's declared error set.
 pub fn RunError(comptime WorkloadError: type) type {

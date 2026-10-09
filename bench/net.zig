@@ -15,7 +15,7 @@ fn message(ctx: *Context, count: u64) Model.Error!void {
 }
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    const smoke = args.len > 1 and std.mem.eql(u8, args[1], "--smoke");
+    const options = try bench.Options.fromArguments(args[1..]);
     var ctx: Context = .{ .model = .init(init.gpa, .{}), .pair = undefined };
     defer ctx.model.deinit();
     _ = try ctx.model.addNode(&.{});
@@ -23,6 +23,6 @@ pub fn main(init: std.process.Init) !void {
     var buffer: [4096]u8 = undefined;
     var output = Io.File.stdout().writerStreaming(init.io, &buffer);
     const rows = [_]bench.Row(Context, Model.Error){.{ .name = "net/message-32", .unit = "message", .run = message }};
-    try bench.run(Model.Error, init.gpa, init.io, &output.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, .{ .smoke = smoke });
+    try bench.run(Model.Error, init.gpa, init.io, &output.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, options);
     std.mem.doNotOptimizeAway(ctx.checksum);
 }

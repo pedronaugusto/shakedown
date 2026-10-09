@@ -81,8 +81,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    const smoke = args.len > 1 and std.mem.eql(u8, args[1], "--smoke");
-    const prefix: []const u8 = if (args.len > 1 and !smoke) args[1] else "";
+    const options = try shakedown.bench.Options.fromArguments(args[1..]);
 
     var stdout_buffer: [4096]u8 = undefined;
     var stdout = Io.File.stdout().writerStreaming(io, &stdout_buffer);
@@ -98,7 +97,7 @@ pub fn main(init: std.process.Init) !void {
     defer file.close(io);
 
     var ctx: Context = .{ .io = io, .gpa = gpa, .dir = scratch, .file = file };
-    try shakedown.bench.run(WorkloadError, gpa, io, &stdout.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, .{ .smoke = smoke, .prefix = prefix });
+    try shakedown.bench.run(WorkloadError, gpa, io, &stdout.interface, &ctx, &rows, .{ .commit = @import("bench_options").commit }, options);
     try stdout.interface.flush();
     std.mem.doNotOptimizeAway(ctx.sink);
 }
