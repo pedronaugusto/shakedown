@@ -36,13 +36,28 @@ broadcast. Reader and HTTP adapters use the supported Io surfaces directly.
 
 ## Measurement contracts
 
-`bench.Row(Context, WorkloadError)` declares finite callback errors; the runner
-returns their union with its named failures. `bench.Row.run` performs exactly the requested units, retains observable results
-and leaves its context reusable. A real monotonic clock measures the workload,
-independently of any simulated clock. Bounded calibration doubles the workload
-quantum until samples exceed the minimum duration and clock-resolution multiple;
-unresolved rows return an error. Workload setup and teardown count when the
-workload includes them. Smoke executes each selected row once without timing.
+`bench.Row(Context, WorkloadError)` declares callback and optional `setup(ctx)` /
+`teardown(ctx)` hook errors. Callers compose the callbacks' finite declared error
+sets as `WorkloadError`; `RunError(WorkloadError)` adds named runner failures.
+`run(ctx, units)` performs exactly the requested units and retains observable
+results. Hooks run once per whole invocation, including warmup, calibration,
+retained samples, discarded samples and smoke, rather than once per inner unit.
+Only the workload callback lies between the timer timestamps. Setup and teardown
+inside the workload callback still count. Omitted hooks preserve existing behavior.
+
+Setup failure stops the invocation before the workload or teardown; setup owns
+cleanup of partial acquisitions through `errdefer`. After successful or omitted
+setup, teardown runs exactly once even when the workload fails. Teardown owns
+releasing resources before returning an error. The original workload error takes
+precedence if teardown also fails; otherwise teardown errors propagate unchanged.
+No failed invocation emits a row. Runner allocations are released on all exits.
+Drivers retain their paired/interleaved base-candidate schedule; the runner never
+reorders invocations or samples.
+
+A real monotonic clock measures the workload, independently of any simulated
+clock. Bounded calibration doubles the workload quantum until samples exceed the
+minimum duration and clock-resolution multiple; unresolved rows return an error.
+Smoke executes each selected row once without reading the clock.
 
 JSONL samples remain in acquisition order, in nanoseconds per named unit.
 Statistics use an even median and nearest-rank p99. Parsing rejects malformed,

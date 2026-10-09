@@ -409,6 +409,15 @@ acquisition order, best, median, nearest-rank p99 and units per second, with
 commit, Zig version, target CPU model and OS. The build marks dirty commits.
 `--smoke` executes each selected row once and emits an explicitly untimed row.
 
+Rows may supply optional `setup(ctx)` and `teardown(ctx)` hooks alongside
+`run(ctx, units)`. Hooks run once around each whole batch, including warmup,
+calibration and smoke, outside the measured region. Compose their declared error
+sets with the workload's as `Row(Context, WorkloadError)`; the runner adds its
+own finite errors. Setup cleans partial acquisitions on failure. After successful
+or omitted setup, teardown runs even on workload failure and must release its
+resources before returning an error. A workload error takes precedence if both
+callbacks fail. Omitting hooks keeps existing behavior.
+
 `shakedown-bench-compare before.jsonl after.jsonl` reports median changes and a
 conservative noise band: the sum of each run's largest sample deviation from
 its median, with at least three samples in each run before flagging. A beyond-noise flag describes observed variation; it is not a

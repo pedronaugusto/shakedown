@@ -35,6 +35,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Optional `bench.Row.setup(ctx)` and `teardown(ctx)` hooks share the workload's
+  declared error set and run outside timing once per sample batch, including
+  warmup, calibration and smoke. Teardown runs on workload failure; the original
+  workload error takes precedence if teardown also fails.
+
 - `Machine(Model)`: bounded stateful command generation, preconditions, pure
   transitions, driver postconditions, validated replay and shared tape shrinking.
 - `linearizable`: deterministic model checking of invocation/response histories,

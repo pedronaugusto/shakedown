@@ -51,7 +51,12 @@ pub fn statistics(gpa: std.mem.Allocator, samples: []const f64) StatisticsError!
 }
 
 /// A named workload. `run` must do exactly `units` units, retain observable
-/// results, and leave its context ready for another invocation.
+/// results. Optional hooks surround each whole batch (including warmup,
+/// calibration and smoke), outside timing, and share the declared error set.
+/// Setup owns partial-acquisition cleanup on failure; teardown runs only after
+/// successful or omitted setup, even on workload failure. Teardown must release
+/// its resources before returning an error. The workload error takes precedence
+/// if both workload and teardown fail. Without hooks, run leaves context reusable.
 pub fn Row(comptime Context: type, comptime WorkloadError: type) type {
     return struct {
         name: []const u8,
@@ -59,6 +64,8 @@ pub fn Row(comptime Context: type, comptime WorkloadError: type) type {
         initial: u64 = 1,
         smoke: u64 = 1,
         run: *const fn (*Context, u64) WorkloadError!void,
+        setup: ?*const fn (*Context) WorkloadError!void = null,
+        teardown: ?*const fn (*Context) WorkloadError!void = null,
     };
 }
 
@@ -92,7 +99,7 @@ pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer:
     if (options.smoke) {
         for (rows) |row| {
             if (!std.mem.startsWith(u8, row.name, options.prefix)) continue;
-            try row.run(context, row.smoke);
+            _ = try invoke(WorkloadError, false, io, context, row, row.smoke);
             try write(writer, .{ .row = row.name, .unit = row.unit, .samples = &.{}, .best = 0, .median = 0, .p99 = 0, .ops_per_second = 0, .commit = metadata.commit, .zig = metadata.zig, .cpu = metadata.cpu, .os = metadata.os, .batch = 0, .clock_resolution_ns = 0, .smoke = true });
         }
         return;
@@ -105,18 +112,18 @@ pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer:
     for (rows) |row| {
         if (!std.mem.startsWith(u8, row.name, options.prefix)) continue;
         var batch = row.initial;
-        for (0..options.warmup) |_| try row.run(context, batch);
+        for (0..options.warmup) |_| _ = try invoke(WorkloadError, false, io, context, row, batch);
         // Calibration is discarded, as is an entire sample set if its fastest
         // batch reveals that calibration was distorted by a cold cache.
         while (true) {
-            const elapsed = try time(WorkloadError, io, context, row.run, batch);
+            const elapsed = try invoke(WorkloadError, true, io, context, row, batch);
             if (elapsed < target) {
                 batch = try larger(batch, options.max_batch);
                 continue;
             }
             var resolved = true;
             for (samples) |*sample| {
-                const ns = try time(WorkloadError, io, context, row.run, batch);
+                const ns = try invoke(WorkloadError, true, io, context, row, batch);
                 if (ns < target) {
                     resolved = false;
                     break;
@@ -138,10 +145,18 @@ fn larger(batch: u64, limit: u64) error{Unmeasurable}!u64 {
     if (batch >= limit) return error.Unmeasurable;
     return batch + @min(batch, limit - batch);
 }
-fn time(comptime WorkloadError: type, io: Io, context: anytype, function: anytype, batch: u64) RunError(WorkloadError)!i96 {
-    const start = Io.Timestamp.now(io, .awake);
-    try function(context, batch);
-    const elapsed = start.durationTo(.now(io, .awake)).nanoseconds;
+fn invoke(comptime WorkloadError: type, comptime timed: bool, io: Io, context: anytype, row: Row(std.meta.Child(@TypeOf(context)), WorkloadError), batch: u64) RunError(WorkloadError)!i96 {
+    if (row.setup) |setup| try setup(context);
+    const start = if (timed) Io.Timestamp.now(io, .awake) else Io.Timestamp.fromNanoseconds(0);
+    const outcome = row.run(context, batch);
+    const elapsed = if (timed) start.durationTo(.now(io, .awake)).nanoseconds else 0;
+    outcome catch |err| {
+        // Cleanup is attempted exactly once. Preserve the original workload
+        // error if cleanup also fails; teardown owns release on either outcome.
+        if (row.teardown) |teardown| teardown(context) catch return err;
+        return err;
+    };
+    if (row.teardown) |teardown| try teardown(context);
     if (elapsed < 0) return error.NonMonotonicClock;
     return elapsed;
 }
