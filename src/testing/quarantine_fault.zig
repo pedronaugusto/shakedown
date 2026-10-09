@@ -20,7 +20,7 @@ pub const debug = struct {
 
 const faulted = 86;
 
-const cases = [_][]const u8{ "use-after-free", "overflow" };
+const cases = [_][]const u8{ "use-after-free", "overflow", "foreign-free" };
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -50,6 +50,15 @@ fn touch(case: []const u8) !void {
     const gpa = quarantine.allocator();
     const block = try gpa.alloc(u8, 40);
     @memset(block, 1);
+    if (std.mem.eql(u8, case, "foreign-free")) {
+        // Memory the quarantine never gave out: a free it must stop at, in
+        // every build, rather than corrupt its tables.
+        const foreign = try std.heap.page_allocator.alloc(u8, 40);
+        defer std.heap.page_allocator.free(foreign);
+        gpa.free(foreign);
+        std.debug.print("survived the {s}\n", .{case});
+        return;
+    }
     const target: *volatile u8 = if (std.mem.eql(u8, case, "use-after-free")) at: {
         gpa.free(block);
         break :at &block[0];

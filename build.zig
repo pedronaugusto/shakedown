@@ -5,15 +5,18 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     //=====================================================================
-    // The module. Pure Zig, `std` only: nothing to link and no build options,
-    // so nothing a consumer has to match. It is a test dependency: a package
-    // imports it from its test modules and never from production code.
+    // The module. Pure Zig over `std` and aegis, whose runtime is `std` only:
+    // nothing to link and no build options, so nothing a consumer has to
+    // match. It is a test dependency: a package imports it from its test
+    // modules and never from production code.
     //=====================================================================
 
+    const aegis_dependency = b.dependency("aegis", .{ .target = target, .optimize = optimize });
     const module = b.addModule("shakedown", .{
         .root_source_file = b.path("src/shakedown.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "aegis", .module = aegis_dependency.module("aegis") }},
     });
 
     // Available to build tools without fetching preflight or building tests.
@@ -57,6 +60,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     tests.root_module.addOptions("build_options", test_options);
+    tests.root_module.addImport("aegis", aegis_dependency.module("aegis"));
 
     const test_step = b.step("test", "Run the tests, the fault programs and the example");
     test_step.dependOn(&b.addRunArtifact(tests).step);
@@ -65,6 +69,7 @@ pub fn build(b: *std.Build) void {
     // artifact, using only a path dependency and with package fetching off.
     const empty_packages = b.addWriteFiles();
     _ = empty_packages.add("README", "No packages.\n");
+    _ = empty_packages.addCopyDirectory(aegis_dependency.path(""), aegis_dependency.builder.pkg_hash, .{});
     const comparison_consumer = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--build-file", "ci/bench-consumer/build.zig", "--system" });
     comparison_consumer.addDirectoryArg2(empty_packages.getDirectory(), .{});
     comparison_consumer.setEnvironmentVariable("ZIG_GLOBAL_CACHE_DIR", ".zig-cache/bench-consumer-global");
@@ -80,7 +85,8 @@ pub fn build(b: *std.Build) void {
     const source32_step = b.step("check-source32", "Compile portable draws for wasm32 and x86 Linux");
     for ([_][]const u8{ "wasm32-freestanding", "x86-linux-musl" }) |triple| {
         const cross_target = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = triple }) catch @panic("invalid target"));
-        const cross_module = b.createModule(.{ .root_source_file = b.path("src/shakedown.zig"), .target = cross_target, .optimize = optimize });
+        const cross_aegis = b.dependency("aegis", .{ .target = cross_target, .optimize = optimize }).module("aegis");
+        const cross_module = b.createModule(.{ .root_source_file = b.path("src/shakedown.zig"), .target = cross_target, .optimize = optimize, .imports = &.{.{ .name = "aegis", .module = cross_aegis }} });
         const fixture = b.addObject(.{
             .name = "source32",
             .root_module = b.createModule(.{
@@ -181,9 +187,9 @@ pub fn build(b: *std.Build) void {
                 .optimize = optimize,
             },
         });
-        // A project that depends on shakedown by path, with no packages to
-        // fetch: the build a consumer gets.
-        preflight.addConsumerCheck(b, .{ .package = "shakedown", .program = b.path("ci/consumer.zig") });
+        // A project that depends on shakedown by path, with only the packages
+        // shakedown needs: the build a consumer gets.
+        preflight.addConsumerCheck(b, .{ .package = "shakedown", .program = b.path("ci/consumer.zig"), .packages = &.{aegis_dependency} });
     }
 }
 
@@ -191,7 +197,8 @@ pub fn build(b: *std.Build) void {
 /// its own mode, so a ReleaseFast benchmark over the Debug module would time
 /// the Debug module.
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
-    const module = b.createModule(.{ .root_source_file = b.path("src/shakedown.zig"), .target = target, .optimize = optimize });
+    const aegis = b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis");
+    const module = b.createModule(.{ .root_source_file = b.path("src/shakedown.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "aegis", .module = aegis }} });
     // Git state is a build input, not a cached configuration-time observation.
     const revision = b.addSystemCommand(&.{ "git", "rev-parse", "HEAD" });
     revision.setCwd(b.path("."));
@@ -213,7 +220,7 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "shakedown", .module = module },
         .{ .name = "bench_options", .module = provenance_module },
-        .{ .name = "network_model", .module = b.createModule(.{ .root_source_file = b.path("src/sim/net/Model.zig"), .target = target, .optimize = optimize }) },
+        .{ .name = "network_model", .module = b.createModule(.{ .root_source_file = b.path("src/sim/net/Model.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "aegis", .module = aegis }} }) },
         .{ .name = "measuring", .module = b.createModule(.{ .root_source_file = b.path("src/bench.zig"), .target = target, .optimize = optimize }) },
         .{ .name = "bench_compare", .module = compare_driver },
     }) catch @panic("OOM");

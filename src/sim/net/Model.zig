@@ -1,9 +1,15 @@
 //! Owned network state. No kernel sockets, task pointers, or wall clock.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Model = @This();
 const Handle = Io.net.Socket.Handle;
 const Address = Io.net.IpAddress;
+const NodeTag = struct {};
+/// A node of the network: the namespace of its sockets and addresses. Ids
+/// are dense from 0, issued only by `addNode`; two nodes are two ids, and
+/// an id is not a handle, a task or a count.
+pub const NodeId = aegis.id.Id(NodeTag, u32);
 pub const Dist = union(enum) {
     fixed: Io.Duration,
     uniform: struct { min: Io.Duration, max: Io.Duration },
@@ -22,7 +28,7 @@ pub const Error = error{ OutOfMemory, SystemResources, AddressInUse, AddressUnav
 const State = struct { value: Link, held: bool = false, partitioned: bool = false, available: i64 = 0 };
 pub const Socket = struct {
     handle: Handle,
-    node: u32,
+    node: NodeId,
     address: Address,
     kind: enum { stream, listener, datagram },
     peer: ?Handle = null,
@@ -48,8 +54,8 @@ const Packet = struct {
     from: Handle,
     to: Handle,
     source: Address,
-    a: u32,
-    b: u32,
+    a: NodeId,
+    b: NodeId,
     kind: enum { stream, datagram, handshake },
     at: i64,
     born: i64,
@@ -63,7 +69,7 @@ fn order(_: void, a: *Packet, b: *Packet) std.math.Order {
     if (a.blocked != b.blocked) return if (a.blocked) .gt else .lt;
     return if (a.at == b.at) std.math.order(a.seq, b.seq) else std.math.order(a.at, b.at);
 }
-names: std.StringHashMapUnmanaged(u32) = .empty,
+names: std.StringHashMapUnmanaged(NodeId) = .empty,
 gpa: std.mem.Allocator,
 options: Options,
 now: i64 = 0,
@@ -72,7 +78,7 @@ next_handle: u32 = 10000,
 next_port: u16 = 49152,
 sequence: u64 = 0,
 node_count: u32 = 0,
-addresses: std.ArrayList(struct { node: u32, address: Address }) = .empty,
+addresses: std.ArrayList(struct { node: NodeId, address: Address }) = .empty,
 links: std.AutoHashMapUnmanaged(u64, State) = .empty,
 sockets: std.AutoHashMapUnmanaged(Handle, *Socket) = .empty,
 owned: std.ArrayList(*Socket) = .empty,
@@ -107,24 +113,27 @@ pub fn deinit(m: *Model) void {
     m.addresses.deinit(m.gpa);
     m.* = undefined;
 }
-fn key(a: u32, b: u32) u64 {
-    return (@as(u64, a) << 32) | b;
+fn key(a: NodeId, b: NodeId) u64 {
+    // glint-ignore: A004 -- safe-type-internals: docs/design.md#aegis-types-and-the-raw-sites; the ordered pair of ids is the link table's key
+    return (@as(u64, a.raw()) << 32) | b.raw();
 }
-pub fn addNode(m: *Model, addresses: []const Address) error{OutOfMemory}!u32 {
-    const id = m.node_count;
-    try m.links.ensureUnusedCapacity(m.gpa, 2 * id + 1);
+pub fn addNode(m: *Model, addresses: []const Address) error{OutOfMemory}!NodeId {
+    const index = m.node_count;
+    const id: NodeId = .fromRaw(index);
+    try m.links.ensureUnusedCapacity(m.gpa, 2 * index + 1);
     try m.addresses.ensureUnusedCapacity(m.gpa, @max(1, addresses.len));
-    for (0..id + 1) |other| {
-        m.links.putAssumeCapacity(key(id, @intCast(other)), .{ .value = m.options.default_link });
-        if (other != id) m.links.putAssumeCapacity(key(@intCast(other), id), .{ .value = m.options.default_link });
+    for (0..index + 1) |other| {
+        const peer: NodeId = .fromRaw(@intCast(other));
+        m.links.putAssumeCapacity(key(id, peer), .{ .value = m.options.default_link });
+        if (peer != id) m.links.putAssumeCapacity(key(peer, id), .{ .value = m.options.default_link });
     }
     if (addresses.len == 0) {
-        m.addresses.appendAssumeCapacity(.{ .node = id, .address = .{ .ip4 = .{ .bytes = .{ 10, @truncate(id >> 16), @truncate(id >> 8), @truncate(id + 1) }, .port = 0 } } });
+        m.addresses.appendAssumeCapacity(.{ .node = id, .address = .{ .ip4 = .{ .bytes = .{ 10, @truncate(index >> 16), @truncate(index >> 8), @truncate(index + 1) }, .port = 0 } } });
     } else for (addresses) |addr| m.addresses.appendAssumeCapacity(.{ .node = id, .address = addr });
     m.node_count += 1;
     return id;
 }
-pub fn address(m: *Model, node: u32) Address {
+pub fn address(m: *Model, node: NodeId) Address {
     for (m.addresses.items) |item| if (item.node == node) return item.address;
     unreachable; // node IDs are made only by addNode
 }
@@ -141,7 +150,7 @@ fn wildcard(a: Address) bool {
         .ip6 => |v| std.mem.allEqual(u8, &v.bytes, 0),
     };
 }
-fn route(m: *Model, caller: u32, address_: Address) ?u32 {
+fn route(m: *Model, caller: NodeId, address_: Address) ?NodeId {
     if (sameIp(address_, .{ .ip4 = .loopback(0) }) or sameIp(address_, .{ .ip6 = .loopback(0) })) return caller;
     for (m.addresses.items) |a| if (sameIp(a.address, address_)) return a.node;
     return null;
@@ -154,12 +163,12 @@ pub fn validate(value: Link) error{InvalidLink}!void {
         .exponential => |d| if (d.mean.nanoseconds < 0) return error.InvalidLink,
     }
 }
-pub fn configure(m: *Model, a: u32, b: u32, value: Link) Error!void {
+pub fn configure(m: *Model, a: NodeId, b: NodeId, value: Link) Error!void {
     try validate(value);
     m.links.getPtr(key(a, b)).?.value = value;
     m.links.getPtr(key(b, a)).?.value = value;
 }
-pub fn status(m: *Model, a: u32, b: u32, held: ?bool, partitioned: ?bool) void {
+pub fn status(m: *Model, a: NodeId, b: NodeId, held: ?bool, partitioned: ?bool) void {
     for ([_]u64{ key(a, b), key(b, a) }) |k| {
         const s = m.links.getPtr(k).?;
         if (held) |v| s.held = v;
@@ -239,7 +248,7 @@ fn handleId(handle: Handle) u64 {
         else => @compileError("unsupported Io socket handle representation"),
     };
 }
-fn socket(m: *Model, node: u32, kind: @FieldType(Socket, "kind"), address_: Address, capacity: usize) Error!*Socket {
+fn socket(m: *Model, node: NodeId, kind: @FieldType(Socket, "kind"), address_: Address, capacity: usize) Error!*Socket {
     const limit = switch (@typeInfo(Handle)) {
         .pointer => std.math.maxInt(u32),
         .int => @min(std.math.maxInt(u32), std.math.maxInt(Handle)),
@@ -269,14 +278,14 @@ fn socket(m: *Model, node: u32, kind: @FieldType(Socket, "kind"), address_: Addr
     m.sockets.putAssumeCapacity(s.handle, s);
     return s;
 }
-pub fn get(m: *Model, handle: Handle, node: u32) Error!*Socket {
+pub fn get(m: *Model, handle: Handle, node: NodeId) Error!*Socket {
     const s = m.sockets.get(handle) orelse return error.SocketUnconnected;
     if (s.node != node) return error.SocketUnconnected;
     if (s.timed_out) return error.ConnectionTimedOut;
     if (s.reset) return error.ConnectionResetByPeer;
     return s;
 }
-pub fn bind(m: *Model, node: u32, requested: Address, kind: @FieldType(Socket, "kind")) Error!*Socket {
+pub fn bind(m: *Model, node: NodeId, requested: Address, kind: @FieldType(Socket, "kind")) Error!*Socket {
     var addr = requested;
     if (!wildcard(addr) and m.route(node, addr) != node) return error.AddressUnavailable;
     if (addr.getPort() == 0) {
@@ -290,7 +299,7 @@ pub fn bind(m: *Model, node: u32, requested: Address, kind: @FieldType(Socket, "
     } else if (m.bound(node, addr, kind) != null) return error.AddressInUse;
     return m.socket(node, kind, addr, if (kind == .stream) m.options.default_link.buffer else 0);
 }
-fn bound(m: *Model, node: u32, addr: Address, kind: @FieldType(Socket, "kind")) ?*Socket {
+fn bound(m: *Model, node: NodeId, addr: Address, kind: @FieldType(Socket, "kind")) ?*Socket {
     var it = m.sockets.valueIterator();
     while (it.next()) |item| {
         const s = item.*;
@@ -298,7 +307,7 @@ fn bound(m: *Model, node: u32, addr: Address, kind: @FieldType(Socket, "kind")) 
     }
     return null;
 }
-pub fn pair(m: *Model, a: u32, b: u32, local: bool) Error![2]*Socket {
+pub fn pair(m: *Model, a: NodeId, b: NodeId, local: bool) Error![2]*Socket {
     const capacity = m.links.getPtr(key(a, b)).?.value.buffer;
     const left = try m.socket(a, .stream, m.address(a), capacity);
     errdefer m.close(left.handle);
@@ -309,12 +318,12 @@ pub fn pair(m: *Model, a: u32, b: u32, local: bool) Error![2]*Socket {
     right.local = local;
     return .{ left, right };
 }
-pub fn connect(m: *Model, node: u32, addr: Address) Error!*Socket {
+pub fn connect(m: *Model, node: NodeId, addr: Address) Error!*Socket {
     const destination = m.route(node, addr) orelse return error.ConnectionRefused;
     const listener = m.bound(destination, addr, .listener) orelse return error.ConnectionRefused;
     return m.connectListener(node, listener, false);
 }
-pub fn connectListener(m: *Model, node: u32, listener: *Socket, local: bool) Error!*Socket {
+pub fn connectListener(m: *Model, node: NodeId, listener: *Socket, local: bool) Error!*Socket {
     var count: usize = 0;
     var it = m.sockets.valueIterator();
     while (it.next()) |s| if (s.*.listener == listener.handle and !s.*.accepted) {
@@ -487,7 +496,7 @@ pub fn close(m: *Model, handle: Handle) void {
     m.idle.appendAssumeCapacity(s.value);
     m.change +%= 1;
 }
-pub fn reset(m: *Model, a: u32, b: u32) void {
+pub fn reset(m: *Model, a: NodeId, b: NodeId) void {
     var it = m.sockets.valueIterator();
     while (it.next()) |s| if (s.*.kind == .stream) {
         if (m.sockets.get(s.*.peer orelse continue)) |p| if ((s.*.node == a and p.node == b) or (s.*.node == b and p.node == a)) {
@@ -496,7 +505,7 @@ pub fn reset(m: *Model, a: u32, b: u32) void {
     };
     m.change +%= 1;
 }
-pub fn kill(m: *Model, node: u32) void {
+pub fn kill(m: *Model, node: NodeId) void {
     while (true) {
         var found: ?Handle = null;
         var it = m.sockets.valueIterator();

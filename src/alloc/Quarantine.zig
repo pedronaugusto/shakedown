@@ -17,23 +17,28 @@
 //! Thread-safe.
 const builtin = @import("builtin");
 const std = @import("std");
+const aegis = @import("aegis");
 const Alignment = std.mem.Alignment;
-const assert = std.debug.assert;
+const assert = aegis.assert;
 const windows = std.os.windows;
 
 const Quarantine = @This();
 
 /// Private: what the quarantine was asked for.
 options: Options,
-/// Private: guards `mappings`, `freed` and `quarantined`.
-mutex: std.atomic.Mutex = .unlocked,
-/// Private: every reservation still held, by base address, with its length.
-mappings: std.AutoHashMapUnmanaged(usize, usize) = .empty,
-/// Private: freed reservations, oldest first, from `freed_head` on.
-freed: std.ArrayList(Range) = .empty,
-freed_head: usize = 0,
-/// Private: bytes reserved by freed blocks.
-quarantined: usize = 0,
+/// Private: the tables below, beside the spin lock that guards them.
+state: aegis.Guarded(State) = .init(.{}),
+
+/// Private: what the lock guards.
+const State = struct {
+    /// Every reservation still held, by base address, with its length.
+    mappings: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    /// Freed reservations, oldest first, from `freed_head` on.
+    freed: std.ArrayList(Range) = .empty,
+    freed_head: usize = 0,
+    /// Bytes reserved by freed blocks.
+    quarantined: usize = 0,
+};
 
 pub const Options = struct {
     /// `.after`: each block ends at a page end and the page after it is
@@ -41,8 +46,10 @@ pub const Options = struct {
     guard: Guard = .none,
     /// Address space freed blocks may hold before the oldest are given back
     /// to the system, which may then hand them out again. Null keeps every
-    /// address forever, which a 64-bit address space affords.
-    reuse_after: ?usize = null,
+    /// address forever, which a 64-bit address space affords. Bytes, not
+    /// pages: a block holds at least one page, and a limit below a page
+    /// gives every freed block back at once.
+    reuse_after: ?aegis.units.Bytes(usize) = null,
 
     pub const Guard = enum { none, after };
 };
@@ -68,10 +75,15 @@ pub fn allocator(q: *Quarantine) std.mem.Allocator {
 
 /// Gives back every reservation, freed or not.
 pub fn deinit(q: *Quarantine) void {
-    var it = q.mappings.iterator();
-    while (it.next()) |entry| release(.{ .base = entry.key_ptr.*, .len = entry.value_ptr.* });
-    q.mappings.deinit(bookkeeping);
-    q.freed.deinit(bookkeeping);
+    {
+        var held = q.state.acquire();
+        defer held.deinit();
+        const state = held.value();
+        var it = state.mappings.iterator();
+        while (it.next()) |entry| release(.{ .base = entry.key_ptr.*, .len = entry.value_ptr.* });
+        state.mappings.deinit(bookkeeping);
+        state.freed.deinit(bookkeeping);
+    }
     q.* = undefined;
 }
 
@@ -103,15 +115,15 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*
         release(.{ .base = at, .len = span });
         return null;
     }
-    lock(q);
-    defer q.mutex.unlock();
-    q.mappings.put(bookkeeping, at, span) catch {
+    var held = q.state.acquire();
+    defer held.deinit();
+    held.value().mappings.put(bookkeeping, at, span) catch {
         release(.{ .base = at, .len = span });
         return null;
     };
     // With a guard the block ends where the guard begins.
     const start = if (guard == 0) at else alignment.backward(at + data - @max(len, 1));
-    assert(start >= at);
+    assert.invariant(start >= at, "a guarded block starts inside its mapping");
     return @ptrFromInt(start);
 }
 
@@ -130,35 +142,43 @@ fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) vo
     if (!supported) return std.heap.page_allocator.rawFree(memory, alignment, ret_addr);
     const page = std.heap.pageSize();
     const base = std.mem.alignBackward(usize, @intFromPtr(memory.ptr), page); // safe: an address, kept as a number for page arithmetic
-    lock(q);
-    defer q.mutex.unlock();
-    const span = q.mappings.get(base) orelse unreachable; // unreachable: a free of a block this allocator never gave out
+    var held = q.state.acquire();
+    defer held.deinit();
+    const state = held.value();
+    // A free of memory this allocator never gave out, or gave out and took
+    // back already, is the caller's bug: stop at it in every build, not
+    // with whatever an `unreachable` lets happen.
+    const found = state.mappings.get(base);
+    assert.invariant(found != null, "Quarantine freed a block it does not hold");
+    const span = found.?;
     const guard: usize = if (q.options.guard == .after) page else 0;
     if (!decommit(base, span - guard)) {
         // The pages could not be closed, so they cannot be kept: give the
         // range back rather than leave it open and reserved.
         release(.{ .base = base, .len = span });
-        _ = q.mappings.remove(base);
+        _ = state.mappings.remove(base);
         return;
     }
-    const limit = q.options.reuse_after orelse return;
-    q.freed.append(bookkeeping, .{ .base = base, .len = span }) catch return;
-    q.quarantined += span;
-    while (q.quarantined > limit and q.freed_head < q.freed.items.len) {
-        const oldest = q.freed.items[q.freed_head];
-        q.freed_head += 1;
-        q.quarantined -= oldest.len;
+    const reuse = q.options.reuse_after orelse return;
+    const limit: aegis.bounded.Limit(usize) = .init(reuse.raw());
+    state.freed.append(bookkeeping, .{ .base = base, .len = span }) catch return;
+    state.quarantined += span;
+    while (state.freed_head < state.freed.items.len and exceeds(limit, state.quarantined)) {
+        const oldest = state.freed.items[state.freed_head];
+        state.freed_head += 1;
+        state.quarantined -= oldest.len;
         release(oldest);
-        _ = q.mappings.remove(oldest.base);
+        _ = state.mappings.remove(oldest.base);
     }
-    if (q.freed_head == q.freed.items.len) {
-        q.freed.clearRetainingCapacity();
-        q.freed_head = 0;
+    if (state.freed_head == state.freed.items.len) {
+        state.freed.clearRetainingCapacity();
+        state.freed_head = 0;
     }
 }
 
-fn lock(q: *Quarantine) void {
-    while (!q.mutex.tryLock()) std.atomic.spinLoopHint();
+fn exceeds(limit: aegis.bounded.Limit(usize), amount: usize) bool {
+    limit.check(amount) catch return true;
+    return false;
 }
 
 /// Makes `[at, at + len)` inaccessible, keeping it reserved and resident.

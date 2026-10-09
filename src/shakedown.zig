@@ -11,7 +11,7 @@ pub const Layer = @import("layer.zig").Layer;
 pub const Overrides = @import("layer.zig").Overrides;
 /// A manual clock over a base `Io`: time moves only when the test moves it.
 pub const Clock = @import("Clock.zig");
-/// Allocators for tests: `Counting`, `Quarantine` and `NoResize`.
+/// Allocators for tests: `Counting`, `Quarantine`, `NoResize`, `Unwiped` and `LockProbe`.
 pub const alloc = @import("alloc.zig");
 /// Test inputs built at compile time: fuzz corpus entries in
 /// `std.testing.Smith`'s input format, and repeated text.
@@ -66,6 +66,8 @@ pub const CheckReport = @import("check.zig").CheckReport;
 pub const Sim = @import("Sim.zig");
 /// One call into a `Sim`, as its trace records it.
 pub const SimEvent = Sim.Event;
+/// A simulated task, as a trace and a report name it.
+pub const TaskId = @import("ids.zig").TaskId;
 /// Two runs of one seed must make one run.
 pub const expectDeterministic = @import("determinism.zig").expectDeterministic;
 /// How `expectDeterministic` runs its body.

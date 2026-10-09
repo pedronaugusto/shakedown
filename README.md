@@ -11,8 +11,9 @@ generated cases and shrinks a failure to its smallest form, schedules included.
 The rest are test doubles: a `Clock` moves time only when the test moves it,
 a `FaultIo` counts, traces and fails any `Io` call by plan, `everyFault`
 injects every single fault at every step of an operation, a `Layer` overrides
-some `Io` slots and forwards the rest, and three allocators count memory,
-quarantine it, or refuse to resize it.
+some `Io` slots and forwards the rest, and five allocators count memory,
+quarantine it, refuse to resize it, see a free of memory that still holds a
+secret, or see a call made while a lock is held.
 
 ## Install
 
@@ -142,6 +143,25 @@ refuses every resize and remap, so each growth is an allocation in every run.
 `std.testing.checkAllAllocationFailures` counts a first run's allocations and
 then fails each in turn; over `std.testing.allocator` alone, a growth is a resize
 in place in one run and an allocation in another, and the count moves.
+`Quarantine.Options.reuse_after` is a byte count (`aegis.units.Bytes(usize)`), not
+a page count.
+
+`alloc.Unwiped` is given the bytes that must not outlive their owner (a key, a
+token, a password) and scans every block as it is freed, counting the blocks that
+still held one and keeping the first with the frames of its free. It refuses
+resizes, so a block that shrinks or moves is freed with the contents it had. It
+sees a free as the allocator receives it, and `Allocator.free` fills a block with
+`undefined` first wherever runtime safety is on: in Debug and ReleaseSafe the bytes
+never reach it, whatever the program did. `Unwiped.sees` says which builds can
+tell, and `expectNone` skips the test in the others instead of passing it, so run
+such tests in ReleaseFast or ReleaseSmall. `alloc.LockProbe` is given a lock
+(`Held.flag` for an atomic flag such as an `aegis.Guarded`'s, `Held.mutex` for
+`std.Io.Mutex`, `Held.spinMutex` for `std.atomic.Mutex`) and counts the allocator
+calls made while it is held, keeping the first with its frames. It reads the lock
+and never takes it, and a lock does not say who holds it: it reports a call made
+while anyone held the lock, which is the question for a lock the code takes itself
+on a test's one thread, and for a lock inside which nothing may allocate. Both are
+thread-safe, and `expectNone` on either prints the first offender.
 
 `FaultIo` wraps every `Io` slot and every `operate` operation, by code generated
 from `Io.VTable` and `Io.Operation`, and forwards each call to its base. Each
@@ -258,6 +278,15 @@ waiter), and, with `yield_per_million`, a switch at any call. Each draw is made
 only when there is a choice, so a tape holds only decisions that could have
 gone another way, and a `Case`'s simulation (`Case.sim`) shrinks its schedule
 with the case's inputs.
+
+Options are checked when the simulation is made. A `pct` schedule needs a `depth`
+of 1 to 16 and a `length` of at least 1; others fail `Sim.init` with
+`InvalidSchedule`. `stack_size` is a byte count (`aegis.units.Bytes(usize)`).
+A trace of `.window = 0` or `.last = 0` keeps no records, as `.off` does, and
+still hashes every call. A task whose context or result wants more alignment
+than a task frame gives (64 bytes) cannot start: `async` then runs the function
+at once, as std allows, and `concurrent` returns `error.ConcurrencyUnavailable`.
+`max_steps` ends a run as `step_limit` when it would make more calls than that.
 
 A run ends `finished`, `failed` with the root task's error, `deadlock` with a
 report of every task still waiting (what it waits on, where it was started and
@@ -379,7 +408,8 @@ optional duplicate packets may be dropped when the pool is full. All resources
 are released by `sim.deinit()`.
 
 `Sim.Event.node` records the call's Io namespace and `TaskReport.node` records
-task ownership; task IDs remain global. Network traces include portable handles,
+task ownership; task IDs remain global. Both are distinct id types
+(`Sim.NodeId`, `TaskId`) and a trace records them as the numbers they are. Network traces include portable handles,
 addresses and bytes. Invalid link parameters fail with `InvalidLink`, including
 at `Sim.init`; topology APIs require nodes from the same Sim. Link buffer capacity
 is established when a stream connects, so increasing the configured capacity
@@ -443,7 +473,10 @@ quarantines nothing; `Quarantine.supported` says which.
 ## Built with
 
 - [Zig](https://ziglang.org) 0.17.0 and its standard library; nothing else is
-  linked into the module.
+  linked into the module but aegis.
+- [aegis](https://github.com/pedronaugusto/aegis), whose runtime is `std` only:
+  the id, byte-count, limit and lock types the simulation and the quarantine are
+  built on. A consumer fetches it with shakedown.
 - [preflight](https://github.com/pedronaugusto/preflight) runs the source checks,
   the tests and CI, fetched only in shakedown's own tree.
 

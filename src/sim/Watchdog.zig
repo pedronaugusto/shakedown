@@ -13,6 +13,7 @@
 //! nothing else can stop it.
 const std = @import("std");
 const Io = std.Io;
+const ids = @import("../ids.zig");
 
 const Watchdog = @This();
 
@@ -29,9 +30,9 @@ first: ?*Watched = null,
 /// What the watchdog reads of one simulation, and keeps of it between
 /// samples. The simulation owns it, and it links it in with `add`.
 pub const Watched = struct {
-    /// The running task's id, 0 when none; the calls made so far; and the
-    /// verdict the simulation reads at its next call.
-    running: *const std.atomic.Value(u32),
+    /// The running task's id, `outside` when none; the calls made so far;
+    /// and the verdict the simulation reads at its next call.
+    running: *const std.atomic.Value(ids.TaskId),
     calls: *const std.atomic.Value(u64),
     stuck: *std.atomic.Value(bool),
     /// Real time, in nanoseconds, a task may run without a call.
@@ -130,7 +131,7 @@ fn sample(w: *Watchdog) ?Next {
 fn look(watched: *Watched, now: i64) void {
     const task = watched.running.load(.monotonic);
     const calls = watched.calls.load(.monotonic);
-    if (task == 0 or calls != watched.seen or watched.since == null) {
+    if (task == ids.outside or calls != watched.seen or watched.since == null) {
         watched.seen = calls;
         watched.since = now;
         return;
@@ -138,10 +139,10 @@ fn look(watched: *Watched, now: i64) void {
     const idle = now -| watched.since.?;
     if (idle >= watched.limit and !watched.stuck.load(.monotonic)) {
         watched.stuck.store(true, .monotonic);
-        say("shakedown: task {d} has run {d} ms without an Io call; the run ends as stuck at its next one\n", .{ task, @divTrunc(idle, std.time.ns_per_ms) });
+        say("shakedown: task {d} has run {d} ms without an Io call; the run ends as stuck at its next one\n", .{ task.raw(), @divTrunc(idle, std.time.ns_per_ms) });
     }
     if (idle >= 2 *| watched.limit) {
-        say("shakedown: task {d} has made no Io call for {d} ms and cannot be stopped; aborting\n", .{ task, @divTrunc(idle, std.time.ns_per_ms) });
+        say("shakedown: task {d} has made no Io call for {d} ms and cannot be stopped; aborting\n", .{ task.raw(), @divTrunc(idle, std.time.ns_per_ms) });
         std.process.abort();
     }
 }

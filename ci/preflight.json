@@ -1,12 +1,14 @@
 {
   "sources": [
-    "src"
+    "src",
+    "bench"
   ],
   "test_roots": [
     "src/tests.zig"
   ],
   "test_support": [
-    "src/testing/**"
+    "src/testing/**",
+    "bench/**"
   ],
   "function_exceptions": {},
   "layout_exceptions": {},
@@ -39,5 +41,25 @@
   ],
   "unreachable_exceptions": "ci/unreachable-exceptions.json",
   "debug_print_exceptions": "ci/debug-print-exceptions.json",
-  "file_name_exceptions": "ci/file-name-exceptions.json"
+  "file_name_exceptions": "ci/file-name-exceptions.json",
+  "glint": {
+    "rules": [
+      {
+        "id": "A001",
+        "level": "gate"
+      },
+      {
+        "id": "A002",
+        "level": "gate"
+      },
+      {
+        "id": "A003",
+        "level": "gate"
+      },
+      {
+        "id": "A004",
+        "level": "gate"
+      }
+    ]
+  }
 }

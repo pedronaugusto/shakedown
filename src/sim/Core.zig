@@ -15,7 +15,9 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const aegis = @import("aegis");
 const Source = @import("../Source.zig");
+const ids = @import("../ids.zig");
 const Trace = @import("../trace.zig").Trace;
 const IoCall = @import("../io_call.zig").IoCall;
 const executor = @import("executor.zig");
@@ -28,9 +30,13 @@ const TaskReport = options_mod.TaskReport;
 const Fs = @import("Fs.zig");
 const Disk = @import("fs/Model.zig");
 const Network = @import("net/Model.zig");
+const NodeId = Network.NodeId;
 const Core = @This();
 
-pub const Context = struct { core: *Core, node: u32 = 0, inherit: bool = false, disk: ?Fs = null };
+/// The first node: the one every simulation has, whose files are `Options.fs`.
+pub const first_node: NodeId = .fromRaw(0);
+
+pub const Context = struct { core: *Core, node: NodeId = first_node, inherit: bool = false, disk: ?Fs = null };
 
 gpa: Allocator,
 options: Options,
@@ -40,7 +46,7 @@ network: Network,
 context: Context = undefined,
 vtable: *const Io.VTable = undefined,
 contexts: std.ArrayList(*Context) = .empty,
-active_node: u32 = 0,
+active_node: NodeId = first_node,
 network_seen: u32 = 0,
 kind: executor.Kind,
 /// The `Io` handed to tasks the core starts itself (`Sim.at`).
@@ -58,7 +64,7 @@ timer_seq: u64 = 0,
 tasks: std.ArrayList(*Task) = .empty,
 /// Tasks that ended and were released, ready to run another job.
 idle: std.ArrayList(*Task) = .empty,
-next_id: u32 = 1,
+next_id: ids.TaskIssuer = .init(0),
 /// Tasks started and not yet ended.
 live: u32 = 0,
 ready: std.ArrayList(*Task) = .empty,
@@ -85,7 +91,7 @@ reports: std.ArrayList(TaskReport) = .empty,
 /// Shared with the watchdog thread: the step count, the running task's id (0
 /// when none), and whether the watchdog found the run stuck.
 calls: std.atomic.Value(u64) = .init(0),
-running: std.atomic.Value(u32) = .init(0),
+running: std.atomic.Value(ids.TaskId) = .init(ids.outside),
 stuck: std.atomic.Value(bool) = .init(false),
 
 const max_depth = 16;
@@ -143,9 +149,9 @@ pub const Wait = union(enum) {
 
 pub const Task = struct {
     core: *Core,
-    id: u32 = 0,
-    node: u32 = 0,
-    io_node: u32 = 0,
+    id: ids.TaskId = ids.outside,
+    node: NodeId = first_node,
+    io_node: NodeId = first_node,
     state: State = .idle,
     ctx: executor.Context,
     job: Job = undefined,
@@ -175,7 +181,7 @@ pub const Task = struct {
     spawned_at: usize = 0,
     /// Where the task last called into the simulation.
     call_site: usize = 0,
-    report: TaskReport = .{ .id = 0, .spawned_at = 0, .waiting = .none },
+    report: TaskReport = .{ .id = ids.outside, .spawned_at = 0, .waiting = .none },
 
     fn contextPointer(t: *Task) *const anyopaque {
         return @ptrCast(t.frame.ptr + t.context_offset); // safe: the frame holds the copied context at this offset
@@ -192,10 +198,14 @@ pub const Task = struct {
 
 const frame_align = 64;
 
-pub const InitError = error{ OutOfMemory, ExecutorUnavailable, InvalidLink };
+pub const InitError = error{ OutOfMemory, ExecutorUnavailable, InvalidLink, InvalidSchedule };
 
 pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
     if (options.net) |net_options| try Network.validate(net_options.default_link);
+    switch (options.schedule) {
+        .pct => |pct| if (pct.depth < 1 or pct.depth > max_depth or pct.length < 1) return error.InvalidSchedule,
+        .fifo, .random => {},
+    }
     const kind: executor.Kind = switch (options.executor) {
         .auto => executor.best orelse return error.ExecutorUnavailable,
         .fibers => if (executor.available(.win32)) .win32 else if (executor.available(.fibers)) .fibers else return error.ExecutorUnavailable,
@@ -218,7 +228,6 @@ pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
     }
     switch (options.schedule) {
         .pct => |pct| {
-            std.debug.assert(pct.depth >= 1 and pct.depth <= max_depth and pct.length >= 1);
             c.change_count = pct.depth - 1;
             for (c.change_points[0..c.change_count]) |*point| point.* = 1 + c.draw(pct.length - 1);
             std.mem.sort(u64, c.change_points[0..c.change_count], {}, std.sort.asc(u64));
@@ -262,11 +271,18 @@ pub fn of(userdata: ?*anyopaque) *Core {
     return c;
 }
 
-pub fn nodeId(c: *Core) u32 {
+pub fn nodeId(c: *Core) NodeId {
     return if (c.current) |t| t.io_node else c.active_node;
 }
-pub fn disk(c: *Core, id: u32) ?Fs {
-    return if (id == 0) c.fs else c.contexts.items[id - 1].disk;
+
+/// The context of a node made by `Sim.node`: the first is `c.context`.
+pub fn contextOf(c: *Core, node: NodeId) *Context {
+    // glint-ignore: A004 -- safe-type-internals: docs/design.md#aegis-types-and-the-raw-sites; nodes after the first are `contexts` in the order the network issued their ids
+    return c.contexts.items[node.raw() - 1];
+}
+
+pub fn disk(c: *Core, node: NodeId) ?Fs {
+    return if (node == first_node) c.fs else c.contextOf(node).disk;
 }
 pub fn notifyNetwork(c: *Core) void {
     c.network.now = c.clocks[@backingInt(Kept.awake)];
@@ -295,11 +311,21 @@ pub fn chance(c: *Core, per_million: u32) bool {
 
 // Tasks.
 
+/// `SystemResources`: no room for the job's context or result in a frame, or
+/// no task id left.
 pub const SpawnError = error{ OutOfMemory, SystemResources };
 
+/// How a new task begins.
+pub const Start = enum {
+    /// Runnable at once.
+    ready,
+    /// A group member waiting for its group's await.
+    deferred,
+    /// A task of `Sim.at`, waiting for its time.
+    parked,
+};
+
 /// A task for `job`, its context copied in and room made for its result.
-/// It starts `ready`, `deferred` (a group member waiting for its group's
-/// await) or `parked` (a task of `Sim.at`, waiting for its time).
 pub fn spawn(
     c: *Core,
     job: Job,
@@ -307,11 +333,13 @@ pub fn spawn(
     context_alignment: std.mem.Alignment,
     result_len: usize,
     result_alignment: std.mem.Alignment,
-    start: State,
+    start: Start,
 ) SpawnError!*Task {
     const t = c.idle.pop() orelse try c.newTask();
     errdefer c.idle.appendAssumeCapacity(t);
     try c.layOut(t, context.len, context_alignment, result_len, result_alignment);
+    // Issued last, so a spawn that fails leaves the issuer where it was.
+    const id = c.next_id.next() catch return error.SystemResources;
     @memcpy((t.frame.ptr + t.context_offset)[0..context.len], context);
     t.* = .{
         .core = c,
@@ -320,12 +348,11 @@ pub fn spawn(
         .context_offset = t.context_offset,
         .result_offset = t.result_offset,
         .result_len = result_len,
-        .id = c.next_id,
+        .id = id,
         .node = c.nodeId(),
         .io_node = c.nodeId(),
         .job = job,
     };
-    c.next_id += 1;
     c.live += 1;
     switch (c.options.schedule) {
         .pct => |pct| t.priority = pct.depth + c.draw(1 << 20),
@@ -338,7 +365,6 @@ pub fn spawn(
             t.state = .parked;
             t.wait = .start;
         },
-        .idle, .running, .done, .abandoned => unreachable, // unreachable: a task starts ready, deferred or waiting for its time
     }
     return t;
 }
@@ -349,18 +375,20 @@ fn newTask(c: *Core) SpawnError!*Task {
     try c.ready.ensureTotalCapacity(c.gpa, c.tasks.items.len + 1);
     const t = try c.gpa.create(Task);
     errdefer c.gpa.destroy(t);
-    t.* = .{ .core = c, .ctx = try executor.create(c.kind, taskMain, t, c.options.stack_size) };
+    const stack_size = c.options.stack_size.raw();
+    t.* = .{ .core = c, .ctx = try executor.create(c.kind, taskMain, t, stack_size) };
     errdefer executor.destroy(&t.ctx);
-    try executor.start(&t.ctx, taskMain, t, c.options.stack_size);
+    try executor.start(&t.ctx, taskMain, t, stack_size);
     c.tasks.appendAssumeCapacity(t);
     return t;
 }
 
 /// Places the context and the result in the task's frame, growing it when
 /// the job needs more than it held.
-fn layOut(c: *Core, t: *Task, context_len: usize, context_alignment: std.mem.Alignment, result_len: usize, result_alignment: std.mem.Alignment) error{OutOfMemory}!void {
-    std.debug.assert(context_alignment.toByteUnits() <= frame_align);
-    std.debug.assert(result_alignment.toByteUnits() <= frame_align);
+fn layOut(c: *Core, t: *Task, context_len: usize, context_alignment: std.mem.Alignment, result_len: usize, result_alignment: std.mem.Alignment) SpawnError!void {
+    // A job whose types want more than a frame gives is the caller's, not a
+    // bug here: `async` runs it at once, `concurrent` is unavailable.
+    if (context_alignment.toByteUnits() > frame_align or result_alignment.toByteUnits() > frame_align) return error.SystemResources;
     const result_offset = result_alignment.forward(context_len);
     const need = @max(result_offset + result_len, 1);
     if (t.frame.len < need) {
@@ -374,6 +402,9 @@ fn layOut(c: *Core, t: *Task, context_len: usize, context_alignment: std.mem.Ali
 
 /// Puts an ended task back for reuse.
 pub fn release(c: *Core, t: *Task) void {
+    // A second release would queue the task twice, and two jobs would then
+    // share its frame and stack.
+    aegis.assert.pre(t.state == .running or t.state == .done, "a task is released once, after it ended");
     t.state = .idle;
     c.idle.appendAssumeCapacity(t);
 }
@@ -543,7 +574,7 @@ pub fn dispatch(c: *Core, from: *executor.Context) void {
         break :to &n.ctx;
     } else to: {
         c.current = null;
-        c.running.store(0, .monotonic);
+        c.running.store(ids.outside, .monotonic);
         break :to &c.driver;
     };
     if (to != from) executor.switchTo(from, to);
@@ -640,9 +671,9 @@ pub fn abandon(c: *Core, t: *Task, outcome: Outcome) noreturn {
     t.state = .abandoned;
     c.live -= 1;
     c.current = null;
-    c.running.store(0, .monotonic);
+    c.running.store(ids.outside, .monotonic);
     executor.switchTo(&t.ctx, &c.driver);
-    unreachable; // unreachable: nothing switches back to an abandoned task
+    @panic("shakedown: an abandoned task was resumed");
 }
 
 /// Delivers a cancel to `t`'s next cancelation point, or now if it waits
@@ -867,7 +898,7 @@ pub fn wakeFutex(c: *Core, address: usize, max: u32) u32 {
 // Steps.
 
 /// A call in progress: who made it, and its step.
-pub const Call = struct { task: ?*Task, step: u64, node: u32 };
+pub const Call = struct { task: ?*Task, step: u64, node: NodeId };
 
 /// The start of every call: a step, the watchdog's count, and the step
 /// limit and the watchdog's verdict; under PCT, a change point; and, for a
@@ -879,12 +910,15 @@ pub fn enter(c: *Core, call_site: usize, yields: bool) Call {
     c.decision = null;
     const step = c.steps;
     const node = c.nodeId();
+    const limit: aegis.bounded.Limit(u64) = .init(c.options.max_steps);
     const t = c.current orelse {
-        if (c.steps > c.options.max_steps and c.outcome == null) c.outcome = .step_limit;
+        limit.check(c.steps) catch if (c.outcome == null) {
+            c.outcome = .step_limit;
+        };
         return .{ .task = null, .step = step, .node = node };
     };
     t.call_site = call_site;
-    if (c.steps > c.options.max_steps) c.abandon(t, .step_limit);
+    limit.check(c.steps) catch c.abandon(t, .step_limit);
     if (c.stuck.load(.monotonic)) {
         c.capture(t);
         c.abandon(t, .{ .stuck = t.report });
@@ -902,9 +936,27 @@ pub fn enter(c: *Core, call_site: usize, yields: bool) Call {
 
 /// The end of a call: its record in the trace.
 pub fn record(c: *Core, call: IoCall, entered: Call, outcome: u64) void {
-    const id = if (entered.task) |t| t.id else 0;
+    const id = if (entered.task) |t| t.id else ids.outside;
     const event: Event = .{ .call = call, .task = id, .node = entered.node, .decision = c.decision, .outcome = outcome };
     const at: Io.Timestamp = .fromNanoseconds(c.clocks[@backingInt(Kept.awake)]);
     // ziglint-ignore: Z026 a record that cannot be kept is dropped; the hash still counts it
     c.trace.append(.{ .step = entered.step, .task = id, .at = at, .event = event }) catch {};
+}
+
+test "task ids run out as an error that leaves the issuer where it was" {
+    const gpa = std.testing.allocator;
+    var source: Source = try .init(gpa, .{ .prng = 0 });
+    defer source.deinit();
+    var c: Core = try .init(gpa, .{ .fs = null, .net = null }, &source);
+    defer c.deinit();
+    const job: Job = .{ .future = struct {
+        fn run(_: *const anyopaque, _: *anyopaque) void {}
+    }.run };
+    c.next_id = .init(std.math.maxInt(u32) - 1);
+    const last = try c.spawn(job, &.{}, .@"1", 0, .@"1", .parked);
+    try std.testing.expectEqual(ids.TaskId.fromRaw(std.math.maxInt(u32)), last.id);
+    try std.testing.expectError(error.SystemResources, c.spawn(job, &.{}, .@"1", 0, .@"1", .parked));
+    try std.testing.expectError(error.SystemResources, c.spawn(job, &.{}, .@"1", 0, .@"1", .parked));
+    try std.testing.expectEqual(@as(u32, 1), c.live);
+    try std.testing.expect(c.next_id == ids.TaskIssuer.init(std.math.maxInt(u32)));
 }

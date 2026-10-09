@@ -121,17 +121,20 @@ test "a resize keeps its length or is refused, so a growth moves" {
 test "reuse_after gives the oldest freed ranges back past its limit" {
     if (!Quarantine.supported) return error.SkipZigTest;
     const page = std.heap.pageSize();
-    var q: Quarantine = .init(.{ .reuse_after = 2 * page });
+    var q: Quarantine = .init(.{ .reuse_after = .fromRaw(2 * page) });
     defer q.deinit();
     const gpa = q.allocator();
     var blocks: [4][]u8 = undefined;
     for (&blocks) |*b| b.* = try gpa.alloc(u8, page);
     for (blocks) |b| gpa.free(b);
     // Two pages stay quarantined, the two oldest went back.
-    try testing.expectEqual(@as(usize, 2 * page), q.quarantined);
-    try testing.expectEqual(@as(u32, 2), q.mappings.count());
-    try testing.expect(q.mappings.contains(@intFromPtr(blocks[2].ptr)));
-    try testing.expect(q.mappings.contains(@intFromPtr(blocks[3].ptr)));
+    var held = q.state.acquire();
+    defer held.deinit();
+    const state = held.value();
+    try testing.expectEqual(@as(usize, 2 * page), state.quarantined);
+    try testing.expectEqual(@as(u32, 2), state.mappings.count());
+    try testing.expect(state.mappings.contains(@intFromPtr(blocks[2].ptr)));
+    try testing.expect(state.mappings.contains(@intFromPtr(blocks[3].ptr)));
 }
 
 test "a safe allocator over a quarantine finds no leak and reuses nothing" {

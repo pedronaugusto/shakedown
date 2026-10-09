@@ -71,6 +71,75 @@ Metadata identifies the commit, Zig version, OS and target CPU model; drivers
 may supply a physical CPU name. Git revision and dirty status are uncached build
 commands, so a rebuild after a commit cannot retain stale source provenance.
 
+## Aegis types and the raw sites
+
+shakedown builds on aegis, whose runtime is `std` only. The module is a test
+dependency, but a consumer fetches aegis with it.
+
+What is typed, and what each type catches:
+
+- `TaskId` (`aegis.id.Id`) and `Sim.NodeId` (the network model's) name a task and
+  a node. `Event`, `TaskReport`, `Trace.Record` and the watchdog's running-task
+  slot carry them, so a task id cannot stand where a node id does, or in a count
+  or a digest. Both are the `u32` they were, hashed as that number, so no trace
+  hash and no conformance golden moved. `TaskId.fromRaw(0)`, `ids.outside`, is no
+  task: calls from the driver. A simulation issues ids with one
+  `aegis.id.Counter`, which never wraps: a run that has issued every id cannot
+  start another task (`SystemResources`, which `async` answers by running the
+  function at once and `concurrent` by `ConcurrencyUnavailable`).
+- `Options.max_steps` is checked as an `aegis.bounded.Limit`: a finite maximum, zero
+  included, never a sentinel. `Options.stack_size` and `Quarantine.Options.reuse_after`
+  are byte counts (`aegis.units.Bytes`), the unit a page count is mistaken for.
+- `Quarantine` keeps its tables beside their spin lock as an `aegis.Guarded`, so
+  no access to them is made without the lock. A free of memory it never gave out
+  stops with a message in every build; the `unreachable` it was let any build do
+  anything.
+- Contracts that were `std.debug.assert` are errors where the value comes from
+  outside (`Sim.init` returns `InvalidSchedule` for a `pct` depth or length out of
+  range; a trace window of zero is a trace that keeps nothing; a context a task
+  frame cannot align is a spawn that does not happen), and `aegis.assert` where
+  the caller is another part of this package (`release` of a task that has not
+  ended, a free of a block the allocator does not hold).
+- `Core.Start` names how a task begins, in place of a `State` of which four of
+  seven values were invalid.
+
+The raw sites that remain, each with the reason it is allowed:
+
+- No danger there. Frame offsets and sizes are bytes of one frame, laid out in one
+  function. Futex addresses and their bucket hash are addresses used as numbers.
+  `steps`, `ready_seq`, `timer_seq` and `Steps` count up by one from zero.
+  Virtual time is `i64` nanoseconds, all clocks in the same unit, every addition
+  saturating by design (a sleep of the largest duration is a sleep for ever) and
+  every conversion from `Io.Duration` or `Io.Timestamp` made in
+  `Core.nanoseconds`, which saturates. aegis's `Instant` and `Duration` check
+  their sums and differences and have no saturating form, so adopting them here
+  would turn a sleep for ever into an error path at every site.
+  `FaultIo`'s key for the calling task is a `u64` of its caller's own choosing over
+  any base `Io`: `Sim` hands it the task's number at one place.
+  Hashing a task or node id into a trace digest or a seed (the digest of
+  a new task, the network's input digests) takes its number.
+- Safe-type internals. `net/Model.key` joins two node ids into the link table's
+  key, and `Core.contextOf` maps a node id to its place in `contexts`, which holds
+  the nodes in the order their ids were issued. Each is the one function that
+  knows the representation.
+- A C or OS boundary. `Quarantine` and `executor` do page arithmetic on `usize`
+  for `mmap`, `mprotect` and `madvise`, and the fiber layout does stack arithmetic
+  for the first frame.
+
+The package's glint configuration (`ci/preflight.json`) sets the aegis rules for
+the adopted types (A001 to A003 for `Guarded`, A004 for ids and units) to gate over
+`src` and `bench`, tests and benchmarks included. preflight runs ziglint until
+glint's integration lands, and published glint recognises the aegis it was
+pinned to, not this one, so the gate takes effect when both do; sites carry
+`glint-ignore` lines in the form preflight's own use.
+
+The tests that guard these types are written with plain integers and without
+importing aegis (`src/reference_test.zig`): an event hashed as its plain twin, task
+ids against a model of the order tasks start in, the quarantine's eviction against
+a model that adds spans and drops the oldest, and its addresses across threads. aegis
+runs its own concurrency tests on this simulation, so a flaw shared by the two must
+not be able to confirm itself.
+
 ## Build-tool boundary
 
 A fetched dependency exposes the `shakedown-bench-compare` executable through

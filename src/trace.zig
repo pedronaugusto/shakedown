@@ -13,6 +13,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const ids = @import("ids.zig");
 
 pub fn Trace(comptime Event: type) type {
     return struct {
@@ -40,16 +41,19 @@ pub fn Trace(comptime Event: type) type {
         pub const Mode = union(enum) {
             off,
             all,
-            /// The newest n records, and the hash after every record.
+            /// The newest n records, and the hash after every record. Zero
+            /// is `.off`.
             last: u32,
             /// The newest n records, and nothing that grows with the run.
+            /// Zero is `.off`.
             window: u32,
         };
 
         pub const Record = struct {
             step: u64,
-            /// The task that made the call, where the base knows tasks; 0 otherwise.
-            task: u32 = 0,
+            /// The task that made the call, where the base knows tasks;
+            /// `outside` otherwise.
+            task: ids.TaskId = ids.outside,
             /// When the call returned, on the base's awake clock. Not hashed:
             /// two runs on a real clock differ in it and nothing else.
             at: Io.Timestamp = .zero,
@@ -57,11 +61,13 @@ pub fn Trace(comptime Event: type) type {
         };
 
         pub fn init(gpa: Allocator, mode: Mode) Self {
-            switch (mode) {
-                .last, .window => |n| std.debug.assert(n > 0),
-                .off, .all => {},
-            }
-            return .{ .gpa = gpa, .mode = mode, .arena = .init(gpa) };
+            // Keeping the newest none is keeping none: the ring below needs a
+            // slot to write, and a trace built from an option never fails.
+            const kept: Mode = switch (mode) {
+                .last, .window => |n| if (n == 0) .off else mode,
+                .off, .all => mode,
+            };
+            return .{ .gpa = gpa, .mode = kept, .arena = .init(gpa) };
         }
 
         pub fn deinit(t: *Self) void {
@@ -167,9 +173,9 @@ pub fn Trace(comptime Event: type) type {
         pub fn format(t: *const Self, w: *Io.Writer) Io.Writer.Error!void {
             for (t.records()) |r| {
                 if (comptime std.meta.hasMethod(Event, "format")) {
-                    try w.print("{d:>6} {d:>3} {f}\n", .{ r.step, r.task, r.event });
+                    try w.print("{d:>6} {d:>3} {f}\n", .{ r.step, r.task.raw(), r.event });
                 } else {
-                    try w.print("{d:>6} {d:>3} {any}\n", .{ r.step, r.task, r.event });
+                    try w.print("{d:>6} {d:>3} {any}\n", .{ r.step, r.task.raw(), r.event });
                 }
             }
         }
@@ -298,8 +304,8 @@ test "the timestamp and task are not part of the hash" {
     defer a.deinit();
     var b: TestTrace = .init(std.testing.allocator, .off);
     defer b.deinit();
-    try a.append(.{ .step = 0, .task = 1, .at = .fromNanoseconds(5), .event = .{ .name = "x", .value = 1 } });
-    try b.append(.{ .step = 0, .task = 2, .at = .fromNanoseconds(9), .event = .{ .name = "x", .value = 1 } });
+    try a.append(.{ .step = 0, .task = .fromRaw(1), .at = .fromNanoseconds(5), .event = .{ .name = "x", .value = 1 } });
+    try b.append(.{ .step = 0, .task = .fromRaw(2), .at = .fromNanoseconds(9), .event = .{ .name = "x", .value = 1 } });
     try std.testing.expectEqual(a.hash(), b.hash());
     try std.testing.expectEqual(@as(?u64, null), TestTrace.firstDifference(&a, &b));
 }

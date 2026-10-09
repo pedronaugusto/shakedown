@@ -24,6 +24,7 @@ const Source = @import("Source.zig");
 const FaultIo = @import("FaultIo.zig");
 const Trace = @import("trace.zig").Trace;
 const Core = @import("sim/Core.zig");
+const ids = @import("ids.zig");
 const calls = @import("sim/calls.zig");
 const Region = @import("sim/Region.zig");
 const Disk = @import("sim/fs/Model.zig");
@@ -43,6 +44,8 @@ pub const Outcome = options_mod.Outcome;
 pub const TaskReport = options_mod.TaskReport;
 /// One call, as the run's trace records it.
 pub const Event = options_mod.Event;
+/// A node of the simulated network, as a trace and a report name it.
+pub const NodeId = @import("sim/net/Model.zig").NodeId;
 /// A thread that watches simulations, shared through `Options.watched_by`.
 pub const Watchdog = @import("sim/Watchdog.zig");
 
@@ -67,7 +70,7 @@ own_watchdog: Watchdog = .{},
 watched_by: ?*Watchdog = null,
 watch: Watchdog.Watched = undefined,
 
-pub const InitError = error{ OutOfMemory, ExecutorUnavailable, FaultNotInErrorSet, FaultNotApplicable, InvalidLink };
+pub const InitError = error{ OutOfMemory, ExecutorUnavailable, FaultNotInErrorSet, FaultNotApplicable, InvalidLink, InvalidSchedule };
 
 pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     const s = try gpa.create(Sim);
@@ -109,10 +112,10 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
 fn crashOf(base: Io) void {
     const c = Core.of(base.userdata);
     const node_id = c.nodeId();
-    if (node_id != 0) {
+    if (node_id != Core.first_node) {
         c.network.kill(node_id);
         for (c.tasks.items) |task| if (task.node == node_id) c.requestCancel(task);
-        if (c.contexts.items[node_id - 1].disk) |*disk| disk.crash(.random) catch |err| {
+        if (c.contextOf(node_id).disk) |*disk| disk.crash(.random) catch |err| {
             if (c.current) |task| c.abandon(task, .{ .failed = err });
         };
         c.notifyNetwork();
@@ -125,9 +128,11 @@ fn crashOf(base: Io) void {
     if (c.current) |t| c.abandon(t, .finished);
 }
 
+/// `FaultIo`'s key for the calling task is its own `u64`, 0 for none, over
+/// any base `Io`: this simulation's key is the task's id.
 fn taskOf(base: Io) u64 {
     const c = Core.of(base.userdata);
-    return if (c.current) |t| t.id else 0;
+    return if (c.current) |t| t.id.raw() else ids.outside.raw();
 }
 
 fn blockedOf(base: Io) bool {

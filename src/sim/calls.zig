@@ -13,6 +13,7 @@ const Core = @import("Core.zig");
 const Task = Core.Task;
 const fs_calls = @import("fs/calls.zig");
 const net_calls = @import("net/calls.zig");
+const Model = @import("net/Model.zig");
 const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
 
@@ -63,7 +64,7 @@ const slots = struct {
         if (!at_once) {
             if (c.spawn(.{ .future = start }, context, context_alignment, result.len, result_alignment, .ready)) |t| {
                 t.spawned_at = @returnAddress();
-                c.record(.async, e, t.id);
+                c.record(.async, e, t.id.raw());
                 return @ptrCast(t); // safe: a future of this simulation is its task, cast back by await and cancel
             } else |_| {}
         }
@@ -87,7 +88,7 @@ const slots = struct {
             return error.ConcurrencyUnavailable;
         };
         t.spawned_at = @returnAddress();
-        c.record(.concurrent, e, t.id);
+        c.record(.concurrent, e, t.id.raw());
         return @ptrCast(t); // safe: a future of this simulation is its task, cast back by await and cancel
     }
 
@@ -134,14 +135,14 @@ const slots = struct {
     ) void {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), true);
-        const state: ?Core.State = switch (c.options.async_start) {
+        const state: ?Core.Start = switch (c.options.async_start) {
             .eager => null,
             .concurrent => .ready,
             .deferred => .deferred,
             .any => if (c.draw(1) == 0) null else .ready,
         };
         if (state) |s| if (spawnMember(c, group, context, context_alignment, start, s, @returnAddress())) |t| {
-            c.record(.groupAsync, e, t.id);
+            c.record(.groupAsync, e, t.id.raw());
             return;
         } else |_| {};
         c.record(.groupAsync, e, 0);
@@ -161,7 +162,7 @@ const slots = struct {
             c.record(.groupConcurrent, e, digest(error.ConcurrencyUnavailable));
             return error.ConcurrencyUnavailable;
         };
-        c.record(.groupConcurrent, e, t.id);
+        c.record(.groupConcurrent, e, t.id.raw());
     }
 
     pub fn groupAwait(userdata: ?*anyopaque, group: *Io.Group, _: *anyopaque) Io.Cancelable!void {
@@ -483,7 +484,7 @@ fn spawnMember(
     context: []const u8,
     context_alignment: std.mem.Alignment,
     start: *const fn (context: *const anyopaque) void,
-    state: Core.State,
+    state: Core.Start,
     spawned_at: usize,
 ) Core.SpawnError!*Task {
     const t = try c.spawn(.{ .member = start }, context, context_alignment, 0, .@"1", state);
@@ -553,7 +554,7 @@ fn failed(comptime tag: Io.Operation.Tag) Io.Operation.Result {
 }
 
 /// Probe all submissions, leaving blocked operations available to retry or cancel.
-fn complete(c: *Core, node: u32, b: *Io.Batch, batch_digest: *u64) bool {
+fn complete(c: *Core, node: Model.NodeId, b: *Io.Batch, batch_digest: *u64) bool {
     var tail = b.completed.tail;
     var pending: @TypeOf(b.submitted) = .{ .head = .none, .tail = .none };
     var index = b.submitted.head;

@@ -8,6 +8,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- shakedown depends on [aegis](https://github.com/pedronaugusto/aegis), whose runtime is
+  `std` only: the id, byte-count, limit and lock types below are its. A consumer
+  fetches it with shakedown.
+- `Sim.Event.task` and `.node`, `TaskReport.id` and `.node`, `TaskReport.Waiting.task`
+  and `Trace.Record.task` are `TaskId` and `Sim.NodeId`, distinct id types, in place
+  of `u32`; `.raw()` is the number. A trace records the same numbers, so its hashes
+  are unchanged. `Record.task` is `ids.outside`, not 0, for no task.
+- `Sim.Options.stack_size` and `alloc.Quarantine.Options.reuse_after` are byte counts
+  (`aegis.units.Bytes(usize)`), in place of `usize`: `.stack_size = .fromRaw(64 * 1024)`.
+- `Sim.init` and `DeterminismError` add `InvalidSchedule`, for a `pct` schedule
+  whose `depth` is not 1 to 16 or whose `length` is 0, which were a failed
+  assertion in Debug and out-of-range memory use in release builds.
+- `Trace.Mode` `.window = 0` and `.last = 0` keep no records, as `.off` does, in
+  place of a failed assertion.
+- A task whose context or result wants more alignment than a task frame gives (64
+  bytes) cannot start: `async` runs the function at once, `concurrent` returns
+  `ConcurrencyUnavailable`. It was a failed assertion in Debug and a misaligned
+  frame in release builds.
+- A free of memory `alloc.Quarantine` never gave out stops with a message in every
+  build, where it reached `unreachable`.
+
 - `bench.Row(Context, WorkloadError)` and `bench.run(WorkloadError, ...)`
   declare finite callback errors; `bench.RunError(WorkloadError)` composes them
   with runner failures instead of widening the public API to `anyerror`.
@@ -35,6 +56,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `alloc.Unwiped`: an allocator that scans every block as it is freed for bytes that
+  must not outlive their owner (keys, tokens, passwords), counts the blocks that
+  held one and keeps the first with the frames of its free. It refuses resizes, so a
+  moved or shrunk block is seen with the contents it had. `Unwiped.sees` says whether
+  the build shows it a free's contents: `Allocator.free` fills the block with
+  `undefined` first where runtime safety is on, and `expectNone` skips the test there
+  instead of passing it.
+- `alloc.LockProbe`: an allocator that counts the calls made while a lock is held
+  and keeps the first with its frames. `Held.flag`, `Held.mutex` and `Held.spinMutex`
+  read an atomic flag, a `std.Io.Mutex` and a `std.atomic.Mutex`.
 - Optional `bench.Row.setup(ctx)` and `teardown(ctx)` hooks share the workload's
   declared error set and run outside timing once per sample batch, including
   warmup, calibration and smoke. Teardown runs on workload failure; the original

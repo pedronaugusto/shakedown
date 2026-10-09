@@ -18,8 +18,8 @@ pub fn main(init: std.process.Init) !void {
     const options = try bench.Options.fromArguments(args[1..]);
     var ctx: Context = .{ .model = .init(init.gpa, .{}), .pair = undefined };
     defer ctx.model.deinit();
-    _ = try ctx.model.addNode(&.{});
-    ctx.pair = try ctx.model.pair(0, 0, true);
+    const node = try ctx.model.addNode(&.{});
+    ctx.pair = try ctx.model.pair(node, node, true);
     var buffer: [4096]u8 = undefined;
     var output = Io.File.stdout().writerStreaming(init.io, &buffer);
     const rows = [_]bench.Row(Context, Model.Error){.{ .name = "net/message-32", .unit = "message", .run = message }};

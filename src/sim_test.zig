@@ -308,7 +308,7 @@ test "the watchdog ends a run whose task stopped calling into it" {
         .stuck => |r| r,
         else => return error.TestUnexpectedResult,
     };
-    try testing.expectEqual(@as(u32, 1), report.id);
+    try testing.expectEqual(shakedown.TaskId.fromRaw(1), report.id);
     try testing.expect(report.len > 0);
 }
 

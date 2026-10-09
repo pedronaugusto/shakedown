@@ -43,7 +43,7 @@ pub const DeterminismReport = struct {
 
 /// `Nondeterministic`: the runs differ (reported). The others: a simulation
 /// could not be made.
-pub const DeterminismError = error{ Nondeterministic, OutOfMemory, ExecutorUnavailable, FaultNotInErrorSet, FaultNotApplicable, SystemResources, InvalidLink };
+pub const DeterminismError = error{ Nondeterministic, OutOfMemory, ExecutorUnavailable, FaultNotInErrorSet, FaultNotApplicable, SystemResources, InvalidLink, InvalidSchedule };
 
 /// Runs `body(ctx, io)` as the root task of two simulations of
 /// `options.seed`, one after the other. The body must start from the same

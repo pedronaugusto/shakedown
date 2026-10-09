@@ -92,7 +92,7 @@ fn waitWindowsStatus(child: *std.process.Child) error{NativeWaitFailed}!u32 {
 }
 
 fn overflow(gpa: std.mem.Allocator) !void {
-    const sim = try shakedown.Sim.init(gpa, .{ .stack_size = 64 * 1024, .watchdog = null });
+    const sim = try shakedown.Sim.init(gpa, .{ .stack_size = .fromRaw(64 * 1024), .watchdog = null });
     defer sim.deinit();
     const outcome = sim.run(deep, .{ sim.io(), 1 << 20 });
     std.debug.print("survived the overflow: {any}\n", .{outcome});

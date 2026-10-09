@@ -10,6 +10,8 @@ test {
     _ = @import("alloc/Counting.zig");
     _ = @import("alloc/Quarantine.zig");
     _ = @import("alloc/NoResize.zig");
+    _ = @import("alloc/Unwiped.zig");
+    _ = @import("alloc/LockProbe.zig");
     _ = @import("corpus.zig");
     _ = @import("Source.zig");
     _ = @import("Steps.zig");
@@ -33,6 +35,8 @@ test {
     _ = @import("clock_test.zig");
     _ = @import("quarantine_test.zig");
     _ = @import("no_resize_test.zig");
+    _ = @import("unwiped_test.zig");
+    _ = @import("lock_probe_test.zig");
     _ = @import("fault_test.zig");
     _ = @import("every_fault_test.zig");
     _ = @import("check_test.zig");
@@ -40,6 +44,8 @@ test {
     _ = @import("sim_test.zig");
     _ = @import("sim_bugs_test.zig");
     _ = @import("sim_determinism_test.zig");
+    _ = @import("sim_options_test.zig");
+    _ = @import("reference_test.zig");
     _ = @import("conformance_test.zig");
 }
 

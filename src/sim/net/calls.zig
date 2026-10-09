@@ -3,6 +3,7 @@ const std = @import("std");
 const Io = std.Io;
 const Core = @import("../Core.zig");
 const Model = @import("Model.zig");
+const NodeId = Model.NodeId;
 const IoCall = @import("../../io_call.zig").IoCall;
 const io_call = @import("../../io_call.zig");
 pub fn supports(comptime name: []const u8) bool {
@@ -47,21 +48,21 @@ fn socketResult(s: *Model.Socket, address: Io.net.IpAddress) Io.net.Socket {
     return .{ .handle = s.handle, .address = address };
 }
 const slots = struct {
-    pub fn netInterfaceNameResolve(_: *Core, _: u32, _: *const Io.net.Interface.Name) !Io.net.Interface {
+    pub fn netInterfaceNameResolve(_: *Core, _: NodeId, _: *const Io.net.Interface.Name) !Io.net.Interface {
         return error.InterfaceNotFound;
     }
-    pub fn netInterfaceName(_: *Core, _: u32, _: Io.net.Interface) !Io.net.Interface.Name {
+    pub fn netInterfaceName(_: *Core, _: NodeId, _: Io.net.Interface) !Io.net.Interface.Name {
         return error.InterfaceNotFound;
     }
 
-    pub fn netListenIp(c: *Core, node: u32, addr: *const Io.net.IpAddress, o: Io.net.IpAddress.ListenOptions) !Io.net.Socket {
+    pub fn netListenIp(c: *Core, node: NodeId, addr: *const Io.net.IpAddress, o: Io.net.IpAddress.ListenOptions) !Io.net.Socket {
         if (o.mode != .stream) return error.SocketModeUnsupported;
         if (o.protocol != .tcp) return error.ProtocolUnsupportedBySystem;
         const s = try begin(c).bind(node, addr.*, .listener);
         s.backlog = o.kernel_backlog;
         return socketResult(s, s.address);
     }
-    pub fn netBindIp(c: *Core, node: u32, addr: *const Io.net.IpAddress, o: Io.net.IpAddress.BindOptions) !Io.net.Socket {
+    pub fn netBindIp(c: *Core, node: NodeId, addr: *const Io.net.IpAddress, o: Io.net.IpAddress.BindOptions) !Io.net.Socket {
         if (o.mode != .dgram) return error.SocketModeUnsupported;
         if (o.ip6_only == false) return error.OptionUnsupported;
         if (o.protocol) |protocol| if (protocol != .udp) return error.ProtocolUnsupportedBySystem;
@@ -69,7 +70,7 @@ const slots = struct {
         s.allow_broadcast = o.allow_broadcast;
         return socketResult(s, s.address);
     }
-    pub fn netConnectIp(c: *Core, node: u32, addr: *const Io.net.IpAddress, o: Io.net.IpAddress.ConnectOptions) !Io.net.Socket {
+    pub fn netConnectIp(c: *Core, node: NodeId, addr: *const Io.net.IpAddress, o: Io.net.IpAddress.ConnectOptions) !Io.net.Socket {
         if (o.mode != .stream) return error.SocketModeUnsupported;
         if (o.protocol) |protocol| if (protocol != .tcp) return error.ProtocolUnsupportedBySystem;
         const m = begin(c);
@@ -90,7 +91,7 @@ const slots = struct {
             try wait(c, c.current, deadline);
         }
     }
-    pub fn netAccept(c: *Core, node: u32, handle: Io.net.Socket.Handle, _: Io.net.Server.AcceptOptions) !Io.net.Socket {
+    pub fn netAccept(c: *Core, node: NodeId, handle: Io.net.Socket.Handle, _: Io.net.Server.AcceptOptions) !Io.net.Socket {
         const m = begin(c);
         while (true) {
             const s = try m.get(handle, node);
@@ -102,7 +103,7 @@ const slots = struct {
             try wait(c, c.current, .never);
         }
     }
-    pub fn netSocketCreatePair(c: *Core, node: u32, o: Io.net.Socket.CreatePairOptions) ![2]Io.net.Socket {
+    pub fn netSocketCreatePair(c: *Core, node: NodeId, o: Io.net.Socket.CreatePairOptions) ![2]Io.net.Socket {
         if (o.mode != .stream) return error.SocketModeUnsupported;
         const pair = try begin(c).pair(node, node, true);
         if (o.family == .ip6) {
@@ -111,7 +112,7 @@ const slots = struct {
         }
         return .{ socketResult(pair[0], pair[0].address), socketResult(pair[1], pair[1].address) };
     }
-    pub fn netListenUnix(c: *Core, node: u32, addr: *const Io.net.UnixAddress, o: Io.net.UnixAddress.ListenOptions) !Io.net.Socket.Handle {
+    pub fn netListenUnix(c: *Core, node: NodeId, addr: *const Io.net.UnixAddress, o: Io.net.UnixAddress.ListenOptions) !Io.net.Socket.Handle {
         const m = begin(c);
         var it = m.sockets.valueIterator();
         while (it.next()) |s| if (s.*.node == node and std.mem.eql(u8, s.*.path, addr.path)) return error.AddressInUse;
@@ -122,7 +123,7 @@ const slots = struct {
         s.backlog = o.kernel_backlog;
         return s.handle;
     }
-    pub fn netConnectUnix(c: *Core, node: u32, addr: *const Io.net.UnixAddress) !Io.net.Socket.Handle {
+    pub fn netConnectUnix(c: *Core, node: NodeId, addr: *const Io.net.UnixAddress) !Io.net.Socket.Handle {
         const m = begin(c);
         var found: ?*Model.Socket = null;
         var it = m.sockets.valueIterator();
@@ -140,12 +141,12 @@ const slots = struct {
         while (!(try m.get(handle, node)).connected) try wait(c, c.current, .never);
         return handle;
     }
-    pub fn netClose(c: *Core, node: u32, sockets: []const Io.net.Socket) void {
+    pub fn netClose(c: *Core, node: NodeId, sockets: []const Io.net.Socket) void {
         const m = begin(c);
         for (sockets) |s| if (m.sockets.get(s.handle)) |live| if (live.node == node) m.close(s.handle);
         c.notifyNetwork();
     }
-    pub fn netShutdown(c: *Core, node: u32, handle: Io.net.Socket.Handle, how: Io.net.ShutdownHow) !void {
+    pub fn netShutdown(c: *Core, node: NodeId, handle: Io.net.Socket.Handle, how: Io.net.ShutdownHow) !void {
         const m = begin(c);
         const s = try m.get(handle, node);
         if (s.kind != .stream) return error.SocketUnconnected;
@@ -160,8 +161,8 @@ const slots = struct {
         m.change +%= 1;
         c.notifyNetwork();
     }
-    pub fn netLookup(c: *Core, _: u32, host: Io.net.HostName, queue: *Io.Queue(Io.net.HostName.LookupResult), o: Io.net.HostName.LookupOptions) !void {
-        const io: Io = .{ .userdata = if (c.nodeId() == 0) &c.context else c.contexts.items[c.nodeId() - 1], .vtable = c.vtable };
+    pub fn netLookup(c: *Core, _: NodeId, host: Io.net.HostName, queue: *Io.Queue(Io.net.HostName.LookupResult), o: Io.net.HostName.LookupOptions) !void {
+        const io: Io = .{ .userdata = if (c.nodeId() == Core.first_node) &c.context else c.contextOf(c.nodeId()), .vtable = c.vtable };
         defer queue.close(io);
         var normalized: [Io.net.HostName.max_len]u8 = undefined;
         const bytes = std.mem.trimEnd(u8, host.bytes, ".");
@@ -184,7 +185,7 @@ const slots = struct {
         };
         if (count == 0) return error.NoAddressReturned;
     }
-    pub fn netWriteFile(c: *Core, node: u32, handle: Io.net.Socket.Handle, header: []const u8, file: *Io.File.Reader, limit: Io.Limit) !usize {
+    pub fn netWriteFile(c: *Core, node: NodeId, handle: Io.net.Socket.Handle, header: []const u8, file: *Io.File.Reader, limit: Io.Limit) !usize {
         const m = begin(c);
         if (header.len == 0 and limit == .nothing) return 0;
         const bytes = if (header.len != 0) header else limit.sliceConst(try file.interface.peekGreedy(1));
@@ -254,7 +255,7 @@ pub fn slot(comptime name: []const u8) @FieldType(Io.VTable, name) {
     };
 }
 /// Readiness is transactional: null leaves a submitted operation untouched.
-pub fn perform(c: *Core, node: u32, operation: Io.Operation) ?Io.Operation.Result {
+pub fn perform(c: *Core, node: NodeId, operation: Io.Operation) ?Io.Operation.Result {
     const m = begin(c);
     return switch (operation) {
         .net_read => |r| blk: {
@@ -341,8 +342,8 @@ fn addressDigest(hash: *std.hash.Wyhash, address: Io.net.IpAddress) void {
         .ip6 => |ip| hash.update(&ip.bytes),
     }
 }
-fn inputs(node: u32, args: anytype) u64 {
-    var hash = std.hash.Wyhash.init(node);
+fn inputs(node: NodeId, args: anytype) u64 {
+    var hash = std.hash.Wyhash.init(node.raw());
     inline for (args) |arg| {
         const T = @TypeOf(arg);
         if (T == *const Io.net.IpAddress) addressDigest(&hash, arg.*) else if (T == *const Io.net.UnixAddress) hash.update(arg.path) else if (T == Io.net.HostName) hash.update(arg.bytes) else if (T == []const Io.net.Socket) {
@@ -365,8 +366,8 @@ fn outputDigest(value: anytype) u64 {
     } else if (@typeInfo(T) == .int) number(&hash, value);
     return hash.final();
 }
-pub fn operationDigest(node: u32, op: Io.Operation, result: Io.Operation.Result) u64 {
-    var hash = std.hash.Wyhash.init(node);
+pub fn operationDigest(node: NodeId, op: Io.Operation, result: Io.Operation.Result) u64 {
+    var hash = std.hash.Wyhash.init(node.raw());
     switch (op) {
         .net_read => |r| {
             number(&hash, r.socket_handle);

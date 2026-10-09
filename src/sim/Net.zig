@@ -11,7 +11,7 @@ core: *Core,
 fn changed(n: *Net) void {
     _ = n.core.wakeFutex(@intFromPtr(&n.core.network.change), std.math.maxInt(u32)); // safe: the network epoch has a stable address until Core.deinit
 }
-fn id(n: *Net, node: *Node) u32 {
+fn id(n: *Net, node: *Node) Model.NodeId {
     std.debug.assert(node.context.core == n.core);
     return node.context.node;
 }
@@ -23,7 +23,12 @@ pub fn partition(n: *Net, a: []const *Node, b: []const *Node) void {
     n.changed();
 }
 pub fn heal(n: *Net) void {
-    for (0..n.core.network.node_count) |a| for (a..n.core.network.node_count) |b| n.core.network.status(@intCast(a), @intCast(b), null, false);
+    const count = n.core.network.node_count;
+    var a: u32 = 0;
+    while (a < count) : (a += 1) {
+        var b = a;
+        while (b < count) : (b += 1) n.core.network.status(.fromRaw(a), .fromRaw(b), null, false);
+    }
     n.changed();
 }
 pub fn hold(n: *Net, a: *Node, b: *Node) void {

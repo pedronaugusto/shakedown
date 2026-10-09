@@ -4,10 +4,13 @@ const gantry = @import("gantry");
 pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "primitives", .patterns = &.{
         "src/alloc/Counting.zig",
+        "src/alloc/LockProbe.zig",
         "src/alloc/NoResize.zig",
         "src/alloc/Quarantine.zig",
+        "src/alloc/Unwiped.zig",
         "src/corpus.zig",
         "src/bench.zig",
+        "src/ids.zig",
         "src/io_call.zig",
         "src/layer.zig",
         "src/match.zig",
@@ -66,10 +69,12 @@ pub const layers: []const gantry.rules.Layer = &.{
 
 pub const entries: []const []const u8 = &.{"src/bench/compare.zig"};
 
-pub const modules: []const gantry.NamedModule = &.{ .{ .name = "measuring", .path = "src/bench.zig" }, .{ .name = "network_model", .path = "src/sim/net/Model.zig" } };
+pub const modules: []const gantry.NamedModule = &.{ .{ .name = "measuring", .path = "src/bench.zig" }, .{ .name = "network_model", .path = "src/sim/net/Model.zig" }, .{ .name = "bench_compare", .path = "src/bench/compare.zig" } };
 
 pub const references: []const gantry.rules.ReferenceRule = &.{
     .{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{
+        "aegis",
+        "bench_options",
         "build_options",
         "builtin",
         "shakedown",

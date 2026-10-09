@@ -1,7 +1,9 @@
 //! What a simulation is made with, and what a run ends in.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Source = @import("../Source.zig");
+const ids = @import("../ids.zig");
 const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
 const Plan = @import("../plan.zig").Plan;
@@ -58,7 +60,7 @@ pub const Options = struct {
     source: ?*Source = null,
     executor: Executor = .auto,
     /// Usable stack per task, with an inaccessible guard page below it.
-    stack_size: usize = 256 * 1024,
+    stack_size: aegis.units.Bytes(usize) = .fromRaw(256 * 1024),
     schedule: Schedule = .random,
     /// Strict by default: a test that assumes an order std does not promise
     /// fails, and that is fixed in the test or the code, not here.
@@ -97,25 +99,25 @@ pub const Options = struct {
 /// One call into the simulation, as its trace records it.
 pub const Event = struct {
     call: IoCall,
-    /// The task that made it; 0 for calls from outside any task.
-    task: u32,
+    /// The task that made it; `outside` for calls from outside any task.
+    task: ids.TaskId,
     /// The Io namespace used by this call. Task IDs remain global.
-    node: u32 = 0,
+    node: Net.NodeId = .fromRaw(0),
     /// A digest of the choices drawn during the call, if any were.
     decision: ?u64 = null,
     /// A digest of what the call returned.
     outcome: u64 = 0,
 
     pub fn format(e: Event, w: *Io.Writer) Io.Writer.Error!void {
-        try w.print("{t} task {d} node {d} -> {x}", .{ e.call, e.task, e.node, e.outcome });
+        try w.print("{t} task {d} node {d} -> {x}", .{ e.call, e.task.raw(), e.node.raw(), e.outcome });
         if (e.decision) |d| try w.print(" [drew {x}]", .{d});
     }
 };
 
 /// A task the run ended with: where it came from and what it waited on.
 pub const TaskReport = struct {
-    id: u32,
-    node: u32 = 0,
+    id: ids.TaskId,
+    node: Net.NodeId = .fromRaw(0),
     /// The return address of the call that started it.
     spawned_at: usize,
     waiting: Waiting,
@@ -129,8 +131,8 @@ pub const TaskReport = struct {
         futex: usize,
         /// A sleep until this instant, or for ever.
         sleep: ?Io.Clock.Timestamp,
-        /// An `await` or `cancel` of task n.
-        task: u32,
+        /// An `await` or `cancel` of this task.
+        task: ids.TaskId,
         /// A group's `await` or `cancel`.
         group,
         /// A group member that was never started: its group was never
@@ -142,13 +144,13 @@ pub const TaskReport = struct {
 
     /// The report with its frames resolved to source lines.
     pub fn format(r: TaskReport, w: *Io.Writer) Io.Writer.Error!void {
-        try w.print("task {d}, started at 0x{x}, ", .{ r.id, r.spawned_at });
+        try w.print("task {d}, started at 0x{x}, ", .{ r.id.raw(), r.spawned_at });
         switch (r.waiting) {
             .futex => |address| try w.print("waiting on the futex at 0x{x}", .{address}),
             .sleep => |until| if (until) |at| {
                 try w.print("sleeping until {d} ns on {t}", .{ at.raw.nanoseconds, at.clock });
             } else try w.writeAll("sleeping for ever"),
-            .task => |id| try w.print("waiting for task {d}", .{id}),
+            .task => |id| try w.print("waiting for task {d}", .{id.raw()}),
             .group => try w.writeAll("waiting for its group"),
             .unstarted => try w.writeAll("never started: its group was never awaited"),
             .none => try w.writeAll("running"),

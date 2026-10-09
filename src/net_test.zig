@@ -423,9 +423,9 @@ test "Net allocation failures leave one owned resource graph" {
         fn allocations(gpa: std.mem.Allocator) !void {
             var model = Model.init(gpa, .{});
             defer model.deinit();
-            _ = try model.addNode(&.{});
-            _ = try model.addNode(&.{});
-            const pair = try model.pair(0, 1, false);
+            const a = try model.addNode(&.{});
+            const b = try model.addNode(&.{});
+            const pair = try model.pair(a, b, false);
             _ = try model.write(pair[0], "a");
             model.now = 100000;
             model.pump();
@@ -433,7 +433,7 @@ test "Net allocation failures leave one owned resource graph" {
             try t.expectEqual(1, (try model.read(pair[1], &buf)).?);
             model.close(pair[0].handle);
             model.close(pair[1].handle);
-            const again = try model.pair(0, 1, false);
+            const again = try model.pair(a, b, false);
             model.close(again[0].handle);
             model.close(again[1].handle);
         }
@@ -446,8 +446,8 @@ test "Net warmed message delivery and socket reuse allocate nothing" {
     var counted = Counting.init(t.allocator);
     var model = Model.init(counted.allocator(), .{});
     defer model.deinit();
-    _ = try model.addNode(&.{});
-    const pair = try model.pair(0, 0, true);
+    const only = try model.addNode(&.{});
+    const pair = try model.pair(only, only, true);
     var byte: [1]u8 = undefined;
     _ = try model.write(pair[0], "x");
     model.pump();
@@ -460,7 +460,7 @@ test "Net warmed message delivery and socket reuse allocate nothing" {
     }
     model.close(pair[0].handle);
     model.close(pair[1].handle);
-    const reused = try model.pair(0, 0, true);
+    const reused = try model.pair(only, only, true);
     try t.expectEqual(allocations, counted.allocations + counted.resizes + counted.remaps);
     model.close(reused[0].handle);
     model.close(reused[1].handle);
@@ -632,9 +632,9 @@ test "Net exponential latency agrees with independent inverse CDF landmarks" {
     defer model.deinit();
     model.drawn_by = &token;
     model.draw_fn = Draw.half;
-    _ = try model.addNode(&.{});
-    _ = try model.addNode(&.{});
-    const pair = try model.pair(0, 1, false);
+    const a = try model.addNode(&.{});
+    const b = try model.addNode(&.{});
+    const pair = try model.pair(a, b, false);
     _ = try model.write(pair[0], "a");
     // -ln(1/2) seconds, rounded down to nanoseconds. This is independent
     // of the fixed-point series used by the production distribution.
@@ -647,7 +647,7 @@ test "Net exponential latency agrees with independent inverse CDF landmarks" {
     model.pump();
     try t.expectEqual(1, (try model.read(pair[1], &byte)).?);
     try t.expectEqual('a', byte[0]);
-    try model.configure(0, 1, .{ .latency = .{ .exponential = .{ .mean = .zero } } });
+    try model.configure(a, b, .{ .latency = .{ .exponential = .{ .mean = .zero } } });
     _ = try model.write(pair[0], "b");
     try t.expectEqual(model.now, model.nextDeadline().?);
     model.pump();
@@ -658,10 +658,10 @@ test "Net exponential latency agrees with independent inverse CDF landmarks" {
 test "Net accept returns queued connections in virtual handle order" {
     var model = Model.init(t.allocator, .{});
     defer model.deinit();
-    _ = try model.addNode(&.{});
-    const listener = try model.bind(0, model.address(0), .listener);
-    const first = try model.connect(0, listener.address);
-    const second = try model.connect(0, listener.address);
+    const only = try model.addNode(&.{});
+    const listener = try model.bind(only, model.address(only), .listener);
+    const first = try model.connect(only, listener.address);
+    const second = try model.connect(only, listener.address);
     model.now = 200000;
     model.pump();
     try t.expectEqual(first.peer.?, model.accept(listener).?.handle);
