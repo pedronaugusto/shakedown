@@ -148,14 +148,13 @@ fn larger(batch: u64, limit: u64) error{Unmeasurable}!u64 {
 fn invoke(comptime WorkloadError: type, comptime timed: bool, io: Io, context: anytype, row: Row(std.meta.Child(@TypeOf(context)), WorkloadError), batch: u64) RunError(WorkloadError)!i96 {
     if (row.setup) |setup| try setup(context);
     const start = if (timed) Io.Timestamp.now(io, .awake) else Io.Timestamp.fromNanoseconds(0);
-    const outcome = row.run(context, batch);
-    const elapsed = if (timed) start.durationTo(.now(io, .awake)).nanoseconds else 0;
-    outcome catch |err| {
+    row.run(context, batch) catch |err| {
         // Cleanup is attempted exactly once. Preserve the original workload
         // error if cleanup also fails; teardown owns release on either outcome.
         if (row.teardown) |teardown| teardown(context) catch return err;
         return err;
     };
+    const elapsed = if (timed) start.durationTo(.now(io, .awake)).nanoseconds else 0;
     if (row.teardown) |teardown| try teardown(context);
     if (elapsed < 0) return error.NonMonotonicClock;
     return elapsed;

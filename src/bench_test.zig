@@ -15,6 +15,7 @@ test "bench statistics retain order and use nearest-rank p99" {
 
 const Clock = @import("Clock.zig");
 const corpus = @import("corpus.zig");
+const FaultIo = @import("FaultIo.zig");
 const Work = struct {
     clock: *Clock,
     calls: usize = 0,
@@ -375,4 +376,47 @@ test "bench hooks also surround discarded samples without changing calibration" 
     try std.testing.expectEqual(@as(u64, 11), work.units);
     try std.testing.expectEqualStrings(corpus.repeat("swt", 7), work.events[0..work.event_count]);
     try std.testing.expect(work.resource == null);
+}
+
+const FailingSample = struct {
+    calls: usize = 0,
+    fn run(self: *FailingSample, _: u64) error{WorkloadFailed}!void {
+        self.calls += 1;
+        if (self.calls == 2) return error.WorkloadFailed;
+    }
+};
+
+test "bench failed timed callbacks preserve the original clock read count" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    const fio = try FaultIo.init(std.testing.allocator, clock.io(), .{});
+    defer fio.deinit();
+    var work: FailingSample = .{};
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    const failing_rows = [_]bench.Row(FailingSample, error{WorkloadFailed}){.{ .name = "failure", .unit = "op", .run = FailingSample.run }};
+    try std.testing.expectError(error.WorkloadFailed, bench.run(error{WorkloadFailed}, std.testing.allocator, fio.io(), &output.writer, &work, &failing_rows, metadata, .{ .warmup = 1, .samples = 1, .minimum = .zero }));
+    try std.testing.expectEqual(@as(u64, 1), fio.count(.now));
+    try std.testing.expectEqual(@as(usize, 2), work.calls);
+}
+
+test "bench hooks keep clock reads outside warmup smoke and cleanup" {
+    for ([_]bool{ true, false }) |smoke| {
+        for ([_]usize{ 0, 2 }) |fail_run| {
+            var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+            const fio = try FaultIo.init(std.testing.allocator, clock.io(), .{});
+            defer fio.deinit();
+            var work: HookWork = .{ .clock = &clock, .fail_run = fail_run };
+            var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            defer output.deinit();
+            const outcome = bench.run(HookError, std.testing.allocator, fio.io(), &output.writer, &work, &hook_rows, metadata, .{ .smoke = smoke, .warmup = 1, .samples = 1, .minimum = .zero, .resolution_multiple = 1 });
+            if (!smoke and fail_run != 0) {
+                try std.testing.expectError(error.WorkloadFailed, outcome);
+            } else {
+                try outcome;
+            }
+            try std.testing.expectEqual(@as(u64, if (smoke) 0 else if (fail_run != 0) 1 else 4), fio.count(.now));
+            try std.testing.expectEqual(work.calls, work.teardowns);
+            try std.testing.expect(work.resource == null);
+        }
+    }
 }
