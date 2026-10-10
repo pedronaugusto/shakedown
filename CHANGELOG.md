@@ -201,6 +201,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `Sim.Options.stack_size` defaults to a megabyte on Windows (256 KiB elsewhere): std's
+  NT path conversion needs more than 256 KiB in a Debug build, so code under
+  test that opens a file overflowed its task's stack.
+
 - Under `--fuzz`, a property whose cases allocate failed every input with a leak:
   the runner kept its arena and tape for the next input on the test's allocator,
   which the test runner checks after each one. It keeps them on the page allocator.

@@ -1,5 +1,6 @@
 //! What a simulation is made with, and what a run ends in.
 const std = @import("std");
+const builtin = @import("builtin");
 const aegis = @import("aegis");
 const Io = std.Io;
 const Source = @import("../Source.zig");
@@ -82,8 +83,12 @@ pub const Options = struct {
     /// so the run shrinks with the case.
     source: ?*Source = null,
     executor: Executor = .auto,
-    /// Usable stack per task, with an inaccessible guard page below it.
-    stack_size: aegis.units.Bytes(usize) = .fromRaw(256 * 1024),
+    /// Usable stack per task, with an inaccessible guard page below it. On
+    /// Windows a megabyte, the system's own default for a thread: std's path
+    /// conversion for NT calls holds several 64 KiB buffers at once in a
+    /// Debug build, and the code under test calls it from a task. The stack
+    /// is reserved, not committed; it grows as it is used.
+    stack_size: aegis.units.Bytes(usize) = .fromRaw(if (builtin.os.tag == .windows) 1024 * 1024 else 256 * 1024),
     schedule: Schedule = .random,
     /// Strict by default: a test that assumes an order std does not promise
     /// fails, and that is fixed in the test or the code, not here.
