@@ -44,6 +44,8 @@ const Fs = enum {
 
 const Options = struct {
     file_systems: []const Fs,
+    /// Print every state recovered, with the step it came after.
+    verbose: bool = false,
     only: ?[]const u8,
     scratch: []const u8,
 };
@@ -65,7 +67,7 @@ pub fn main(init: std.process.Init) !u8 {
             if (options.only) |name| if (!std.mem.eql(u8, name, w.name)) continue;
             var arena: std.heap.ArenaAllocator = .init(init.gpa);
             defer arena.deinit();
-            const ok = try replay(arena.allocator(), init.gpa, init.io, fs, w, options.scratch);
+            const ok = try replay(arena.allocator(), init.gpa, init.io, fs, w, options);
             failed = failed or !ok;
         }
     }
@@ -84,6 +86,8 @@ fn parse(a: std.mem.Allocator, args: []const [:0]const u8) !Options {
         } else if (std.mem.eql(u8, arg, "--workload") and i + 1 < args.len) {
             i += 1;
             options.only = args[i];
+        } else if (std.mem.eql(u8, arg, "--verbose")) {
+            options.verbose = true;
         } else if (std.mem.eql(u8, arg, "--scratch") and i + 1 < args.len) {
             i += 1;
             options.scratch = args[i];
@@ -181,8 +185,8 @@ const Marking = struct { a: std.mem.Allocator, io: Io, device: []const u8 };
 
 /// One workload on one file system: false when the real disk recovered to
 /// a state the model does not reach.
-fn replay(a: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, fs: Fs, w: workloads.Workload, scratch_root: []const u8) !bool {
-    const scratch = try a.print("{s}/{t}-{s}", .{ scratch_root, fs, w.name });
+fn replay(a: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, fs: Fs, w: workloads.Workload, options: Options) !bool {
+    const scratch = try a.print("{s}/{t}-{s}", .{ options.scratch, fs, w.name });
     try Io.Dir.cwd().createDirPath(io, scratch);
     const size = fs.megabytes() << 20;
     const sectors = size / 512;
@@ -287,6 +291,7 @@ fn replay(a: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, fs: Fs, w: workl
             try say(io, "{t} {s}: entry {d}, after \"{s}\", recovered to a state the model does not reach:\n{s}", .{ fs, w.name, where.entry, where.after, state });
         }
         if (!allowed.ordered.contains(state)) gap_ordered += 1;
+        if (options.verbose) try say(io, "{t} {s}: from entry {d}, after \"{s}\":\n{s}", .{ fs, w.name, where.entry, where.after, state });
     }
     try say(io, "{t} {s}: {d} crash points, {d} states recovered, {d} reached by the model (strict), {d} not; {d} not reached under ordered_metadata; replay {s}\n", .{
         fs, w.name, points, seen.count(), allowed.strict.count(), missing, gap_ordered, if (whole) "whole" else "NOT WHOLE",
