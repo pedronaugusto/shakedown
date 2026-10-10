@@ -468,18 +468,16 @@ fn forever(init: std.process.Init) !void {
 const Seams = struct {
     fn onTerminal(io: Io, programs: Sim.Programs) !void {
         const term = try programs.terminal(.{ .rows = 24, .cols = 80 });
-        defer term.master_read.close(io);
-        defer term.master_write.close(io);
-        var child = try std.process.spawn(io, .{ .argv = &.{"term-echo"}, .stdin = .{ .file = term.slave_read }, .stdout = .{ .file = term.slave_write }, .stderr = .{ .file = term.slave_write } });
-        // The child holds copies of the slave's ends: the test's can go,
-        // and the master reads to the end once the child ends.
-        term.slave_read.close(io);
-        term.slave_write.close(io);
-        try term.master_write.writeStreamingAll(io, "hi\n");
-        try programs.setWindowSize(term.master_write, .{ .rows = 50, .cols = 132 });
-        try t.expectEqual(@as(u16, 132), (try programs.windowSize(term.master_read)).cols);
+        defer term.master.close(io);
+        var child = try std.process.spawn(io, .{ .argv = &.{"term-echo"}, .stdin = .{ .file = term.slave }, .stdout = .{ .file = term.slave }, .stderr = .{ .file = term.slave } });
+        // The child holds copies of the slave: the test's can go, and the
+        // master reads to the end once the child ends.
+        term.slave.close(io);
+        try term.master.writeStreamingAll(io, "hi\n");
+        try programs.setWindowSize(term.master, .{ .rows = 50, .cols = 132 });
+        try t.expectEqual(@as(u16, 132), (try programs.windowSize(term.master)).cols);
         var buffer: [64]u8 = undefined;
-        var r = term.master_read.reader(io, &buffer);
+        var r = term.master.reader(io, &buffer);
         const all = try r.interface.allocRemaining(t.allocator, .unlimited);
         defer t.allocator.free(all);
         try t.expectEqualStrings("tty\necho hi\n", all);

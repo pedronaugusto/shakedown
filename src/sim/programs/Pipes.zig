@@ -14,10 +14,11 @@
 //! descriptor a process inherits is: a pipe's read side is open while any
 //! copy of a read end is, and so is its write side.
 //!
-//! A terminal is two pipes and a window size: the master writes what the
-//! slave reads and reads what the slave writes, and the slave's ends say
-//! they are a terminal. There is no line discipline: bytes cross as they
-//! are written.
+//! A terminal is two pipes and a window size, and two ends that each read
+//! one pipe and write the other, as a pseudo-terminal's master and slave
+//! descriptors do: the master writes what the slave reads and reads what
+//! the slave writes, and the slave is a terminal to a program. There is no
+//! line discipline: bytes cross as they are written.
 //!
 //! Handles are values the kernel rejects, so a raw system call on one fails
 //! and can never touch a real descriptor: on POSIX, negative numbers below
@@ -30,11 +31,14 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Pipes = @This();
 
-pub const Kind = enum { read, write, null_device };
+pub const Kind = enum { read, write, null_device, duplex };
 
 pub const End = struct {
+    /// The pipe it reads, or writes for a write end.
     pipe: u32,
     kind: Kind,
+    /// A duplex end's pipe it writes.
+    write_pipe: u32 = 0,
     /// The process that opened this end, closed when it ends; 0 for none.
     owner: u32 = 0,
     open: bool = true,
@@ -96,23 +100,28 @@ pub fn create(p: *Pipes, owner_read: u32, owner_write: u32) CreateError![2]Io.Fi
     return .{ encode(read_id), encode(read_id + 1) };
 }
 
-/// A terminal's four ends: the master's read and write ends, the slave's
-/// read and write ends, all `owner`'s.
-pub const Terminal = struct { master_read: Io.File.Handle, master_write: Io.File.Handle, slave_read: Io.File.Handle, slave_write: Io.File.Handle };
+/// A terminal's two ends, `owner`'s: its master and its slave.
+pub const Terminal = struct { master: Io.File.Handle, slave: Io.File.Handle };
 
 /// A new terminal of window `size`.
 pub fn terminal(p: *Pipes, owner: u32, size: Size) CreateError!Terminal {
+    if (p.ends.items.len + 2 > max_ends) return error.SystemResources;
     try p.terminals.ensureUnusedCapacity(p.gpa, 1);
-    const input = try p.create(owner, owner);
-    errdefer p.close(input[0]);
-    errdefer p.close(input[1]);
-    const output = try p.create(owner, owner);
-    const id_: u32 = @intCast(p.terminals.items.len);
+    try p.ends.ensureUnusedCapacity(p.gpa, 2);
+    try p.pipes.ensureUnusedCapacity(p.gpa, 2);
+    const input_bytes = try p.gpa.alloc(u8, p.capacity);
+    errdefer p.gpa.free(input_bytes);
+    const output_bytes = try p.gpa.alloc(u8, p.capacity);
+    const input: u32 = @intCast(p.pipes.items.len);
+    p.pipes.appendAssumeCapacity(.{ .bytes = input_bytes });
+    p.pipes.appendAssumeCapacity(.{ .bytes = output_bytes });
+    const output = input + 1;
+    const t: u32 = @intCast(p.terminals.items.len);
     p.terminals.appendAssumeCapacity(size);
-    for ([_]Io.File.Handle{ input[0], input[1], output[0], output[1] }) |h| p.ends.items[decode(h).?].terminal = id_;
-    p.ends.items[decode(input[0]).?].slave = true;
-    p.ends.items[decode(output[1]).?].slave = true;
-    return .{ .master_read = output[0], .master_write = input[1], .slave_read = input[0], .slave_write = output[1] };
+    const master: u32 = @intCast(p.ends.items.len);
+    p.ends.appendAssumeCapacity(.{ .pipe = output, .write_pipe = input, .kind = .duplex, .owner = owner, .terminal = t });
+    p.ends.appendAssumeCapacity(.{ .pipe = input, .write_pipe = output, .kind = .duplex, .owner = owner, .terminal = t, .slave = true });
+    return .{ .master = encode(master), .slave = encode(master + 1) };
 }
 
 /// Another copy of an open end, `owner`'s: the side it is on stays open
@@ -127,6 +136,10 @@ pub fn dup(p: *Pipes, handle: Io.File.Handle, owner: u32) (CreateError || Handle
     switch (original.kind) {
         .read => p.pipes.items[original.pipe].readers += 1,
         .write => p.pipes.items[original.pipe].writers += 1,
+        .duplex => {
+            p.pipes.items[original.pipe].readers += 1;
+            p.pipes.items[original.write_pipe].writers += 1;
+        },
         .null_device => {},
     }
     return encode(end_id);
@@ -181,6 +194,10 @@ pub fn close(p: *Pipes, handle: Io.File.Handle) void {
     switch (e.kind) {
         .read => p.pipes.items[e.pipe].readers -= 1,
         .write => p.pipes.items[e.pipe].writers -= 1,
+        .duplex => {
+            p.pipes.items[e.pipe].readers -= 1;
+            p.pipes.items[e.write_pipe].writers -= 1;
+        },
         .null_device => {},
     }
     p.change +%= 1;
@@ -200,7 +217,7 @@ pub fn read(p: *Pipes, handle: Io.File.Handle, data: []const []u8) ReadError!?us
     switch (e.kind) {
         .write => return error.NotOpenForReading,
         .null_device => return error.EndOfStream,
-        .read => {},
+        .read, .duplex => {},
     }
     var room: usize = 0;
     for (data) |d| room += d.len;
@@ -239,9 +256,9 @@ pub fn write(p: *Pipes, handle: Io.File.Handle, header: []const u8, data: []cons
     switch (e.kind) {
         .read => return error.NotOpenForWriting,
         .null_device => return total,
-        .write => {},
+        .write, .duplex => {},
     }
-    const pipe = &p.pipes.items[e.pipe];
+    const pipe = &p.pipes.items[if (e.kind == .duplex) e.write_pipe else e.pipe];
     if (pipe.readers == 0) return error.BrokenPipe;
     if (total == 0) return 0;
     if (pipe.len == pipe.bytes.len) return null;
@@ -281,7 +298,7 @@ fn put(pipe: *Pipe, bytes: []const u8) usize {
 /// Bytes waiting in the pipe of a read end.
 pub fn buffered(p: *Pipes, handle: Io.File.Handle) HandleError!usize {
     const e = try p.end(handle);
-    return if (e.kind == .read) p.pipes.items[e.pipe].len else 0;
+    return if (e.kind == .read or e.kind == .duplex) p.pipes.items[e.pipe].len else 0;
 }
 
 /// An end's id, as a trace names it on every system.
@@ -362,13 +379,20 @@ test "a copy of an end keeps its side open, and a terminal crosses both ways" {
     try std.testing.expectError(error.EndOfStream, p.read(ends[0], &.{&b}));
 
     const t = try p.terminal(0, .{ .rows = 24, .cols = 80 });
-    try std.testing.expectEqual(@as(?usize, 1), try p.write(t.master_write, "a", &.{}, 1));
-    try std.testing.expectEqual(@as(?usize, 1), try p.read(t.slave_read, &.{&b}));
-    try std.testing.expectEqual(@as(?usize, 1), try p.write(t.slave_write, "b", &.{}, 1));
-    try std.testing.expectEqual(@as(?usize, 1), try p.read(t.master_read, &.{&b}));
-    try std.testing.expect(try p.isTerminal(t.slave_read));
-    try std.testing.expect(!try p.isTerminal(t.master_read));
-    try p.setWindowSize(t.master_write, .{ .rows = 50, .cols = 132 });
-    try std.testing.expectEqual(@as(u16, 132), (try p.windowSize(t.slave_write)).cols);
+    try std.testing.expectEqual(@as(?usize, 1), try p.write(t.master, "a", &.{}, 1));
+    try std.testing.expectEqual(@as(?usize, 1), try p.read(t.slave, &.{&b}));
+    try std.testing.expectEqual(@as(?usize, 1), try p.write(t.slave, "b", &.{}, 1));
+    try std.testing.expectEqual(@as(?usize, 1), try p.read(t.master, &.{&b}));
+    try std.testing.expectEqual(@as(u8, 'b'), b[0]);
+    try std.testing.expect(try p.isTerminal(t.slave));
+    try std.testing.expect(!try p.isTerminal(t.master));
+    try p.setWindowSize(t.master, .{ .rows = 50, .cols = 132 });
+    try std.testing.expectEqual(@as(u16, 132), (try p.windowSize(t.slave)).cols);
     try std.testing.expectError(error.NotTerminalDevice, p.windowSize(ends[0]));
+    // The master reads the end once every copy of the slave is closed.
+    _ = try p.dup(t.slave, 5);
+    p.close(t.slave);
+    try std.testing.expectEqual(@as(?usize, null), try p.read(t.master, &.{&b}));
+    p.closeOwned(5);
+    try std.testing.expectError(error.EndOfStream, p.read(t.master, &.{&b}));
 }

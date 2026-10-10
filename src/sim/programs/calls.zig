@@ -707,7 +707,7 @@ pub fn terminal(c: *Core, size: Pipes.Size, ret: usize) Pipes.CreateError!Pipes.
         c.record(.foreign, e, digestOf(err));
         return err;
     };
-    c.record(.foreign, e, std.hash.int(@as(u64, Pipes.id(t.master_read).?)));
+    c.record(.foreign, e, std.hash.int(@as(u64, Pipes.id(t.master).?)));
     return t;
 }
 
