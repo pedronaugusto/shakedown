@@ -11,6 +11,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/alloc/Unwiped.zig",
         "src/corpus.zig",
         "src/bench.zig",
+        "src/fuzz.zig",
         "src/ids.zig",
         "src/io_call.zig",
         "src/layer.zig",
@@ -56,6 +57,7 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "drivers and namespaces", .patterns = &.{
         "src/alloc.zig",
         "src/bench/compare.zig",
+        "src/fuzz/main.zig",
         "src/check.zig",
         "src/explore.zig",
         "src/Machine.zig",
@@ -72,9 +74,9 @@ pub const layers: []const gantry.rules.Layer = &.{
     } },
 };
 
-pub const entries: []const []const u8 = &.{"src/bench/compare.zig"};
+pub const entries: []const []const u8 = &.{ "src/bench/compare.zig", "src/fuzz/main.zig" };
 
-pub const modules: []const gantry.NamedModule = &.{ .{ .name = "measuring", .path = "src/bench.zig" }, .{ .name = "network_model", .path = "src/sim/net/Model.zig" }, .{ .name = "bench_compare", .path = "src/bench/compare.zig" } };
+pub const modules: []const gantry.NamedModule = &.{ .{ .name = "measuring", .path = "src/bench.zig" }, .{ .name = "network_model", .path = "src/sim/net/Model.zig" }, .{ .name = "bench_compare", .path = "src/bench/compare.zig" }, .{ .name = "fuzz_findings", .path = "src/fuzz.zig" } };
 
 pub const references: []const gantry.rules.ReferenceRule = &.{
     .{ .name = "named dependencies", .unresolved_only = true, .except_targets = &.{

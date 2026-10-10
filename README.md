@@ -270,6 +270,20 @@ that replays it: `SHAKEDOWN_TAPE=<tape>`, or the tape added to
 and the count. Under `zig build test --fuzz` the same property runs on the
 fuzzer's input instead, with the regressions as its corpus, and a failure it
 finds prints as a tape. `corpus.fromTape` turns any tape into such an input.
+`SHAKEDOWN_TAPE` shrinks the tape it replays when the property fails, so a
+long tape the fuzzer found comes back minimal.
+
+### Continuous fuzzing
+
+`shakedown-fuzz` (an artifact of the package, as `shakedown-bench-compare` is)
+fuzzes a package's `check` properties off the landing path, for as long as it
+is given: `shakedown-fuzz --package ../relic --store ~/fuzz --limit 50M
+--sessions 4` runs `zig build test --fuzz=<limit>` in the package with
+`<store>/<package>/cache` as its cache, so the fuzzer's corpora live outside
+the package and grow from session to session. Each property the fuzzer fails
+is replayed on its tape (`SHAKEDOWN_TAPE`, which `check` shrinks) and written to
+`<store>/<package>/findings/<test>.txt` with the minimal tape, for the
+property's `.regressions`. It exits 1 when it found something.
 
 ### Exhaustive search
 

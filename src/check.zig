@@ -276,7 +276,8 @@ pub const Runner = struct {
         switch (try r.once(.{ .replay = choices })) {
             .pass => return,
             .discard => return error.Unsatisfiable,
-            .fail => |err| return r.report(err, .replay, choices, 0),
+            // A tape the fuzzer found is long: it is shrunk as any failure.
+            .fail => |err| return r.failed(err, .replay),
         }
     }
 

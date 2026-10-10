@@ -46,6 +46,18 @@ pub fn build(b: *std.Build) !void {
 
     b.installArtifact(comparison);
 
+    // Continuous fuzzing of a package's properties, off the landing path.
+    const fuzzer = b.addExecutable(.{
+        .name = "shakedown-fuzz",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/fuzz/main.zig"),
+            .imports = &.{.{ .name = "fuzz_findings", .module = b.createModule(.{ .root_source_file = b.path("src/fuzz.zig"), .target = target, .optimize = optimize }) }},
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(fuzzer);
+
     // Everything below is this repository's own: a project depending on
     // shakedown builds the module and nothing else, and fetches nothing for
     // it.
