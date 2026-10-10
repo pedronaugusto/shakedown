@@ -74,6 +74,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- A seam's raw sync on `Sim.Fs` (`flush`, `flushDir`) made by a simulated task
+  is a step of the run like any `Io` call: the schedule may switch there, it is
+  a crash point of `everyCrash`, a search sees it touch the disk, and the trace
+  records it as a foreign call. airlock's simulated route syncs through it.
+
 - `shakedown-fuzz`: continuous fuzzing of a package's properties, its corpora
   in a store outside the package, each failure shrunk and written down as the
   regression to commit. `SHAKEDOWN_TAPE` now shrinks the tape it replays.
@@ -178,6 +183,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   thread each.
 
 ### Fixed
+
+- `Sim.Fs.crashStates` tries each subset of pending effects in the orders that
+  can leave different trees, those where conflicting effects (one sector, one
+  file's length or metadata, one name) trade places, rather than every
+  permutation: the same states, checked against every order by a test, at a
+  cost that a batch of three files no longer makes factorial.
 
 - `check` fuzzes under `zig build test --fuzz` in a project that depends on
   shakedown: it asked its own module's `builtin.fuzz`, which a dependency is
