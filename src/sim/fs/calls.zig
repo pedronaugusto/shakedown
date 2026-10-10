@@ -300,22 +300,23 @@ const slots = struct {
             r.index = 0;
             r.state = .reading;
         }
+        // `r.index` is the cookie the listing resumes at: entries are in
+        // cookie order, and one removed since the last read moves nothing.
         var count: usize = 0;
         var bytes: usize = 0;
-        while (r.index < fs.root.entries.items.len and count < out.len) {
-            const e = fs.root.entries.items[r.index];
-            if (e.parent != id) {
-                r.index += 1;
-                continue;
-            }
+        var at: usize = 0;
+        while (at < fs.root.entries.items.len and fs.root.entries.items[at].cookie < r.index) at += 1;
+        while (at < fs.root.entries.items.len and count < out.len) : (at += 1) {
+            const e = fs.root.entries.items[at];
+            if (e.parent != id) continue;
             if (bytes + e.name.bytes.len > r.buffer.len) break;
             @memcpy(r.buffer[bytes..][0..e.name.bytes.len], e.name.bytes);
             out[count] = .{ .name = r.buffer[bytes..][0..e.name.bytes.len], .kind = fs.root.nodes.items[e.inode].kind, .inode = @intCast(e.inode + 1) };
             bytes += e.name.bytes.len;
             count += 1;
-            r.index += 1;
+            r.index = @intCast(e.cookie + 1);
         }
-        if (r.index == fs.root.entries.items.len) r.state = .finished;
+        if (at == fs.root.entries.items.len) r.state = .finished;
         return count;
     }
     pub fn dirRealPath(_: *Core, fs: *Fs, dir: Io.Dir, out: []u8) !usize {

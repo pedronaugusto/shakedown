@@ -58,6 +58,10 @@ pub const Entry = struct {
     parent: u32,
     name: *Name,
     inode: u32,
+    /// Where a directory listing finds it: entries are kept in this order,
+    /// and a listing resumes after the last one it returned, so removing
+    /// an entry never makes a listing skip another (readdir's cookie).
+    cookie: u64,
     pub fn retain(e: Entry) Entry {
         _ = e.name.retain();
         return e;
@@ -100,6 +104,8 @@ pub const State = struct {
     pending: std.ArrayList(Record) = .empty,
     serial: u64 = 0,
     barrier: u64 = 0,
+    /// The next entry's cookie.
+    cookies: u64 = 0,
     pub fn release(s: *State, gpa: Allocator) void {
         s.refs -= 1;
         if (s.refs != 0) return;
@@ -115,7 +121,7 @@ pub const State = struct {
     }
     pub fn clone(s: *State, gpa: Allocator) !*State {
         const next = try gpa.create(State);
-        next.* = .{ .serial = s.serial, .barrier = s.barrier };
+        next.* = .{ .serial = s.serial, .barrier = s.barrier, .cookies = s.cookies };
         errdefer next.release(gpa);
         try next.nodes.ensureTotalCapacity(gpa, s.nodes.items.len);
         for (s.nodes.items) |n| next.nodes.appendAssumeCapacity(n.retain());

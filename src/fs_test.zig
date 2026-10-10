@@ -828,3 +828,25 @@ test "Fs a simulation's Io names its node's disk, and no other Io names one" {
     defer diskless.deinit();
     try t.expectEqual(@as(?*Sim.Fs, null), Sim.fsOf(diskless.io()));
 }
+
+test "Fs a listing that removes what it lists sees every entry once" {
+    const Work = struct {
+        fn run(io: Io) !void {
+            const cwd = Io.Dir.cwd();
+            try cwd.createDirPath(io, "d");
+            for ([_][]const u8{ "d/a", "d/b", "d/c", "d/e", "x" }) |name| try cwd.writeFile(io, .{ .sub_path = name, .data = "" });
+            var dir = try cwd.openDir(io, "d", .{ .iterate = true });
+            defer dir.close(io);
+            var seen: u32 = 0;
+            var it = dir.iterate();
+            while (try it.next(io)) |entry| {
+                seen += 1;
+                try dir.deleteFile(io, entry.name);
+            }
+            try t.expectEqual(4, seen);
+        }
+    };
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    try t.expect(sim.run(Work.run, .{sim.io()}) == .finished);
+}
