@@ -178,21 +178,36 @@ test "bench callbacks retain finite workload errors in runner composition" {
     try std.testing.expectEqual(@as(usize, 0), out.written().len);
 }
 
-const HookError = error{ SetupFailed, WorkloadFailed, TeardownFailed, OutOfMemory };
+const HookError = error{ SetupFailed, StageFailed, WorkloadFailed, SettleFailed, TeardownFailed, OutOfMemory };
+/// Every hook records its letter: s setup, g stage, w run, l settle, t teardown.
+/// The fixture is a resource that exists between setup and teardown, and a
+/// stage is a state that exists between it and its settle.
 const HookWork = struct {
     clock: *Clock,
     gpa: std.mem.Allocator = std.testing.allocator,
     resource: ?[]u8 = null,
-    events: [128]u8 = undefined,
+    events: [256]u8 = undefined,
     event_count: usize = 0,
     setups: usize = 0,
+    stages: usize = 0,
     calls: usize = 0,
+    settles: usize = 0,
     teardowns: usize = 0,
     units: u64 = 0,
     fast_call: usize = 0,
     fail_setup: usize = 0,
+    fail_stage: usize = 0,
     fail_run: usize = 0,
+    fail_settle: usize = 0,
     fail_teardown: usize = 0,
+    /// Whether a run must find itself staged.
+    expect_stage: bool = false,
+    staged: bool = false,
+    /// What the workload leaves in its fixture across batches: kept by a row
+    /// lifetime, gone with a batch lifetime's fixture.
+    warmth: u64 = 0,
+    /// The units of the batch that is staged.
+    staged_units: u64 = 0,
 
     fn event(self: *HookWork, value: u8) void {
         self.events[self.event_count] = value;
@@ -207,12 +222,37 @@ const HookWork = struct {
         self.clock.advance(.fromNanoseconds(10_000));
         if (self.setups == self.fail_setup) return error.SetupFailed;
         self.resource = resource;
+        self.warmth = 0;
+    }
+    fn stage(self: *HookWork, units: u64) error{StageFailed}!void {
+        self.event('g');
+        self.stages += 1;
+        std.debug.assert(self.resource != null);
+        std.debug.assert(!self.staged);
+        self.clock.advance(.fromNanoseconds(5_000));
+        if (self.stages == self.fail_stage) return error.StageFailed;
+        self.staged = true;
+        self.staged_units = units;
+    }
+    fn settle(self: *HookWork, units: u64) error{SettleFailed}!void {
+        self.event('l');
+        self.settles += 1;
+        std.debug.assert(self.staged);
+        std.debug.assert(self.staged_units == units);
+        self.staged = false;
+        self.clock.advance(.fromNanoseconds(7_000));
+        if (self.settles == self.fail_settle) return error.SettleFailed;
     }
     fn run(self: *HookWork, units: u64) error{WorkloadFailed}!void {
         self.event('w');
         self.calls += 1;
         self.units += units;
+        self.warmth += 1;
         std.debug.assert(self.resource != null);
+        if (self.expect_stage) {
+            std.debug.assert(self.staged);
+            std.debug.assert(self.staged_units == units);
+        }
         // safe: the fixture's bounded batches cannot overflow i64.
         self.clock.advance(.fromNanoseconds(if (self.calls == self.fast_call) 0 else @intCast(units * 10)));
         if (self.calls == self.fail_run) return error.WorkloadFailed;
@@ -226,11 +266,15 @@ const HookWork = struct {
         if (self.teardowns == self.fail_teardown) return error.TeardownFailed;
     }
 };
-const hook_rows = [_]bench.Row(HookWork, HookError){.{ .name = "hooks", .unit = "op", .run = HookWork.run, .setup = HookWork.setup, .teardown = HookWork.teardown }};
+const HookRow = bench.Row(HookWork, HookError);
+/// The fixture of every batch, as the tests below count it.
+const hook_rows = [_]HookRow{.{ .name = "hooks", .unit = "op", .run = HookWork.run, .fixture = .{ .lifetime = .batch, .setup = HookWork.setup, .teardown = HookWork.teardown } }};
+/// The same fixture, built once for the row, and a stage and a settle per batch.
+const kept_row: HookRow = .{ .name = "hooks", .unit = "op", .run = HookWork.run, .fixture = .{ .lifetime = .row, .setup = HookWork.setup, .teardown = HookWork.teardown } };
+const staged_row: HookRow = .{ .name = "hooks", .unit = "op", .run = HookWork.run, .fixture = kept_row.fixture, .stage = HookWork.stage, .settle = HookWork.settle };
 
 comptime {
-    const R = bench.Row(HookWork, HookError);
-    for (.{ @TypeOf(@as(R, undefined).run), std.meta.Child(@TypeOf(@as(R, undefined).setup)), std.meta.Child(@TypeOf(@as(R, undefined).teardown)) }) |Callback| {
+    for (.{ @TypeOf(@as(HookRow, undefined).run), HookRow.Hook, std.meta.Child(@TypeOf(@as(HookRow.Fixture, undefined).teardown)), std.meta.Child(@TypeOf(@as(HookRow, undefined).stage)), std.meta.Child(@TypeOf(@as(HookRow, undefined).settle)) }) |Callback| {
         std.debug.assert(@typeInfo(@typeInfo(@typeInfo(Callback).pointer.child).@"fn".return_type.?).error_union.error_set == HookError);
     }
     std.debug.assert(bench.RunError(HookError) == bench.RunError(error{}) || HookError);
@@ -351,22 +395,25 @@ test "bench hooks and runner release owned allocations on every allocation failu
     try std.testing.checkAllAllocationFailures(std.testing.allocator, hookAllocationCase, .{});
 }
 
-test "bench hooks can each be omitted independently" {
+test "bench a fixture can go without teardown, and stages without a fixture" {
     var clock: Clock = .init(std.testing.io, .{ .resolution = .zero });
     var work: HookWork = .{ .clock = &clock };
     var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
     defer output.deinit();
     var row = hook_rows[0];
-    row.teardown = null;
+    row.fixture.?.teardown = null;
     try bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{row}, metadata, .{ .smoke = true });
     try std.testing.expectEqualStrings("sw", work.events[0..work.event_count]);
     // Without teardown the driver owns the successful setup's resource.
     defer if (work.resource) |resource| work.gpa.free(resource);
-    row.setup = null;
-    row.teardown = HookWork.teardown;
+    // A stage and a settle need no fixture: the resource is the one the first
+    // run left.
+    row.fixture = null;
+    row.stage = HookWork.stage;
+    row.settle = HookWork.settle;
+    work.expect_stage = true;
     try bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{row}, metadata, .{ .smoke = true });
-    try std.testing.expectEqualStrings("swwt", work.events[0..work.event_count]);
-    try std.testing.expect(work.resource == null);
+    try std.testing.expectEqualStrings("swgwl", work.events[0..work.event_count]);
 }
 
 test "bench hooks release resources before writer failure" {
@@ -434,4 +481,187 @@ test "bench hooks keep clock reads outside warmup smoke and cleanup" {
             try std.testing.expect(work.resource == null);
         }
     }
+}
+
+const sampling: bench.Options = .{ .samples = 3, .minimum = .zero };
+/// The nanoseconds a run of the hook fixture leaves on the clock: every hook of
+/// a batch has its cost, and only the run's is timed.
+fn elapsed(clock: *Clock) i96 {
+    return std.Io.Timestamp.fromNanoseconds(1_000_000_000).durationTo(.now(clock.io(), .awake)).nanoseconds;
+}
+
+test "bench keeps a row's fixture across warmup, calibration and every sample" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    var work: HookWork = .{ .clock = &clock };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{kept_row}, metadata, sampling);
+    var parsed = try bench.parse(std.testing.allocator, output.written());
+    defer parsed.deinit();
+    const r = parsed.rows.items[0].value;
+    // The same calibration and samples as a fixture of every batch.
+    try std.testing.expectEqual(@as(u64, 128), r.batch);
+    try std.testing.expectEqualSlices(f64, &.{ 10, 10, 10 }, r.samples);
+    try std.testing.expectEqual(@as(usize, 13), work.calls);
+    try std.testing.expectEqual(@as(usize, 1), work.setups);
+    try std.testing.expectEqual(@as(usize, 1), work.teardowns);
+    // What a batch left in the fixture is there for the next.
+    try std.testing.expectEqual(@as(u64, 13), work.warmth);
+    try std.testing.expectEqualStrings("s" ++ corpus.repeat("w", 13) ++ "t", work.events[0..work.event_count]);
+    try std.testing.expect(work.resource == null);
+    try std.testing.expectEqual(@as(i96, 30_000 + 641 * 10), elapsed(&clock));
+}
+
+test "bench builds a batch's fixture for that batch alone" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    var work: HookWork = .{ .clock = &clock };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &hook_rows, metadata, sampling);
+    // The last batch's fixture met one run, none of the 12 before it.
+    try std.testing.expectEqual(@as(u64, 1), work.warmth);
+    try std.testing.expectEqual(@as(usize, 13), work.setups);
+}
+
+test "bench stages and settles every batch outside the clock" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    var work: HookWork = .{ .clock = &clock, .expect_stage = true };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{staged_row}, metadata, sampling);
+    var parsed = try bench.parse(std.testing.allocator, output.written());
+    defer parsed.deinit();
+    const r = parsed.rows.items[0].value;
+    try std.testing.expectEqual(@as(u64, 128), r.batch);
+    try std.testing.expectEqualSlices(f64, &.{ 10, 10, 10 }, r.samples);
+    try std.testing.expectEqualStrings("s" ++ corpus.repeat("gwl", 13) ++ "t", work.events[0..work.event_count]);
+    try std.testing.expectEqual(@as(i96, 30_000 + 13 * 12_000 + 641 * 10), elapsed(&clock));
+}
+
+test "bench smoke stages and settles once around the one run of a kept fixture" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .zero });
+    var work: HookWork = .{ .clock = &clock, .expect_stage = true };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{staged_row}, metadata, .{ .smoke = true });
+    try std.testing.expectEqualStrings("sgwlt", work.events[0..work.event_count]);
+    work.expect_stage = false;
+    try bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{kept_row}, metadata, .{ .smoke = true });
+    try std.testing.expectEqualStrings("sgwltswt", work.events[0..work.event_count]);
+}
+
+test "bench rows keep their fixtures one after the other" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    var work: HookWork = .{ .clock = &clock };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var second = kept_row;
+    second.name = "second";
+    try bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{ kept_row, second }, metadata, sampling);
+    try std.testing.expectEqualStrings("s" ++ corpus.repeat("w", 13) ++ "t" ++ "s" ++ corpus.repeat("w", 13) ++ "t", work.events[0..work.event_count]);
+    // The second row did not meet what the first left.
+    try std.testing.expectEqual(@as(u64, 13), work.warmth);
+}
+
+test "bench hooks of a kept fixture and a stage own their failures in turn" {
+    // The batch that fails, among the warmup (1) and the calibration (2, 3).
+    inline for (.{ 1, 2, 3 }) |k| {
+        const before = "s" ++ corpus.repeat("gwl", k - 1);
+        inline for (.{
+            .{ "stage", error.StageFailed, "gt" },
+            .{ "run", error.WorkloadFailed, "gwlt" },
+            .{ "settle", error.SettleFailed, "gwlt" },
+            // The first failure is the one returned, and the rest still ran.
+            .{ "run and settle", error.WorkloadFailed, "gwlt" },
+            .{ "settle and teardown", error.SettleFailed, "gwlt" },
+        }) |c| {
+            var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+            var work: HookWork = .{ .clock = &clock, .expect_stage = true };
+            if (comptime std.mem.find(u8, c[0], "stage") != null) work.fail_stage = k;
+            if (comptime std.mem.find(u8, c[0], "run") != null) work.fail_run = k;
+            if (comptime std.mem.find(u8, c[0], "settle") != null) work.fail_settle = k;
+            if (comptime std.mem.find(u8, c[0], "teardown") != null) work.fail_teardown = 1;
+            var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+            defer output.deinit();
+            try std.testing.expectError(c[1], bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{staged_row}, metadata, .{ .warmup = 1, .samples = 1, .minimum = .zero, .resolution_multiple = 1 }));
+            try std.testing.expectEqualStrings(before ++ c[2], work.events[0..work.event_count]);
+            try std.testing.expectEqual(@as(usize, 0), output.written().len);
+            try std.testing.expect(work.resource == null);
+            try std.testing.expect(!work.staged);
+            try std.testing.expectEqual(@as(usize, 1), work.teardowns);
+        }
+    }
+}
+
+test "bench setup of a kept fixture owns its failure, and its teardown can fail alone" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    var work: HookWork = .{ .clock = &clock, .fail_setup = 1 };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try std.testing.expectError(error.SetupFailed, bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{staged_row}, metadata, sampling));
+    try std.testing.expectEqualStrings("s", work.events[0..work.event_count]);
+    try std.testing.expect(work.resource == null);
+    // A teardown that fails after the row was measured leaves no row.
+    work = .{ .clock = &clock, .fail_teardown = 1 };
+    try std.testing.expectError(error.TeardownFailed, bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{kept_row}, metadata, sampling));
+    try std.testing.expectEqual(@as(usize, 0), output.written().len);
+    try std.testing.expect(work.resource == null);
+    try std.testing.expectEqual(@as(u8, 't'), work.events[work.event_count - 1]);
+}
+
+test "bench releases a kept fixture before it rejects an unresolved batch" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    var work: HookWork = .{ .clock = &clock };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try std.testing.expectError(error.Unmeasurable, bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{kept_row}, metadata, .{ .max_batch = 8, .minimum = .zero }));
+    try std.testing.expectEqualStrings("s" ++ corpus.repeat("w", 6) ++ "t", work.events[0..work.event_count]);
+    try std.testing.expect(work.resource == null);
+}
+
+test "bench holds a row that cannot grow to one batch and the clock's resolution" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    var work: HookWork = .{ .clock = &clock, .expect_stage = true };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var row = staged_row;
+    row.grow = false;
+    row.initial = 4;
+    // `minimum` is what growth aims at: a sample of four units is read as it is.
+    try bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{row}, metadata, .{ .samples = 3, .warmup = 1, .minimum = .fromSeconds(1), .resolution_multiple = 40 });
+    var parsed = try bench.parse(std.testing.allocator, output.written());
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(u64, 4), parsed.rows.items[0].value.batch);
+    try std.testing.expectEqualSlices(f64, &.{ 10, 10, 10 }, parsed.rows.items[0].value.samples);
+    // The warmup and the samples; there is no calibration to grow by.
+    try std.testing.expectEqual(@as(usize, 4), work.calls);
+    try std.testing.expectEqual(@as(u64, 16), work.units);
+    try std.testing.expectEqualStrings("s" ++ corpus.repeat("gwl", 4) ++ "t", work.events[0..work.event_count]);
+}
+
+test "bench refuses a sample of a row that cannot grow when it is too short to read" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    var work: HookWork = .{ .clock = &clock, .expect_stage = true };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var row = staged_row;
+    row.grow = false;
+    // 4 units are 40 ns: under 50 resolutions.
+    try std.testing.expectError(error.Unmeasurable, bench.run(HookError, std.testing.allocator, clock.io(), &output.writer, &work, &.{row}, metadata, .{ .samples = 3, .warmup = 1, .minimum = .zero, .resolution_multiple = 50 }));
+    try std.testing.expectEqualStrings("s" ++ corpus.repeat("gwl", 2) ++ "t", work.events[0..work.event_count]);
+    try std.testing.expectEqual(@as(usize, 0), output.written().len);
+    try std.testing.expect(work.resource == null);
+}
+
+fn stagedAllocationCase(gpa: std.mem.Allocator) !void {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(1) });
+    var work: HookWork = .{ .clock = &clock, .gpa = gpa, .expect_stage = true };
+    defer std.debug.assert(work.resource == null);
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try bench.run(HookError, gpa, clock.io(), &output.writer, &work, &.{staged_row}, metadata, .{ .samples = 1, .warmup = 1, .minimum = .zero, .resolution_multiple = 1 });
+}
+
+test "bench stages and a kept fixture release owned allocations on every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, stagedAllocationCase, .{});
 }

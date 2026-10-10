@@ -36,23 +36,37 @@ broadcast. Reader and HTTP adapters use the supported Io surfaces directly.
 
 ## Measurement contracts
 
-`bench.Row(Context, WorkloadError)` declares callback and optional `setup(ctx)` /
-`teardown(ctx)` hook errors. Callers compose the callbacks' finite declared error
+`bench.Row(Context, WorkloadError)` declares callback, `fixture` and `stage` /
+`settle` hook errors. Callers compose the callbacks' finite declared error
 sets as `WorkloadError`; `RunError(WorkloadError)` adds named runner failures.
 `run(ctx, units)` performs exactly the requested units and retains observable
-results. Hooks run once per whole invocation, including warmup, calibration,
-retained samples, discarded samples and smoke, rather than once per inner unit.
-Only the workload callback lies between the timer timestamps. Setup and teardown
-inside the workload callback still count. Omitted hooks preserve existing behavior.
+results. Only the workload callback lies between the timer timestamps; setup
+and teardown inside it still count.
 
-Setup failure stops the invocation before the workload or teardown; setup owns
-cleanup of partial acquisitions through `errdefer`. After successful or omitted
-setup, teardown runs exactly once even when the workload fails. Teardown owns
-releasing resources before returning an error. The original workload error takes
-precedence if teardown also fails; otherwise teardown errors propagate unchanged.
-No failed invocation emits a row. Runner allocations are released on all exits.
-Drivers retain their paired/interleaved base-candidate schedule; the runner never
-reorders invocations or samples.
+A batch (warmup, calibration, retained and discarded samples, smoke) is
+`stage(units)`, `run(units)`, `settle(units)`. The fixture's lifetime is the
+workload's choice, with no default: `.row` builds it once before the row's first
+batch and releases it after its last, so the batches meet one warm fixture and
+`stage` puts back whatever a batch changed; `.batch` builds and releases it
+around every batch, so nothing carries between batches, at the price of a cold
+fixture each time. A fixture rebuilt for every calibration and warmup batch
+made rows that only read their fixture measurably slower than the same code
+held warm; the choice is explicit so that neither shape is a silent default.
+`stage` and `settle` are told the batch's units, so a batch can stage the
+inputs of all of them; the batch is bounded by `Options.max_batch`. A row that
+cannot be batched sets `grow = false`: every sample is `initial` units, there is
+no calibration, `Options.minimum` (the target of growth) does not apply, and a
+sample under `resolution_multiple` clock ticks is `Unmeasurable`.
+
+Setup failure stops the row or batch before any workload or teardown; each hook
+owns cleanup of partial acquisitions through `errdefer`. A failed `stage` is
+followed by no run and no settle. Every hook that succeeded is followed by its
+counterpart exactly once, even when the workload fails, and the counterpart owns
+releasing resources before returning an error. The first error is returned:
+stage, then run, then settle, then teardown. No failed row emits a row of
+results. Runner allocations are released on all exits. Drivers retain their
+paired/interleaved base-candidate schedule; the runner never reorders
+invocations or samples.
 
 A real monotonic clock measures the workload, independently of any simulated
 clock. Bounded calibration doubles the workload quantum until samples exceed the

@@ -67,10 +67,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and keeps the first with its frames. `Held.guarded`, `Held.flag`, `Held.mutex` and
   `Held.spinMutex` read an `aegis.Guarded`, an atomic flag, a `std.Io.Mutex` and a
   `std.atomic.Mutex`.
-- Optional `bench.Row.setup(ctx)` and `teardown(ctx)` hooks share the workload's
-  declared error set and run outside timing once per sample batch, including
-  warmup, calibration and smoke. Teardown runs on workload failure; the original
-  workload error takes precedence if teardown also fails.
+- `bench.Row` states what its batches need, outside timing, in the declared error
+  set of the workload: a `fixture` (`setup`, optional `teardown`) whose `lifetime`
+  the workload chooses, `.row` (built once, every warmup, calibration and sample
+  meets it warm) or `.batch` (built for each batch alone); `stage(ctx, units)` and
+  `settle(ctx, units)` around every batch; and `grow = false` for a workload whose
+  every unit needs its own stage, which takes samples of exactly `initial` units and
+  refuses one too short to read. Each hook that succeeded is followed by its
+  counterpart, even when the workload fails; the first error is the one returned.
 
 - `Machine(Model)`: bounded stateful command generation, preconditions, pure
   transitions, driver postconditions, validated replay and shared tape shrinking.

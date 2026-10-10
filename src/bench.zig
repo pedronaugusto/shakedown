@@ -50,22 +50,65 @@ pub fn statistics(gpa: std.mem.Allocator, samples: []const f64) StatisticsError!
     return .{ .best = sorted[0], .median = median, .p99 = sorted[rank], .radius = @max(median - sorted[0], sorted[sorted.len - 1] - median) };
 }
 
-/// A named workload. `run` must do exactly `units` units, retain observable
-/// results. Optional hooks surround each whole batch (including warmup,
-/// calibration and smoke), outside timing, and share the declared error set.
-/// Setup owns partial-acquisition cleanup on failure; teardown runs only after
-/// successful or omitted setup, even on workload failure. Teardown must release
-/// its resources before returning an error. The workload error takes precedence
-/// if both workload and teardown fail. Without hooks, run leaves context reusable.
+/// How long a row's fixture lives, which the workload chooses.
+pub const Lifetime = enum {
+    /// Built once before the row's first batch and released once after its last,
+    /// so every warmup, calibration and retained batch meets the same fixture,
+    /// warm. For a workload whose fixture is read, or that `stage` puts back as
+    /// it was.
+    row,
+    /// Built before every batch and released after it, so each batch meets a
+    /// fixture made for it alone and nothing carries from one to the next. For
+    /// a workload that consumes or ages its fixture. A batch starts with a cold
+    /// fixture; that cost is the isolation, and it is not timed.
+    batch,
+};
+
+/// A named workload. `run` must do exactly `units` units and retain observable
+/// results. Everything else is untimed, and shares the declared error set.
+///
+/// A batch is `stage(units)`, `run(units)`, `settle(units)`; around each batch
+/// (`.batch`) or the whole row (`.row`) stand the fixture's `setup` and
+/// `teardown`. Warmup, calibration, discarded samples and smoke are batches too.
+/// Only `run` lies between the timestamps.
+///
+/// Each hook owns the cleanup of a failure of its own: a failed `setup` or
+/// `stage` is not followed by its `teardown` or `settle`. Every hook that
+/// succeeded is followed by its counterpart, whatever failed after it, and a
+/// counterpart must release what its hook made before returning an error. The
+/// first error is the one returned. Without a fixture or stages, `run` must
+/// leave the context reusable.
 pub fn Row(comptime Context: type, comptime WorkloadError: type) type {
     return struct {
+        pub const Hook = *const fn (*Context) WorkloadError!void;
+        /// A hook told how many units its batch holds.
+        pub const Step = *const fn (*Context, u64) WorkloadError!void;
+        /// What a workload builds once, or per batch, and what releases it.
+        pub const Fixture = struct {
+            lifetime: Lifetime,
+            setup: Hook,
+            teardown: ?Hook = null,
+        };
+
         name: []const u8,
         unit: []const u8,
+        /// The units of the first batch, and of every batch if `grow` is off.
         initial: u64 = 1,
         smoke: u64 = 1,
+        /// Whether the runner may grow the batch until a sample can be read. A
+        /// workload that cannot be batched, because each unit needs its own
+        /// `stage`, turns it off: every sample is `initial` units, and one too
+        /// short to read is `Unmeasurable`. It is held to the clock's
+        /// resolution alone; `Options.minimum` is the target of growth.
+        grow: bool = true,
         run: *const fn (*Context, u64) WorkloadError!void,
-        setup: ?*const fn (*Context) WorkloadError!void = null,
-        teardown: ?*const fn (*Context) WorkloadError!void = null,
+        fixture: ?Fixture = null,
+        /// Untimed, before each batch: put the fixture in the state `run(units)`
+        /// needs, with the inputs of `units` units if they are consumed.
+        stage: ?Step = null,
+        /// Untimed, after each batch whose stage succeeded: take what the batch
+        /// left, so the next starts from nothing.
+        settle: ?Step = null,
     };
 }
 
@@ -123,64 +166,107 @@ pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer:
     if (options.smoke) {
         for (rows) |row| {
             if (!std.mem.startsWith(u8, row.name, options.prefix)) continue;
-            _ = try invoke(WorkloadError, false, io, context, row, row.smoke);
+            try opening(row, context);
+            _ = try closing(WorkloadError, row, context, invoke(WorkloadError, false, io, context, row, row.smoke));
             try write(writer, .{ .row = row.name, .unit = row.unit, .samples = &.{}, .best = 0, .median = 0, .p99 = 0, .ops_per_second = 0, .commit = metadata.commit, .zig = metadata.zig, .cpu = metadata.cpu, .os = metadata.os, .batch = 0, .clock_resolution_ns = 0, .smoke = true });
         }
         return;
     }
     const resolution = (try Io.Clock.awake.resolution(io)).nanoseconds;
     if (resolution <= 0 or resolution > std.math.maxInt(u64)) return error.ClockUnavailable;
-    const target = @max(options.minimum.nanoseconds, std.math.mul(i96, resolution, options.resolution_multiple) catch return error.InvalidOptions);
+    const readable = std.math.mul(i96, resolution, options.resolution_multiple) catch return error.InvalidOptions;
     const samples = try gpa.alloc(f64, options.samples);
     defer gpa.free(samples);
     for (rows) |row| {
         if (!std.mem.startsWith(u8, row.name, options.prefix)) continue;
-        var batch = row.initial;
-        for (0..options.warmup) |_| _ = try invoke(WorkloadError, false, io, context, row, batch);
-        // Calibration is discarded, as is an entire sample set if its fastest
-        // batch reveals that calibration was distorted by a cold cache.
-        while (true) {
+        // A row that grows is read over at least `minimum`; one that cannot is
+        // read at the clock's resolution alone.
+        const target = if (row.grow) @max(options.minimum.nanoseconds, readable) else readable;
+        try opening(row, context);
+        const batch = try closing(WorkloadError, row, context, sample(WorkloadError, io, context, row, samples, target, options));
+        const stats = try statistics(gpa, samples);
+        try write(writer, .{ .row = row.name, .unit = row.unit, .samples = samples, .best = stats.best, .median = stats.median, .p99 = stats.p99, .ops_per_second = 1e9 / stats.median, .commit = metadata.commit, .zig = metadata.zig, .cpu = metadata.cpu, .os = metadata.os, .batch = batch, .clock_resolution_ns = @intCast(resolution) });
+        try writer.flush();
+    }
+}
+
+/// Builds the fixture of a row that keeps one.
+fn opening(row: anytype, context: anytype) !void {
+    const fixture = row.fixture orelse return;
+    if (fixture.lifetime == .row) try fixture.setup(context);
+}
+
+/// Releases the fixture of a row that keeps one, after `outcome` of the work
+/// it served: the first failure is the one returned.
+fn closing(comptime WorkloadError: type, row: anytype, context: anytype, outcome: anytype) RunError(WorkloadError)!@typeInfo(@TypeOf(outcome)).error_union.payload {
+    if (row.fixture) |fixture| if (fixture.lifetime == .row) if (fixture.teardown) |teardown| {
+        teardown(context) catch |err| {
+            _ = try outcome;
+            return err;
+        };
+    };
+    return outcome;
+}
+
+/// The batch a row's samples are taken at, the samples left in `samples`.
+/// Calibration is discarded, as is an entire sample set if its fastest batch
+/// reveals that calibration was distorted by a cold cache.
+fn sample(comptime WorkloadError: type, io: Io, context: anytype, row: Row(std.meta.Child(@TypeOf(context)), WorkloadError), samples: []f64, target: i96, options: Options) RunError(WorkloadError)!u64 {
+    var batch = row.initial;
+    for (0..options.warmup) |_| _ = try invoke(WorkloadError, false, io, context, row, batch);
+    while (true) {
+        if (row.grow) {
             const elapsed = try invoke(WorkloadError, true, io, context, row, batch);
             if (elapsed < target) {
                 batch = try larger(batch, options.max_batch);
                 continue;
             }
-            var resolved = true;
-            for (samples) |*sample| {
-                const ns = try invoke(WorkloadError, true, io, context, row, batch);
-                if (ns < target) {
-                    resolved = false;
-                    break;
-                }
-                sample.* = @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(batch));
-            }
-            if (!resolved) {
-                batch = try larger(batch, options.max_batch);
-                continue;
-            }
-            const stats = try statistics(gpa, samples);
-            try write(writer, .{ .row = row.name, .unit = row.unit, .samples = samples, .best = stats.best, .median = stats.median, .p99 = stats.p99, .ops_per_second = 1e9 / stats.median, .commit = metadata.commit, .zig = metadata.zig, .cpu = metadata.cpu, .os = metadata.os, .batch = batch, .clock_resolution_ns = @intCast(resolution) });
-            try writer.flush();
-            break;
         }
+        var resolved = true;
+        for (samples) |*slot| {
+            const ns = try invoke(WorkloadError, true, io, context, row, batch);
+            if (ns < target) {
+                if (!row.grow) return error.Unmeasurable;
+                resolved = false;
+                break;
+            }
+            slot.* = @as(f64, @floatFromInt(ns)) / @as(f64, @floatFromInt(batch));
+        }
+        if (resolved) return batch;
+        batch = try larger(batch, options.max_batch);
     }
 }
 fn larger(batch: u64, limit: u64) error{Unmeasurable}!u64 {
     if (batch >= limit) return error.Unmeasurable;
     return batch + @min(batch, limit - batch);
 }
-fn invoke(comptime WorkloadError: type, comptime timed: bool, io: Io, context: anytype, row: Row(std.meta.Child(@TypeOf(context)), WorkloadError), batch: u64) RunError(WorkloadError)!i96 {
-    if (row.setup) |setup| try setup(context);
+
+/// One batch: its fixture if it is the batch's own, `stage`, the timed `run`,
+/// `settle`. The elapsed nanoseconds, or zero if untimed.
+fn invoke(comptime WorkloadError: type, comptime timed: bool, io: Io, context: anytype, row: Row(std.meta.Child(@TypeOf(context)), WorkloadError), units: u64) RunError(WorkloadError)!i96 {
+    const fresh = if (row.fixture) |fixture| fixture.lifetime == .batch else false;
+    if (fresh) try row.fixture.?.setup(context);
+    const outcome = staged(WorkloadError, timed, io, context, row, units);
+    if (fresh) if (row.fixture.?.teardown) |teardown| teardown(context) catch |err| {
+        _ = try outcome;
+        return err;
+    };
+    const elapsed = try outcome;
+    if (elapsed < 0) return error.NonMonotonicClock;
+    return elapsed;
+}
+
+fn staged(comptime WorkloadError: type, comptime timed: bool, io: Io, context: anytype, row: Row(std.meta.Child(@TypeOf(context)), WorkloadError), units: u64) RunError(WorkloadError)!i96 {
+    if (row.stage) |stage| try stage(context, units);
     const start = if (timed) Io.Timestamp.now(io, .awake) else Io.Timestamp.fromNanoseconds(0);
-    row.run(context, batch) catch |err| {
-        // Cleanup is attempted exactly once. Preserve the original workload
-        // error if cleanup also fails; teardown owns release on either outcome.
-        if (row.teardown) |teardown| teardown(context) catch return err;
+    // Cleanup is attempted exactly once. A failed run keeps its own error if
+    // settling also fails.
+    row.run(context, units) catch |err| {
+        if (row.settle) |settle| settle(context, units) catch return err;
         return err;
     };
     const elapsed = if (timed) start.durationTo(.now(io, .awake)).nanoseconds else 0;
-    if (row.teardown) |teardown| try teardown(context);
-    if (elapsed < 0) return error.NonMonotonicClock;
+    if (row.settle) |settle| try settle(context, units);
     return elapsed;
 }
 pub const WriteError = Io.Writer.Error;

@@ -439,14 +439,22 @@ acquisition order, best, median, nearest-rank p99 and units per second, with
 commit, Zig version, target CPU model and OS. The build marks dirty commits.
 `--smoke` executes each selected row once and emits an explicitly untimed row.
 
-Rows may supply optional `setup(ctx)` and `teardown(ctx)` hooks alongside
-`run(ctx, units)`. Hooks run once around each whole batch, including warmup,
-calibration and smoke, outside the measured region. Compose their declared error
+A row says what its batches need, all outside the measured region. A `fixture`
+(`setup`, optional `teardown`) is built once for the row with `.lifetime = .row`,
+and every warmup, calibration and retained batch meets it warm; with `.batch` it
+is built before every batch and released after it, for a workload that consumes
+or ages its fixture and must not meet its own leavings. `stage(ctx, units)` runs
+before each batch, to put the fixture in the state the batch needs (restore it,
+or lay out the inputs of `units` units), and `settle(ctx, units)` after it, to
+take what the batch left. A workload whose every unit needs its own stage cannot
+be batched: `.grow = false` makes each sample exactly `initial` units, held to
+the clock's resolution alone (`Options.minimum` is what growth aims at), and a
+sample too short to read is `Unmeasurable`. Compose the callbacks' declared error
 sets with the workload's as `Row(Context, WorkloadError)`; the runner adds its
-own finite errors. Setup cleans partial acquisitions on failure. After successful
-or omitted setup, teardown runs even on workload failure and must release its
-resources before returning an error. A workload error takes precedence if both
-callbacks fail. Omitting hooks keeps existing behavior.
+own finite errors. Each hook owns the failure of its own: a failed `setup` or
+`stage` is not followed by its `teardown` or `settle`, every hook that succeeded
+is, and releases what it made before returning an error. The first error is the
+one returned.
 
 `shakedown-bench-compare before.jsonl after.jsonl` reports median changes and a
 conservative noise band: the sum of each run's largest sample deviation from
