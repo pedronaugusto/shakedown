@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `Sim.Options.stack_size` defaults to a megabyte on Windows (256 KiB elsewhere): std's NT path conversion needs more than 256 KiB in a Debug build, so code under test that opens a file overflowed its task's stack.
+
 ## [0.3.1] - 2026-10-12
 
 ### Changed
