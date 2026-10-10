@@ -384,6 +384,11 @@ pub fn contextOf(c: *Core, node: NodeId) *Context {
 pub fn disk(c: *Core, node: NodeId) ?Fs {
     return if (node == first_node) c.fs else c.contextOf(node).disk;
 }
+/// `node`'s disk itself, where `disk` is a copy.
+pub fn diskOf(c: *Core, node: NodeId) ?*Fs {
+    if (node == first_node) return if (c.fs) |*f| f else null;
+    return if (c.contextOf(node).disk) |*d| d else null;
+}
 /// A seam's raw sync on `fs`, as a step of the run when a task makes it:
 /// the schedule may switch there, it touches that disk for a search, and the
 /// trace records it as a foreign call. Outside a run it is made at once.
