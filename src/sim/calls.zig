@@ -1,9 +1,10 @@
 //! The simulation's `Io` vtable.
 //!
 //! Tasks, groups, futexes, time, randomness, files and cancelation are simulated.
-//! Writes to the process's stdout and stderr, and stderr's lock, reach the
-//! real ones, which a run's outcome cannot depend on. Process calls fail with
-//! `error.Unexpected`. File and network calls use the node's owned models.
+//! Writes to the test's own stdout and stderr, and stderr's lock, reach the
+//! real ones, which a run's outcome cannot depend on. File and network calls
+//! use the node's owned models; process calls run registered programs, and
+//! a simulated process's standard streams are its own.
 //! Every call is a step and a record in the trace, and every call
 //! that can return `error.Canceled` is a cancelation point.
 const builtin = @import("builtin");
@@ -13,6 +14,7 @@ const Core = @import("Core.zig");
 const Task = Core.Task;
 const fs_calls = @import("fs/calls.zig");
 const net_calls = @import("net/calls.zig");
+const process_calls = @import("programs/calls.zig");
 const Model = @import("net/Model.zig");
 const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
@@ -20,7 +22,18 @@ const IoCall = io_call.IoCall;
 pub const vtable: Io.VTable = blk: {
     var table: Io.VTable = undefined;
     for (@typeInfo(Io.VTable).@"struct".field_names) |name| {
-        @field(table, name) = if (@hasDecl(slots, name)) @field(slots, name) else if (net_calls.supports(name)) net_calls.slot(name) else if (fs_calls.supports(name)) fs_calls.slot(name) else unsupported(name);
+        @field(table, name) = if (@hasDecl(slots, name))
+            @field(slots, name)
+        else if (process_calls.supports(name))
+            process_calls.slot(name)
+        else if (process_calls.wrapsFile(name))
+            process_calls.fileSlot(name, if (fs_calls.supports(name)) fs_calls.slot(name) else unsupported(name))
+        else if (net_calls.supports(name))
+            net_calls.slot(name)
+        else if (fs_calls.supports(name))
+            fs_calls.slot(name)
+        else
+            unsupported(name);
     }
     break :blk table;
 };
@@ -333,16 +346,15 @@ const slots = struct {
             c.record(callOf(operation), e, digest(error.Canceled));
             return error.Canceled;
         };
-        const result = if (net_calls.isNetwork(operation) and c.options.net != null) blk: {
-            while (true) {
-                if (net_calls.perform(c, e.node, operation)) |result| break :blk result;
-                net_calls.wait(c, e.task, .never) catch {
-                    c.record(callOf(operation), e, digest(error.Canceled));
-                    return error.Canceled;
-                };
-            }
-        } else perform(c, operation);
-        c.record(callOf(operation), e, if (net_calls.isNetwork(operation) and c.options.net != null) net_calls.operationDigest(e.node, operation, result) else 0);
+        const op = process_calls.translateOperation(c, operation);
+        const result = while (true) {
+            if (attempt(c, e.node, op)) |result| break result;
+            net_calls.wait(c, e.task, .never) catch {
+                c.record(callOf(operation), e, digest(error.Canceled));
+                return error.Canceled;
+            };
+        };
+        c.record(callOf(operation), e, operationDigest(c, e.node, op, result));
         return result;
     }
 
@@ -553,6 +565,23 @@ fn failed(comptime tag: Io.Operation.Tag) Io.Operation.Result {
     });
 }
 
+/// What an operation does, or null while it would wait: a network
+/// operation on the network model, a stream of a pipe on the pipes, the
+/// rest at once.
+fn attempt(c: *Core, node: Model.NodeId, op: Io.Operation) ?Io.Operation.Result {
+    if (net_calls.isNetwork(op) and c.options.net != null) return net_calls.perform(c, node, op);
+    if (process_calls.isPipe(op)) return process_calls.perform(c, op);
+    return perform(c, op);
+}
+
+/// An operation's digest for the trace: 0 for the file system's, whose
+/// calls trace their own effects.
+fn operationDigest(c: *Core, node: Model.NodeId, op: Io.Operation, result: Io.Operation.Result) u64 {
+    if (net_calls.isNetwork(op) and c.options.net != null) return net_calls.operationDigest(node, op, result);
+    if (process_calls.isPipe(op)) return process_calls.operationDigest(op, result);
+    return 0;
+}
+
 /// Probe all submissions, leaving blocked operations available to retry or cancel.
 fn complete(c: *Core, node: Model.NodeId, b: *Io.Batch, batch_digest: *u64) bool {
     var tail = b.completed.tail;
@@ -561,10 +590,11 @@ fn complete(c: *Core, node: Model.NodeId, b: *Io.Batch, batch_digest: *u64) bool
     while (index != .none) {
         const storage = &b.storage[index.toIndex()];
         const next = storage.submission.node.next;
-        const op = storage.submission.operation;
-        const result = if (net_calls.isNetwork(op) and c.options.net != null) net_calls.perform(c, node, op) else perform(c, op);
+        const op = process_calls.translateOperation(c, storage.submission.operation);
+        const result = attempt(c, node, op);
         if (result) |value| {
-            if (net_calls.isNetwork(op) and c.options.net != null) batch_digest.* = std.hash.int(batch_digest.* ^ net_calls.operationDigest(node, op, value) ^ index.toIndex());
+            const op_digest = operationDigest(c, node, op, value);
+            if (op_digest != 0) batch_digest.* = std.hash.int(batch_digest.* ^ op_digest ^ index.toIndex());
             switch (tail) {
                 .none => b.completed.head = index,
                 else => b.storage[tail.toIndex()].completion.node.next = index,

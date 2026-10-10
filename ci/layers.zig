@@ -31,6 +31,8 @@ pub const layers: []const gantry.rules.Layer = &.{
     .{ .name = "disk model", .patterns = &.{"src/sim/fs/Model.zig"} },
     .{ .name = "disk", .patterns = &.{"src/sim/Fs.zig"} },
     .{ .name = "network model", .patterns = &.{"src/sim/net/Model.zig"} },
+    .{ .name = "process parts", .patterns = &.{ "src/sim/programs/Pipes.zig", "src/sim/programs/Heap.zig" } },
+    .{ .name = "process model", .patterns = &.{"src/sim/programs/Model.zig"} },
     .{ .name = "simulation parts", .patterns = &.{
         "src/sim/options.zig",
     } },
@@ -43,9 +45,10 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/sim/calls.zig",
         "src/sim/fs/calls.zig",
         "src/sim/net/calls.zig",
+        "src/sim/programs/calls.zig",
         "src/sim/routing.zig",
     } },
-    .{ .name = "nodes and topology", .patterns = &.{ "src/sim/Node.zig", "src/sim/Net.zig" } },
+    .{ .name = "nodes and topology", .patterns = &.{ "src/sim/Node.zig", "src/sim/Net.zig", "src/sim/Programs.zig" } },
     .{ .name = "simulation", .patterns = &.{
         "src/Sim.zig",
     } },

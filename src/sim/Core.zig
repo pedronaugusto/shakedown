@@ -31,12 +31,24 @@ const Fs = @import("Fs.zig");
 const Disk = @import("fs/Model.zig");
 const Network = @import("net/Model.zig");
 const NodeId = Network.NodeId;
+const Processes = @import("programs/Model.zig");
+const Process = Processes.Process;
 const Core = @This();
 
 /// The first node: the one every simulation has, whose files are `Options.fs`.
 pub const first_node: NodeId = .fromRaw(0);
 
-pub const Context = struct { core: *Core, node: NodeId = first_node, inherit: bool = false, disk: ?Fs = null };
+/// An Io namespace: the node a call is made on, and the simulated process
+/// making it (null for the test's own, whose working directory, when it
+/// changed it, is `cwd`).
+pub const Context = struct {
+    core: *Core,
+    node: NodeId = first_node,
+    inherit: bool = false,
+    disk: ?Fs = null,
+    process: ?*Process = null,
+    cwd: ?Io.Dir = null,
+};
 
 gpa: Allocator,
 options: Options,
@@ -46,7 +58,16 @@ network: Network,
 context: Context = undefined,
 vtable: *const Io.VTable = undefined,
 contexts: std.ArrayList(*Context) = .empty,
-active_node: NodeId = first_node,
+/// The namespace of the driver's last call, made outside any task.
+active_context: ?*Context = null,
+/// The simulated processes and their pipes.
+processes: Processes,
+/// The fault part's Io, when the simulation plans faults: what a process's
+/// own Io routes through.
+fault_io: ?Io = null,
+/// Memory that lives as long as the simulation: the namespaces of its
+/// processes, which a task's last call may name after the process ended.
+keep: std.heap.ArenaAllocator,
 network_seen: u32 = 0,
 kind: executor.Kind,
 /// The `Io` handed to tasks the core starts itself (`Sim.at`).
@@ -128,6 +149,8 @@ pub const Job = union(enum) {
     node: *const fn (context: *const anyopaque, result: *anyopaque) void,
     /// `Sim.at`'s function, started when its timer fires.
     at: struct { ctx: *anyopaque, f: *const fn (io: Io, ctx: *anyopaque) void },
+    /// A simulated process's `main`: the process ends when it returns.
+    program: *Process,
 };
 
 pub const State = enum { idle, ready, running, parked, deferred, done, abandoned };
@@ -145,13 +168,18 @@ pub const Wait = union(enum) {
     sleep,
     task: *Task,
     group: *Io.Group,
+    /// A simulated process, by id, to end.
+    process: u32,
 };
 
 pub const Task = struct {
     core: *Core,
     id: ids.TaskId = ids.outside,
     node: NodeId = first_node,
-    io_node: NodeId = first_node,
+    /// The process the task belongs to; null for the test's own.
+    process: ?*Process = null,
+    /// The namespace of the call the task is making.
+    io_context: ?*Context = null,
     state: State = .idle,
     ctx: executor.Context,
     job: Job = undefined,
@@ -212,9 +240,13 @@ pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
         .threads => if (executor.available(.threads)) .threads else return error.ExecutorUnavailable,
     };
     const monotonic = nanoseconds(options.clock.monotonic.nanoseconds);
+    var processes: Processes = try .init(gpa, options.programs);
+    errdefer processes.deinit();
     var c: Core = .{
         .gpa = gpa,
         .options = options,
+        .processes = processes,
+        .keep = .init(gpa),
         .network = .init(gpa, options.net orelse .{}),
         .source = source,
         .kind = kind,
@@ -245,6 +277,8 @@ pub fn deinit(c: *Core) void {
         c.gpa.free(t.frame);
         c.gpa.destroy(t);
     }
+    c.processes.deinit();
+    c.keep.deinit();
     c.network.deinit();
     for (c.contexts.items) |ctx| {
         if (ctx.disk) |fs_| fs_.model.deinit();
@@ -266,13 +300,64 @@ pub fn of(userdata: ?*anyopaque) *Core {
     const ctx: *Context = @ptrCast(@alignCast(userdata.?)); // safe: each simulation Io owns a stable Context
     const c = ctx.core;
     if (!ctx.inherit) {
-        if (c.current) |t| t.io_node = ctx.node else c.active_node = ctx.node;
+        if (c.current) |t| t.io_context = ctx else c.active_context = ctx;
     }
     return c;
 }
 
-pub fn nodeId(c: *Core) NodeId {
-    return if (c.current) |t| t.io_node else c.active_node;
+/// The namespace of the call being made: the running task's, or the
+/// driver's.
+pub fn currentContext(c: *const Core) ?*Context {
+    return if (c.current) |t| t.io_context else c.active_context;
+}
+
+pub fn nodeId(c: *const Core) NodeId {
+    const ctx = c.currentContext() orelse return first_node;
+    return ctx.node;
+}
+
+/// The simulated process making the call being made; null for the test's
+/// own.
+pub fn processOf(c: *const Core) ?*Process {
+    const ctx = c.currentContext() orelse return null;
+    return ctx.process;
+}
+
+/// The working directory a context's calls mean by `Dir.cwd()`; null for
+/// its node's root.
+pub fn cwdOf(ctx: *const Context) ?Io.Dir {
+    if (ctx.process) |p| return p.cwd;
+    return ctx.cwd;
+}
+
+/// Ends simulated process `p` as `term`: every task it still has but the
+/// running one (whose job is ending it) ends where it stands, as a dying
+/// process's threads do; what it held is given back, its files and their
+/// locks, its sockets and its pipe ends; whoever waits for it is woken.
+pub fn endProcess(c: *Core, p: *Process, term: Processes.Term) void {
+    if (p.term != null) return;
+    p.term = term;
+    for (c.tasks.items) |t| if (t.process == p and t != c.current) c.drop(t);
+    c.processes.release(p);
+    if (c.disk(p.node)) |d| {
+        d.model.closeOwned(p.pid);
+        c.wakeLocks(d.model);
+    }
+    c.network.closeOwned(p.pid);
+    for (c.tasks.items) |t| if (t.state == .parked and t.wait == .process and t.wait.process == p.pid) c.wake(t, .woken);
+    c.wakeIo();
+}
+
+/// Ends every simulated process on `node`, as a machine that goes down
+/// takes its processes with it.
+pub fn endProcessesOn(c: *Core, node: NodeId) void {
+    for (c.processes.processes.items) |p| if (p.node == node) c.endProcess(p, Processes.killed());
+}
+
+/// The id of the process making the call, as the models record an owner:
+/// 0 for the test's own.
+pub fn ownerOf(c: *const Core) u32 {
+    return if (c.processOf()) |p| p.pid else 0;
 }
 
 /// The context of a node made by `Sim.node`: the first is `c.context`.
@@ -349,7 +434,8 @@ pub fn spawn(
         .result_len = result_len,
         .id = id,
         .node = c.nodeId(),
-        .io_node = c.nodeId(),
+        .process = c.processOf(),
+        .io_context = c.currentContext(),
         .job = job,
     };
     c.live += 1;
@@ -419,6 +505,10 @@ fn taskMain(arg: *anyopaque) callconv(.c) noreturn {
             .member => |f| f(t.contextPointer()),
             .root, .node => |f| f(t.contextPointer(), t.resultPointer()),
             .at => |a| a.f(t.core.outer, a.ctx),
+            .program => |p| {
+                const code = Processes.run(p);
+                t.core.endProcess(p, .{ .exited = code });
+            },
         }
         t.core.finish(t);
     }
@@ -453,7 +543,7 @@ fn finish(c: *Core, t: *Task) void {
             };
             c.release(t);
         },
-        .at => c.release(t),
+        .at, .program => c.release(t),
     }
     c.dispatch(&t.ctx);
 }
@@ -675,6 +765,70 @@ pub fn abandon(c: *Core, t: *Task, outcome: Outcome) noreturn {
     @panic("shakedown: an abandoned task was resumed");
 }
 
+/// Ends a task that is not running where it stands, as a dying process's
+/// threads end: it never runs again and nothing of it unwinds. A task that
+/// had ended and was not yet awaited is put back for reuse.
+pub fn drop(c: *Core, t: *Task) void {
+    aegis.assert.pre(t != c.current, "a task drops others, never itself");
+    switch (t.state) {
+        .idle, .abandoned => return,
+        .done => return c.release(t),
+        .running => unreachable, // unreachable: only the current task runs
+        .ready => c.unready(t),
+        .parked => {
+            if (t.timer_armed) c.disarm(t);
+            if (t.futex_linked) c.unlink(t);
+        },
+        .deferred => {},
+    }
+    t.state = .abandoned;
+    c.live -= 1;
+}
+
+/// Ends the running task where it stands, the run going on without it:
+/// a task whose process replaced its image. It never runs again.
+pub fn retire(c: *Core, t: *Task) noreturn {
+    aegis.assert.pre(t == c.current, "a task retires itself");
+    if (t.timer_armed) c.disarm(t);
+    t.state = .abandoned;
+    c.live -= 1;
+    c.dispatch(&t.ctx);
+    @panic("shakedown: a retired task was resumed");
+}
+
+/// Takes a ready task out of the run queue.
+fn unready(c: *Core, t: *Task) void {
+    const items = c.ready.items;
+    const at = std.mem.findScalarPos(*Task, items, c.ready_head, t) orelse return;
+    switch (c.options.schedule) {
+        .fifo, .random => _ = c.ready.orderedRemove(at),
+        .pct => {
+            items[at] = items[items.len - 1];
+            c.ready.items.len -= 1;
+            if (at < c.ready.items.len) {
+                siftDown(c.ready.items, at);
+                siftUp(c.ready.items, at);
+            }
+        },
+    }
+    if (c.ready_head == c.ready.items.len) {
+        c.ready.items.len = 0;
+        c.ready_head = 0;
+    }
+}
+
+/// Wakes every task waiting for a simulated stream to become ready: a
+/// socket's or a pipe's.
+pub fn wakeIo(c: *Core) void {
+    _ = c.wakeFutex(@intFromPtr(&c.network.change), std.math.maxInt(u32)); // safe: the network epoch has a stable address until Core.deinit
+}
+
+/// Wakes every task waiting for a lock on `disk`.
+pub fn wakeLocks(c: *Core, model: *Disk) void {
+    model.lock_epoch +%= 1;
+    _ = c.wakeFutex(@intFromPtr(&model.lock_epoch), std.math.maxInt(u32)); // safe: the epoch has a stable address while the disk lives
+}
+
 /// Delivers a cancel to `t`'s next cancelation point, or now if it waits
 /// at one.
 pub fn requestCancel(c: *Core, t: *Task) void {
@@ -747,6 +901,7 @@ pub fn capture(c: *Core, t: *Task) void {
         .sleep => .{ .sleep = if (t.timer_armed) .{ .raw = .fromNanoseconds(t.timer.key.deadline), .clock = clockOf(t.timer_clock) } else null },
         .task => |other| .{ .task = other.id },
         .group => .group,
+        .process => |pid| .{ .process = pid },
     } };
     const trace = std.debug.captureCurrentStackTrace(.{ .first_address = if (t.call_site != 0) t.call_site else null }, &t.report.stack);
     t.report.len = @intCast(trace.return_addresses.len);

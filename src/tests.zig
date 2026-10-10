@@ -4,6 +4,10 @@ test {
     _ = @import("b6_test.zig");
     _ = @import("fs_test.zig");
     _ = @import("net_test.zig");
+    _ = @import("process_test.zig");
+    _ = @import("sim/programs/Pipes.zig");
+    _ = @import("sim/programs/Heap.zig");
+    _ = @import("sim/programs/Model.zig");
     _ = @import("shakedown.zig");
     _ = @import("layer.zig");
     _ = @import("Clock.zig");

@@ -19,6 +19,7 @@ pub fn fs(n: *Node) *Fs {
 }
 pub fn kill(n: *Node) void {
     const c = n.context.core;
+    c.endProcessesOn(n.context.node);
     c.network.kill(n.context.node);
     for (c.tasks.items) |task| if (task.node == n.context.node) {
         c.requestCancel(task);
@@ -49,5 +50,5 @@ pub fn restart(n: *Node, comptime f: anytype, args: std.meta.ArgsTuple(@TypeOf(f
     };
     const task = try c.spawn(.{ .node = Start.start }, std.mem.asBytes(&args), .of(Args), @sizeOf(?anyerror), .of(?anyerror), .ready);
     task.node = n.context.node;
-    task.io_node = n.context.node;
+    task.io_context = n.context;
 }

@@ -54,6 +54,28 @@ fn inputDigest(fs: *Fs, args: anytype) u64 {
     }
     return hash.final();
 }
+/// `args` with `Dir.cwd()` meaning the calling context's working directory,
+/// when it has one: a simulated process's, or a node's that changed it.
+fn workingDirectory(c: *const Core, args: anytype) @TypeOf(args) {
+    var local = args;
+    const ctx = c.currentContext() orelse return local;
+    const cwd = Core.cwdOf(ctx) orelse return local;
+    inline for (0..args.len) |i| {
+        if (@TypeOf(args[i]) == Io.Dir and args[i].handle == Io.Dir.cwd().handle) local[i] = cwd;
+    }
+    return local;
+}
+/// Marks what a call opened as the calling process's.
+fn own(fs: *Fs, value: anytype, owner: u32) void {
+    if (owner == 0) return;
+    const T = @TypeOf(value);
+    if (T == Io.File or T == Io.Dir) {
+        fs.setOwner(value.handle, owner);
+    } else if (T == Io.File.Atomic) {
+        if (value.file_open) fs.setOwner(value.file.handle, owner);
+        if (value.close_dir_on_deinit) fs.setOwner(value.dir.handle, owner);
+    }
+}
 fn invoke(comptime name: []const u8, userdata: ?*anyopaque, args: anytype, ret: usize) Return(name) {
     const c = Core.of(userdata);
     const e = c.enter(ret, true);
@@ -70,13 +92,15 @@ fn invoke(comptime name: []const u8, userdata: ?*anyopaque, args: anytype, ret: 
     };
     const fs = disk.model;
     fs.at = c.now(.real);
-    const input = inputDigest(fs, args);
-    const value = @call(.auto, @field(slots, name), .{ c, fs } ++ args);
+    const local = workingDirectory(c, args);
+    const input = inputDigest(fs, local);
+    const value = @call(.auto, @field(slots, name), .{ c, fs } ++ local);
     if (comptime @typeInfo(@TypeOf(value)) == .error_union) {
         const payload = value catch |err| {
             c.record(call, e, input ^ std.hash.Wyhash.hash(0, @errorName(err)));
             return mapped(@typeInfo(R).error_union.error_set, err);
         };
+        own(fs, payload, c.ownerOf());
         c.record(call, e, input ^ resultDigest(payload));
         return payload;
     } else {

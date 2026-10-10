@@ -8,6 +8,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- `Sim` spawns processes: `std.process.spawn` and `run` start the programs
+  registered on `Sim.programs()`, and fail with `FileNotFound` for any other,
+  where every process call failed with `Unexpected`. `TaskReport.Waiting` adds
+  `process`, a wait for a simulated process to end.
+
 - shakedown depends on [aegis](https://github.com/pedronaugusto/aegis), whose runtime is
   `std` only: the id, byte-count, limit and lock types below are its. A consumer
   fetches it with shakedown.
@@ -55,6 +60,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a call of its own, so steps and counts of code that batches include them.
 
 ### Added
+
+- Simulated processes (`Sim.programs()`, `Sim.Options.programs`): a real
+  `main` registered by name runs as a process when `std.process` spawns it, with
+  its own tasks, pipes or files for its standard streams, environment, working
+  directory, heap and arena; `Child.wait`, `kill` and `std.process.replace`
+  work as on a real system, and a killed process or a node that goes down gives
+  back the files, locks, sockets and memory it held.
 
 - `alloc.Unwiped`: an allocator that scans every block as it is freed for bytes that
   must not outlive their owner (keys, tokens, passwords), counts the blocks that

@@ -50,6 +50,9 @@ pub const Handle = struct {
     path_only: bool = false,
     iterate: bool = false,
     lock: Io.File.Lock = .none,
+    /// The simulated process that opened it, closed when it ends; 0 for
+    /// the test's own.
+    owner: u32 = 0,
 };
 
 pub fn init(gpa: Allocator, source: *Source, options: Options) !*Model {
@@ -134,6 +137,23 @@ pub fn openHandle(fs: *Model, inode: u32, read_access: bool, write_access: bool,
     fs.next_handle += 1;
     return .{ .handle = encode(id), .flags = .{ .nonblocking = false } };
 }
+/// Marks the handle as opened by simulated process `owner`.
+pub fn setOwner(fs: *Model, raw: Io.File.Handle, owner: u32) void {
+    const h = fs.handle(raw) catch return;
+    h.owner = owner;
+}
+
+/// Closes every handle simulated process `owner` opened, its locks with it.
+pub fn closeOwned(fs: *Model, owner: u32) void {
+    if (owner == 0) return;
+    var i: usize = 0;
+    while (i < fs.handles.items.len) {
+        if (fs.handles.items[i].owner == owner) {
+            _ = fs.handles.swapRemove(i);
+        } else i += 1;
+    }
+}
+
 pub fn close(fs: *Model, raw: Io.File.Handle) void {
     const id = decode(raw) orelse return;
     for (fs.handles.items, 0..) |h, i| if (h.id == id) {

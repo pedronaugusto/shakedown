@@ -14,7 +14,8 @@
 //! spin loops on atomics, raw system calls, and data races between `Io`
 //! calls, which are ThreadSanitizer's. Files, directories and explicit mmap
 //! read/write synchronization use its disk model. TCP, UDP, Unix sockets and
-//! DNS use its network model; process calls still fail with `error.Unexpected`.
+//! DNS use its network model. `std.process` spawns the programs registered
+//! on `programs()` as simulated processes, with pipes for their streams.
 //!
 //! A `Sim` must not move; `init` allocates it.
 const std = @import("std");
@@ -36,6 +37,7 @@ const Sim = @This();
 pub const Fs = @import("sim/Fs.zig");
 pub const Node = @import("sim/Node.zig");
 pub const Net = @import("sim/Net.zig");
+pub const Programs = @import("sim/Programs.zig");
 pub const Options = options_mod.Options;
 pub const Executor = options_mod.Executor;
 pub const Schedule = options_mod.Schedule;
@@ -55,6 +57,7 @@ gpa: Allocator,
 core: Core,
 nodes: std.ArrayList(*Node) = .empty,
 network: Net = undefined,
+registry: Programs = undefined,
 fault_context: Core.Context = undefined,
 fault_outer: ?Routing = null,
 /// Private: the source when the options name none.
@@ -91,6 +94,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     }.draw;
     _ = try s.core.network.addNode(&.{});
     s.network = .{ .core = &s.core };
+    s.registry = .{ .core = &s.core };
     if (s.core.fs) |*fs_| fs_.clock = &s.core.clocks[@backingInt(Core.Kept.real)];
     if (options.faults.len > 0) {
         s.fault_context = .{ .core = &s.core, .inherit = true };
@@ -103,6 +107,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
         fio.tasks.id = taskOf;
         fio.tasks.blocked = blockedOf;
         s.fio = fio;
+        s.core.fault_io = fio.io();
         s.fault_outer = .init(fio.io(), .{ .context = &s.core.context });
     }
     s.core.outer = s.io();
@@ -112,6 +117,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
 fn crashOf(base: Io) void {
     const c = Core.of(base.userdata);
     const node_id = c.nodeId();
+    c.endProcessesOn(node_id);
     if (node_id != Core.first_node) {
         c.network.kill(node_id);
         for (c.tasks.items) |task| if (task.node == node_id) c.requestCancel(task);
@@ -317,6 +323,11 @@ fn describe(s: *Sim) void {
 /// The owned deterministic network. Disabled network slots fail explicitly.
 pub fn net(s: *Sim) *Net {
     return &s.network;
+}
+
+/// The programs `std.process` spawns in this simulation.
+pub fn programs(s: *Sim) *Programs {
+    return &s.registry;
 }
 /// Create an isolated node before or during a run. Addresses default to 10.x.x.x.
 pub fn node(s: *Sim, name: []const u8, options: Node.Options) error{OutOfMemory}!*Node {

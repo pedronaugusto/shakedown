@@ -204,5 +204,34 @@ are responsible for terminating and keeping referenced state immutable.
 Fixtures independently model register reads/writes, journal append sequence and
 reader cursors, and ledger visibility/revisions. A separate whole-permutation
 oracle checks randomized small histories. These fixtures do not import consumers
-and do not establish their adoption or correctness. B7 schedule exploration and
-process simulation remain outside this implementation.
+and do not establish their adoption or correctness. B7 schedule exploration
+remains outside this implementation.
+
+## Simulated processes
+
+The process model (`sim/programs/Model.zig`) sits below the core and knows no
+task: programs by name, process records (id, node, streams, image, environment,
+heap, arena, working directory, exit) and the pipes. The core owns the tasks,
+so it ends a process: `Core.endProcess` drops every task the process has but the
+running one (`Core.drop`: out of the run queue, the futex queue and the timers,
+never resumed, nothing unwound), and gives back what the process owned. Every
+handle the disk, the network and the pipes issue records the process that
+opened it (0 for the test's own), so an end closes exactly the process's own,
+locks included; a handle a process was given (`StdIo.file`, `.inherit`) stays
+its giver's.
+
+A task's `io_context` names the namespace of the call it makes: node, process
+and, through the process, its working directory. File slots whose first
+argument is a file pass through `programs/calls.fileSlot`, which turns a
+simulated process's standard handles into its streams and answers pipe ends as a
+pipe does; everything else reaches the file system unchanged, so traces of code
+that spawns nothing are what they were. A pipe operation that would wait
+returns null and the caller waits on the stream readiness every socket and pipe
+change wakes. `processReplace` starts the new image on a fresh task and retires
+the caller (`Core.retire`), so no task ever returns into a replaced image.
+Namespaces of processes live in the core's `keep` arena until the simulation
+ends: a task's last call may still name one after its process was reaped.
+
+A process is a memory domain of its own by contract: it shares no memory with
+its parent but through its streams, files, sockets and exit status, as a real
+process cannot.

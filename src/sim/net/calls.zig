@@ -22,6 +22,21 @@ fn mapped(comptime E: type, err: anyerror) E {
     }
     return error.Unexpected;
 }
+/// Marks the sockets a call opened as the calling process's.
+fn own(m: *Model, value: anytype, owner: u32) void {
+    if (owner == 0) return;
+    const T = @TypeOf(value);
+    if (T == Io.net.Socket) {
+        m.setOwner(value.handle, owner);
+    } else if (T == [2]Io.net.Socket) {
+        for (value) |s| m.setOwner(s.handle, owner);
+    } else if (T == Io.net.Socket.Handle) {
+        m.setOwner(value, owner);
+    } else if (T == Io.net.Stream) {
+        m.setOwner(value.socket.handle, owner);
+    }
+}
+
 fn begin(c: *Core) *Model {
     c.notifyNetwork();
     return &c.network;
@@ -219,6 +234,7 @@ fn invoke(comptime name: []const u8, user: ?*anyopaque, args: anytype, ret: usiz
             c.record(call, e, input ^ std.hash.Wyhash.hash(0, @errorName(err)));
             return mapped(@typeInfo(return_type).error_union.error_set, err);
         };
+        own(&c.network, value, c.ownerOf());
         c.record(call, e, input ^ outputDigest(value));
         return value;
     } else {

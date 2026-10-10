@@ -1,8 +1,8 @@
 # shakedown
 
-Work in progress: network simulation, stateful models and bounded linearizability
-checking are implemented. Simulated processes and exhaustive schedule search
-are still planned.
+Work in progress: network simulation, simulated processes, stateful models and
+bounded linearizability checking are implemented. Exhaustive schedule search is
+still planned.
 
 shakedown tests Zig code written against `std.Io`. A `Sim` is a simulated `Io`
 that runs the code's tasks one at a time and owns their time, so one seed
@@ -416,11 +416,44 @@ is established when a stream connects, so increasing the configured capacity
 applies to new connections. `bench/` includes RPC, three-node gossip and model
 message workloads, all measured with `shakedown.bench`; CI runs untimed smoke.
 
+## Simulated processes
+
+`sim.programs().register("git", main, .{})` makes `main` a program that
+`std.process.spawn`, `run` and `replace` start as a simulated process when the
+path they name is `git` or ends in it. `main` is written as `std.start` calls
+one: no parameters, `std.process.Init.Minimal` or `std.process.Init`, returning
+`void`, `u8` or an error union of those, so a real program's `main` registers
+unchanged. Arguments before the `Init` come from the registered tuple:
+`register("git", fakeGit, .{&recorder})` gives a fake program the test's state.
+
+A process runs on the node of the one that spawned it, as a task of its own
+with tasks of its own. Its `Init.io` is the simulation; its standard handles
+(`File.stdin()`, `stdout()`, `stderr()`) are its own streams: pipes
+(`StdIo.pipe`, 64 KiB by default, `Options.programs.pipe_capacity`), the null
+device (`.ignore`), a file it was handed (`.file`), or its parent's (`.inherit`).
+A pipe read waits for bytes or for the writer to close; a write waits for room
+and fails with `BrokenPipe` once the reader closed. The environment is the one
+given, or the parent's as it started (`Options.programs.environ` for the
+test's own); the working directory is per process (`cwd`, `currentPath`,
+`setCurrentDir`, `setCurrentPath`), and per node for the test.
+
+A process ends when `main` returns: an error writes `error: <name>` to its
+stderr and exits with 1, as `std.start` has it. `Child.kill` ends it at once:
+every task it has ends where it stands, and what it held is given back: its
+heap and arena (`Init.gpa`, `Init.arena`), its pipe ends (their readers see the
+end of the stream), its files and their locks, its sockets. A node that goes
+down takes its processes with it. `Child.wait` reports a deadlock with the
+process it waits for. Process ids and pipe handles are values no system issues,
+so a raw `kill` or `read` on one fails. `std.process.exit`, `fatal` and `abort`
+end the real process, the test with it, and `std.debug.print` and `std.log`
+write to the real stderr: a simulated program returns from `main`.
+
 ## Scope
 
-- Process calls fail with `error.Unexpected`; writes to stdout and stderr reach
-  the real process. `Options.fs = null` disables the disk; `Options.net = null`
-  disables network calls.
+- Writes to the test's own stdout and stderr reach the real process.
+  `Options.fs = null` disables the disk; `Options.net = null` disables network
+  calls. Only registered programs run: there are no real executables in a
+  simulation.
 - Memory maps synchronize with files only at their explicit `read` and `write`
   calls. Native page faults and implicit mapped-write coherence are outside the
   model. Its name dialects do not model a particular volume's Unicode version.
@@ -463,8 +496,7 @@ statistical significance claim and never makes a timing change pass or fail.
 Added and removed rows are named. Malformed rows, mismatched units or platforms,
 and smoke rows cannot be compared. Build tools can use the fetched package's
 `shakedown-bench-compare` artifact. CI smoke-checks and compiles measuring,
-with no timing thresholds. The package remains work in progress: stateful models, simulated processes and
-exhaustive schedule search remain planned.
+with no timing thresholds.
 
 ## Platforms
 

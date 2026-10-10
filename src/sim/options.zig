@@ -11,6 +11,7 @@ const Trace = @import("../trace.zig").Trace;
 const Fs = @import("Fs.zig");
 const Net = @import("net/Model.zig");
 const Watchdog = @import("Watchdog.zig");
+const Processes = @import("programs/Model.zig");
 
 pub const Executor = enum {
     /// The fastest this target has: Win32 fibers on Windows, fibers on
@@ -86,6 +87,10 @@ pub const Options = struct {
     /// Faults for every call, as `FaultIo` injects them: the outermost part
     /// of the simulation, drawing chances from its source.
     faults: []const Plan(IoCall, io_call.IoFault).Entry = &.{},
+    /// Simulated processes: their pipes, and the environment the test's
+    /// own process passes to the programs it spawns. Programs are
+    /// registered on `Sim.programs()`.
+    programs: Processes.Options = .{},
 
     pub const Clock = struct {
         /// `.real` at the start, in Unix time (2026-01-01T00:00:00Z).
@@ -135,6 +140,8 @@ pub const TaskReport = struct {
         task: ids.TaskId,
         /// A group's `await` or `cancel`.
         group,
+        /// A wait for this simulated process to end.
+        process: u32,
         /// A group member that was never started: its group was never
         /// awaited or canceled.
         unstarted,
@@ -152,6 +159,7 @@ pub const TaskReport = struct {
             } else try w.writeAll("sleeping for ever"),
             .task => |id| try w.print("waiting for task {d}", .{id.raw()}),
             .group => try w.writeAll("waiting for its group"),
+            .process => |pid| try w.print("waiting for process {d}", .{pid}),
             .unstarted => try w.writeAll("never started: its group was never awaited"),
             .none => try w.writeAll("running"),
         }

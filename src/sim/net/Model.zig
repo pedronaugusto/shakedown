@@ -49,6 +49,9 @@ pub const Socket = struct {
     timed_out: bool = false,
     allow_broadcast: bool = false,
     datagrams: std.ArrayList(*Packet) = .empty,
+    /// The simulated process that opened it, closed when it ends; 0 for
+    /// the test's own.
+    owner: u32 = 0,
 };
 const Packet = struct {
     from: Handle,
@@ -511,6 +514,25 @@ pub fn reset(m: *Model, a: NodeId, b: NodeId) void {
     };
     m.change +%= 1;
 }
+/// Marks the socket as opened by simulated process `owner`.
+pub fn setOwner(m: *Model, handle: Handle, owner: u32) void {
+    if (m.sockets.get(handle)) |s| s.owner = owner;
+}
+
+/// Closes every socket simulated process `owner` opened: its peers see
+/// the connection end.
+pub fn closeOwned(m: *Model, owner: u32) void {
+    if (owner == 0) return;
+    while (true) {
+        var found: ?Handle = null;
+        var it = m.sockets.valueIterator();
+        while (it.next()) |s| if (s.*.owner == owner and (found == null or handleId(s.*.handle) < handleId(found.?))) {
+            found = s.*.handle;
+        };
+        m.close(found orelse break);
+    }
+}
+
 pub fn kill(m: *Model, node: NodeId) void {
     while (true) {
         var found: ?Handle = null;
