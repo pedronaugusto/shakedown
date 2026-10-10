@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !u8 {
             if (options.only) |name| if (!std.mem.eql(u8, name, w.name)) continue;
             var arena: std.heap.ArenaAllocator = .init(init.gpa);
             defer arena.deinit();
-            const ok = try replay(arena.allocator(), init.io, fs, w, options.scratch);
+            const ok = try replay(arena.allocator(), init.gpa, init.io, fs, w, options.scratch);
             failed = failed or !ok;
         }
     }
@@ -181,7 +181,7 @@ const Marking = struct { a: std.mem.Allocator, io: Io, device: []const u8 };
 
 /// One workload on one file system: false when the real disk recovered to
 /// a state the model does not reach.
-fn replay(a: std.mem.Allocator, io: Io, fs: Fs, w: workloads.Workload, scratch_root: []const u8) !bool {
+fn replay(a: std.mem.Allocator, gpa: std.mem.Allocator, io: Io, fs: Fs, w: workloads.Workload, scratch_root: []const u8) !bool {
     const scratch = try a.print("{s}/{t}-{s}", .{ scratch_root, fs, w.name });
     try Io.Dir.cwd().createDirPath(io, scratch);
     const size = fs.megabytes() << 20;
@@ -240,7 +240,7 @@ fn replay(a: std.mem.Allocator, io: Io, fs: Fs, w: workloads.Workload, scratch_r
     d.unloop(log_dev);
 
     // What the model allows.
-    const allowed = try modelStates(a, io, w);
+    const allowed = try modelStates(a, gpa, w);
 
     // The replay: the disk as it was, then each entry in turn.
     const log_bytes = try Io.Dir.cwd().readFileAlloc(io, log_path, a, .unlimited);
@@ -319,24 +319,29 @@ const Allowed = struct {
 
 /// Every state `everyCrash` reaches from the workload on `Sim.Fs`, under
 /// each durability model.
-fn modelStates(a: std.mem.Allocator, io: Io, w: workloads.Workload) !Allowed {
-    _ = io;
+/// The simulations allocate from `gpa`, each torn down after its crash
+/// point; the states are kept in `a`.
+fn modelStates(a: std.mem.Allocator, gpa: std.mem.Allocator, w: workloads.Workload) !Allowed {
     var allowed: Allowed = .{};
     inline for (.{ .strict, .ordered_metadata }) |durability| {
-        var ctx: Collect = .{ .a = a, .w = w, .into = if (durability == .strict) &allowed.strict else &allowed.ordered };
-        _ = try shakedown.everyCrash(a, &ctx, .{ .sim = .{ .watchdog = null, .fs = .{ .durability = durability } }, .max_states = 4096 });
+        var ctx: Collect = .{ .a = a, .gpa = gpa, .w = w, .into = if (durability == .strict) &allowed.strict else &allowed.ordered };
+        _ = try shakedown.everyCrash(gpa, &ctx, .{ .sim = .{ .watchdog = null, .fs = .{ .durability = durability } }, .max_states = 4096 });
     }
     return allowed;
 }
 
 const Collect = struct {
     a: std.mem.Allocator,
+    gpa: std.mem.Allocator,
     w: workloads.Workload,
     into: *std.StringHashMapUnmanaged(void),
 
     pub fn setUp(c: *Collect, sim: *shakedown.Sim) !void {
         try sim.fs().mkdir("work");
-        for (c.w.initial) |f| try sim.fs().write(try c.a.print("work/{s}", .{f.name}), f.bytes);
+        for (c.w.initial) |f| {
+            var path: [64]u8 = undefined;
+            try sim.fs().write(try std.mem.print(&path, "work/{s}", .{f.name}), f.bytes);
+        }
     }
 
     pub fn run(c: *Collect, io: Io) !void {
@@ -350,7 +355,9 @@ const Collect = struct {
     pub fn check(c: *Collect, io: Io) !void {
         const work = try Io.Dir.cwd().openDir(io, "work", .{ .iterate = true });
         defer work.close(io);
-        try c.into.put(c.a, try workloads.describe(c.a, io, work), {});
+        const state = try workloads.describe(c.gpa, io, work);
+        defer c.gpa.free(state);
+        if (!c.into.contains(state)) try c.into.put(c.a, try c.a.dupe(u8, state), {});
     }
 };
 
