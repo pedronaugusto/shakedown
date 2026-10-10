@@ -4,8 +4,10 @@
 //! Run with no argument, the program spawns itself once per case and passes
 //! only when every child died of its access: by the fault handler below,
 //! which exits with `faulted`, or by the signal itself. A child that
-//! survives exits 0 and fails the run. Run with a case name, it is that
-//! child.
+//! survives exits 0 and fails the run. A free of memory the quarantine never
+//! gave out is not a fault but a stop, and must end the child with the
+//! quarantine's message on its stderr, in whatever way the system ends a
+//! panicking process. Run with a case name, it is that child.
 const std = @import("std");
 const shakedown = @import("shakedown");
 
@@ -20,7 +22,7 @@ pub const debug = struct {
 
 const faulted = 86;
 
-const cases = [_][]const u8{ "use-after-free", "overflow", "foreign-free" };
+const cases = [_][]const u8{ "use-after-free", "overflow" };
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -41,6 +43,13 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("{s}: the child {f}, where it had to fault\n", .{ case, term });
             return error.Survived;
         }
+    }
+
+    const run = try std.process.run(arena, init.io, .{ .argv = &.{ self, "foreign-free" } });
+    const said = std.mem.find(u8, run.stderr, "Quarantine freed a block it does not hold") != null;
+    if (run.term == .exited and run.term.exited == 0 or !said) {
+        std.debug.print("the child that freed a foreign block {f}, and wrote:\n{s}\n", .{ run.term, run.stderr });
+        return error.Survived;
     }
 }
 
