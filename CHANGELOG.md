@@ -80,8 +80,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   records it as a foreign call. airlock's simulated route syncs through it.
 - `Sim.programsOf(io)` and the process seams on `Sim.Programs`, for a package
   whose own calls start, signal and wait for processes past `std.process`:
-  `terminal` (two pipes and a window size; its slave's ends are a terminal to
-  a program), `pipe`, `windowSize` and `setWindowSize`, `end` (a child ended as
+  `terminal` (a master and a slave, one file each, over two pipes and a
+  window size; the slave is a terminal to a program), `pipe`, `windowSize` and `setWindowSize`, `end` (a child ended as
   a term at once, as an uncaught signal does), `poll` (a wait that does not
   wait) and `waitFor` (a wait with a deadline). Each is a step of the run.
 - A pipe end handed to a child (`StdIo.file`, `.inherit`) is the child's own

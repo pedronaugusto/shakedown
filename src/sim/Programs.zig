@@ -98,15 +98,11 @@ fn exitCode(result: anytype, init: std.process.Init) u8 {
 pub const Size = Pipes.Size;
 
 /// A terminal: what its master writes its slave reads, and the other way,
-/// and the slave's ends are a terminal to a program (`File.isTty`). Every
-/// end is the caller's, closed with `File.close`; a child is handed the
-/// slave's as its streams (`StdIo.file`) and keeps its own copies.
-pub const Terminal = struct {
-    master_read: Io.File,
-    master_write: Io.File,
-    slave_read: Io.File,
-    slave_write: Io.File,
-};
+/// one file each, as a pseudo-terminal's descriptors are; the slave is a
+/// terminal to a program (`File.isTty`). Both are the caller's, closed
+/// with `File.close`; a child is handed the slave as its streams
+/// (`StdIo.file`) and keeps its own copies of it.
+pub const Terminal = struct { master: Io.File, slave: Io.File };
 
 /// A pipe the caller owns: its read end and its write end.
 pub fn pipe(p: Programs) Pipes.CreateError![2]Io.File {
@@ -116,12 +112,7 @@ pub fn pipe(p: Programs) Pipes.CreateError![2]Io.File {
 /// A new terminal of window `size`, the caller's.
 pub fn terminal(p: Programs, size: Size) Pipes.CreateError!Terminal {
     const t = try calls.terminal(p.core, size, @returnAddress());
-    return .{
-        .master_read = calls.pipeFile(t.master_read),
-        .master_write = calls.pipeFile(t.master_write),
-        .slave_read = calls.pipeFile(t.slave_read),
-        .slave_write = calls.pipeFile(t.slave_write),
-    };
+    return .{ .master = calls.pipeFile(t.master), .slave = calls.pipeFile(t.slave) };
 }
 
 /// The window of the terminal `file` is an end of.
