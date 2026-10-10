@@ -414,13 +414,18 @@ fn fuzzOne(r: *Runner, smith: *std.testing.Smith) anyerror!void {
         r.probed = true;
         return;
     }
-    switch (try r.once(.{ .smith = smith })) {
+    // A runner of its own per input: the test runner checks for leaks after
+    // each input, and the shared one keeps its arena and tape between cases.
+    var own: Runner = try .init(r.gpa, r.options);
+    defer own.deinit();
+    own.body = r.body;
+    switch (try own.once(.{ .smith = smith })) {
         .pass, .discard => {},
         .fail => |err| {
             var buffer: [256]u8 = undefined;
             const stderr = std.debug.lockStderr(&buffer).terminal();
             defer std.debug.unlockStderr();
-            try stderr.writer.print("shakedown: the fuzzer found error.{t}; shrink it with SHAKEDOWN_TAPE={f}\n", .{ err, r.source.tape() });
+            try stderr.writer.print("shakedown: the fuzzer found error.{t}; shrink it with SHAKEDOWN_TAPE={f}\n", .{ err, own.source.tape() });
             return err;
         },
     }
