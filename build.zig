@@ -92,6 +92,26 @@ pub fn build(b: *std.Build) !void {
     comparison_consumer.has_side_effects = true;
     b.step("check-bench-consumer", "Smoke-run the comparator as an isolated dependency artifact").dependOn(&comparison_consumer.step);
 
+    // Real crash replay (Linux, root, by hand before a cut; never in CI):
+    // what a real file system recovers to under dm-log-writes, against what
+    // `Sim.Fs` reaches.
+    const crash_replay = b.addExecutable(.{
+        .name = "shakedown-crash-replay",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("crashreplay/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "shakedown", .module = module }},
+        }),
+    });
+    b.step("crash-replay", "Build the real crash replay (Linux, run as root by hand)").dependOn(&b.addInstallArtifact(crash_replay, .{}).step);
+    const crash_replay_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("crashreplay/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "shakedown", .module = module }},
+    }) });
+
     // A consumer that brings its own aegis binds shakedown to it: one aegis
     // links, and shakedown's own pin is not asked for.
     const aegis_consumer = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--build-file", "ci/aegis-consumer/build.zig", "--system" });
@@ -103,6 +123,10 @@ pub fn build(b: *std.Build) !void {
 
     const check_step = b.step("check", "Compile the tests, programs and example without running them");
     check_step.dependOn(&tests.step);
+    // The replay's own parts are tested and compiled with the rest; the
+    // replay itself runs only by hand.
+    check_step.dependOn(&crash_replay.step);
+    test_step.dependOn(&b.addRunArtifact(crash_replay_tests).step);
 
     // The 32-bit draw regression compiles enabled portable APIs without a
     // hosted Io. Both targets exercise pointer-sized indexing independently.
