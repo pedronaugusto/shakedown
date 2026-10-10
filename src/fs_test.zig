@@ -813,3 +813,18 @@ test "Fs a seam's raw sync from a task is a step of the run, a crash point and a
     try stopped.fs().crash(.lose_all);
     try t.expectError(error.FileNotFound, stopped.fs().read(t.allocator, "data"));
 }
+
+test "Fs a simulation's Io names its node's disk, and no other Io names one" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    try t.expectEqual(sim.fs(), Sim.fsOf(sim.io()).?);
+    const node = try sim.node("b", .{});
+    try t.expectEqual(node.fs(), Sim.fsOf(node.io()).?);
+    try t.expectEqual(@as(?*Sim.Fs, null), Sim.fsOf(t.io));
+    const faulty = try Sim.init(t.allocator, .{ .watchdog = null, .faults = &.{.{ .at = .{ .nth = .{ .call = .dirOpenDir, .n = 1 } }, .fault = .{ .fail = error.AccessDenied } }} });
+    defer faulty.deinit();
+    try t.expectEqual(faulty.fs(), Sim.fsOf(faulty.io()).?);
+    const diskless = try Sim.init(t.allocator, .{ .watchdog = null, .fs = null });
+    defer diskless.deinit();
+    try t.expectEqual(@as(?*Sim.Fs, null), Sim.fsOf(diskless.io()));
+}

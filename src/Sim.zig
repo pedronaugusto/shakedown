@@ -290,6 +290,20 @@ pub fn fs(s: *Sim) *Fs {
     return &s.core.fs.?;
 }
 
+/// The simulated disk `io` works on, when `io` is a simulation's
+/// (`Sim.io`, `Node.io`, a simulated process's): its node's disk, or null
+/// when that node has none. Null for any other `Io`. A seam whose raw calls
+/// go past the `Io` asks it, to make them on the simulation instead.
+pub fn fsOf(any: Io) ?*Fs {
+    const ctx: *Core.Context = if (any.vtable == &calls.vtable)
+        @ptrCast(@alignCast(any.userdata.?)) // safe: a simulation's own vtable is handed out with a Context as userdata
+    else if (any.vtable == &Routing.vtable)
+        Routing.of(any.userdata).state.context
+    else
+        return null;
+    return ctx.core.diskOf(ctx.node);
+}
+
 pub fn steps(s: *const Sim) u64 {
     return s.core.steps;
 }

@@ -78,6 +78,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is a step of the run like any `Io` call: the schedule may switch there, it is
   a crash point of `everyCrash`, a search sees it touch the disk, and the trace
   records it as a foreign call. airlock's simulated route syncs through it.
+- `Sim.fsOf(io)`: the simulated disk an `Io` of a simulation works on (its
+  node's), null for any other `Io`, so a seam whose raw calls go past the `Io`
+  makes them on the simulation whenever it is handed one.
 
 - `shakedown-fuzz`: continuous fuzzing of a package's properties, its corpora
   in a store outside the package, each failure shrunk and written down as the
