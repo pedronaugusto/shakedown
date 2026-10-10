@@ -108,7 +108,7 @@ pub fn check(
     comptime body: fn (@TypeOf(ctx), *Case) anyerror!void,
     options: CheckOptions,
 ) CheckError!void {
-    if (builtin.fuzz) return fuzz(gpa, ctx, body, options);
+    if (try fuzzed(gpa, ctx, body, options)) return;
     var runner: Runner = try .init(gpa, options);
     defer runner.deinit();
     const Body = Bound(@TypeOf(ctx), body);
@@ -221,6 +221,9 @@ pub const Runner = struct {
     notes: ?std.ArrayList(u8) = null,
     /// Under `explore`: the schedule every case's simulations take.
     bounded: ?Sim.Schedule.Bounded = null,
+    /// Whether the test runner handed `check`'s fuzz function an input of its
+    /// own: it does not fuzz.
+    probed: bool = false,
     /// The final run's error return trace, taken before the error is
     /// handled and its frames are let go.
     trace: [32]usize = undefined,
@@ -358,13 +361,26 @@ const Same = struct {
     }
 };
 
-/// The property under the fuzzer: each input is one case.
-fn fuzz(
+/// Whether the test runner fuzzes: one that does not calls the fuzz test's
+/// function with its corpus inputs, as bytes, before `std.testing.fuzz`
+/// returns. Whether a build fuzzes is the test's module's to know
+/// (`builtin.fuzz` there), not this one's, which a dependency's build
+/// compiles without the flag.
+const fuzz_capable = switch (builtin.zig_backend) {
+    // The test runner's simple mode, which never fuzzes and never calls.
+    .stage2_aarch64, .stage2_loongarch, .stage2_powerpc, .stage2_riscv64 => false,
+    else => true,
+};
+
+/// The property under the fuzzer, each input one case, when the runner
+/// fuzzes; false, having run nothing, when it does not.
+fn fuzzed(
     gpa: Allocator,
     ctx: anytype,
     comptime body: fn (@TypeOf(ctx), *Case) anyerror!void,
     options: CheckOptions,
-) CheckError!void {
+) CheckError!bool {
+    if (!fuzz_capable or !builtin.is_test) return false;
     var inputs: std.ArrayList([]const u8) = .empty;
     defer {
         for (inputs.items) |input| gpa.free(input);
@@ -383,9 +399,17 @@ fn fuzz(
     var bound: Body = .{ .ctx = ctx };
     runner.body = .{ .ctx = &bound, .run = Body.run };
     std.testing.fuzz(&runner, fuzzOne, .{ .corpus = inputs.items }) catch return error.PropertyFailed;
+    return !runner.probed;
 }
 
 fn fuzzOne(r: *Runner, smith: *std.testing.Smith) anyerror!void {
+    // A runner that is not fuzzing hands each corpus input over itself, as
+    // bytes; the fuzzer's inputs come from the fuzzer (`in` null). The
+    // regressions run as `check`'s own first cases.
+    if (smith.in != null) {
+        r.probed = true;
+        return;
+    }
     switch (try r.once(.{ .smith = smith })) {
         .pass, .discard => {},
         .fail => |err| {

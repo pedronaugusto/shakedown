@@ -175,6 +175,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- `check` fuzzes under `zig build test --fuzz` in a project that depends on
+  shakedown: it asked its own module's `builtin.fuzz`, which a dependency is
+  built without, so no property was ever a fuzz test outside this repository.
+  It now asks the test runner.
+
 - Isolate generated benchmark provenance files and check full native Windows stack-fault statuses, rejecting ordinary exit code 5.
 
 - Portable `Source.integer` and enum, choice and float generators compile on
