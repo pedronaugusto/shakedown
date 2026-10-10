@@ -282,6 +282,14 @@ fn pipeAnswer(comptime name: []const u8, c: *Core, file: Io.File) Return(name) {
         return 0;
     }
     if (comptime std.mem.eql(u8, name, "fileSync") or std.mem.eql(u8, name, "fileUnlock")) return;
+    // A terminal's slave end is a terminal; any other end is not.
+    if (comptime std.mem.eql(u8, name, "fileIsTty") or std.mem.eql(u8, name, "fileSupportsAnsiEscapeCodes")) {
+        return c.processes.pipes.isTerminal(file.handle) catch false;
+    }
+    if (comptime std.mem.eql(u8, name, "fileEnableAnsiEscapeCodes")) {
+        if (!(c.processes.pipes.isTerminal(file.handle) catch false)) return error.NotTerminalDevice;
+        return;
+    }
     return fallback(R);
 }
 
@@ -374,8 +382,8 @@ fn spawn(c: *Core, e: Core.Call, options: std.process.SpawnOptions, ret: usize) 
     errdefer for (parent_ends) |end| if (end) |f| m.pipes.close(f.handle);
     for ([_]std.process.SpawnOptions.StdIo{ options.stdin, options.stdout, options.stderr }, 0..) |which, i| {
         p.stdio[i] = switch (which) {
-            .inherit => .{ .file = translate(c, standardFile(i)), .owned = false },
-            .file => |f| .{ .file = translate(c, f), .owned = false },
+            .inherit => handed(m, translate(c, standardFile(i)), p.pid) catch |err| return mapSpawn(err),
+            .file => |f| handed(m, translate(c, f), p.pid) catch |err| return mapSpawn(err),
             .ignore => .{ .file = pipeFile(try m.pipes.nullDevice(p.pid)), .owned = true },
             .close => .{ .file = Processes.closed_file, .owned = false, .open = false },
             .pipe => blk: {
@@ -408,6 +416,14 @@ fn spawn(c: *Core, e: Core.Call, options: std.process.SpawnOptions, ret: usize) 
     };
 }
 
+/// A file handed to a child: a pipe end becomes the child's own copy, as an
+/// inherited descriptor is, so the parent closing its end leaves the
+/// child's open; any other stays the parent's.
+fn handed(m: *Processes, file: Io.File, pid: u32) (Pipes.CreateError || Pipes.HandleError)!Processes.Stream {
+    if (!Pipes.owns(file.handle)) return .{ .file = file, .owned = false };
+    return .{ .file = pipeFile(try m.pipes.dup(file.handle, pid)), .owned = true };
+}
+
 const Namespace = struct { context: Core.Context, outer: ?Routing = null };
 
 /// The process's Io namespace, kept as long as the simulation: a task's
@@ -430,7 +446,7 @@ fn standardFile(i: usize) Io.File {
     };
 }
 
-fn pipeFile(handle: Io.File.Handle) Io.File {
+pub fn pipeFile(handle: Io.File.Handle) Io.File {
     return .{ .handle = handle, .flags = .{ .nonblocking = false } };
 }
 
@@ -507,8 +523,7 @@ const slots = struct {
             }
         }
         const term = p.term.?;
-        cleanup(c, child);
-        c.processes.reap(p);
+        reapChild(c, child, p);
         c.record(.childWait, e, termDigest(term));
         return term;
     }
@@ -666,4 +681,126 @@ fn replace(c: *Core, e: Core.Call, options: std.process.ReplaceOptions) std.proc
     for (c.tasks.items) |other| if (other.process == p and other != t and other != fresh) c.drop(other);
     c.record(.processReplace, e, 0);
     c.retire(t);
+}
+
+// Seams: what a package whose own calls start, signal and wait for
+// processes (a terminal, a signal, a wait with a deadline) asks of the
+// simulation in their place. Each is a step of the run, as an Io call is.
+
+/// A pipe the calling process (or the test) owns: its read and write ends.
+pub fn pipe(c: *Core, ret: usize) Pipes.CreateError![2]Io.File {
+    const e = c.enter(ret, true);
+    c.touch(Core.Object.pipes, true);
+    const ends = c.processes.pipes.create(c.ownerOf(), c.ownerOf()) catch |err| {
+        c.record(.foreign, e, digestOf(err));
+        return err;
+    };
+    c.record(.foreign, e, std.hash.int(@as(u64, Pipes.id(ends[0]).?)));
+    return .{ pipeFile(ends[0]), pipeFile(ends[1]) };
+}
+
+/// A terminal the calling process (or the test) owns.
+pub fn terminal(c: *Core, size: Pipes.Size, ret: usize) Pipes.CreateError!Pipes.Terminal {
+    const e = c.enter(ret, true);
+    c.touch(Core.Object.pipes, true);
+    const t = c.processes.pipes.terminal(c.ownerOf(), size) catch |err| {
+        c.record(.foreign, e, digestOf(err));
+        return err;
+    };
+    c.record(.foreign, e, std.hash.int(@as(u64, Pipes.id(t.master_read).?)));
+    return t;
+}
+
+pub fn windowSize(c: *Core, file: Io.File, ret: usize) error{ BadHandle, NotTerminalDevice }!Pipes.Size {
+    const e = c.enter(ret, true);
+    c.touch(Core.Object.pipes, false);
+    const size = c.processes.pipes.windowSize(translate(c, file).handle);
+    c.record(.foreign, e, if (size) |s| (@as(u64, s.rows) << 16) | s.cols else |err| digestOf(err));
+    return size;
+}
+
+pub fn setWindowSize(c: *Core, file: Io.File, size: Pipes.Size, ret: usize) error{ BadHandle, NotTerminalDevice }!void {
+    const e = c.enter(ret, true);
+    c.touch(Core.Object.pipes, true);
+    const result = c.processes.pipes.setWindowSize(translate(c, file).handle, size);
+    c.wakeIo();
+    c.record(.foreign, e, if (result) |_| (@as(u64, size.rows) << 16) | size.cols else |err| digestOf(err));
+    return result;
+}
+
+/// Ends a child as `term` at once, as a signal its program does not catch
+/// does; a child that already ended is left as it ended. The child stays
+/// to be waited for.
+pub fn endChild(c: *Core, child: *const std.process.Child, term: Processes.Term, ret: usize) void {
+    const e = c.enter(ret, true);
+    c.touch(Core.Object.pipes, true);
+    if (processOfChild(c, child)) |p| {
+        c.touch(Core.Object.process(p.pid), true);
+        c.endProcess(p, term);
+    }
+    c.record(.childKill, e, termDigest(term));
+}
+
+/// How a child ended, reaping it, or null while it runs: a wait that does
+/// not wait.
+pub fn poll(c: *Core, child: *std.process.Child, ret: usize) std.process.Child.WaitError!?Processes.Term {
+    const e = c.enter(ret, true);
+    const p = processOfChild(c, child) orelse {
+        c.record(.childWait, e, digestOf(error.Unexpected));
+        return error.Unexpected;
+    };
+    c.touch(Core.Object.process(p.pid), true);
+    const term = p.term orelse {
+        c.record(.childWait, e, 0);
+        return null;
+    };
+    reapChild(c, child, p);
+    c.record(.childWait, e, termDigest(term));
+    return term;
+}
+
+/// `Child.wait` until `timeout`: how the child ended, reaping it, or null
+/// once the time is up and it still runs.
+pub fn waitFor(c: *Core, child: *std.process.Child, timeout: Io.Timeout, ret: usize) std.process.Child.WaitError!?Processes.Term {
+    const e = c.enter(ret, false);
+    const t = e.task orelse outside("Child.wait");
+    if (Core.cancelPoint(t)) {
+        c.record(.childWait, e, digestOf(error.Canceled));
+        return error.Canceled;
+    }
+    const p = processOfChild(c, child) orelse {
+        c.record(.childWait, e, digestOf(error.Unexpected));
+        return error.Unexpected;
+    };
+    c.touch(Core.Object.process(p.pid), true);
+    const deadline = c.deadline(timeout);
+    while (p.term == null) {
+        switch (deadline) {
+            .due => break,
+            .at => |at| c.arm(t, at.clock, at.ns),
+            .never => {},
+        }
+        switch (c.block(t, .{ .process = p.pid }, true)) {
+            .canceled => {
+                c.record(.childWait, e, digestOf(error.Canceled));
+                return error.Canceled;
+            },
+            .timeout => break,
+            else => {},
+        }
+    }
+    const term = p.term orelse {
+        c.record(.childWait, e, 0);
+        return null;
+    };
+    reapChild(c, child, p);
+    c.record(.childWait, e, termDigest(term));
+    return term;
+}
+
+/// What `wait` does once the child has ended: its streams closed, its id
+/// forgotten, the process gone.
+fn reapChild(c: *Core, child: *std.process.Child, p: *Process) void {
+    cleanup(c, child);
+    c.processes.reap(p);
 }

@@ -16,8 +16,11 @@
 //! with it; `std.debug.print` and `std.log` write to the real standard
 //! error. A program must return from `main`.
 const std = @import("std");
+const Io = std.Io;
 const Core = @import("Core.zig");
 const Processes = @import("programs/Model.zig");
+const Pipes = @import("programs/Pipes.zig");
+const calls = @import("programs/calls.zig");
 const Programs = @This();
 
 pub const Options = Processes.Options;
@@ -84,4 +87,65 @@ fn exitCode(result: anytype, init: std.process.Init) u8 {
         u8 => value,
         else => @compileError("a program's main returns void, u8 or an error union of those"),
     };
+}
+
+// Seams. A package whose own calls start, signal and wait for processes
+// past `std.process` (a terminal, a signal, a wait with a deadline) makes
+// them here when it is handed a simulation: `Sim.programsOf` finds this
+// from its `Io`. Each is a step of the run.
+
+/// A terminal's window, in character cells.
+pub const Size = Pipes.Size;
+
+/// A terminal: what its master writes its slave reads, and the other way,
+/// and the slave's ends are a terminal to a program (`File.isTty`). Every
+/// end is the caller's, closed with `File.close`; a child is handed the
+/// slave's as its streams (`StdIo.file`) and keeps its own copies.
+pub const Terminal = struct {
+    master_read: Io.File,
+    master_write: Io.File,
+    slave_read: Io.File,
+    slave_write: Io.File,
+};
+
+/// A pipe the caller owns: its read end and its write end.
+pub fn pipe(p: Programs) Pipes.CreateError![2]Io.File {
+    return calls.pipe(p.core, @returnAddress());
+}
+
+/// A new terminal of window `size`, the caller's.
+pub fn terminal(p: Programs, size: Size) Pipes.CreateError!Terminal {
+    const t = try calls.terminal(p.core, size, @returnAddress());
+    return .{
+        .master_read = calls.pipeFile(t.master_read),
+        .master_write = calls.pipeFile(t.master_write),
+        .slave_read = calls.pipeFile(t.slave_read),
+        .slave_write = calls.pipeFile(t.slave_write),
+    };
+}
+
+/// The window of the terminal `file` is an end of.
+pub fn windowSize(p: Programs, file: Io.File) error{ BadHandle, NotTerminalDevice }!Size {
+    return calls.windowSize(p.core, file, @returnAddress());
+}
+
+pub fn setWindowSize(p: Programs, file: Io.File, size: Size) error{ BadHandle, NotTerminalDevice }!void {
+    return calls.setWindowSize(p.core, file, size, @returnAddress());
+}
+
+/// Ends `child` as `term` at once, as a signal its program does not catch
+/// does; it stays to be waited for.
+pub fn end(p: Programs, child: *const std.process.Child, term: Term) void {
+    calls.endChild(p.core, child, term, @returnAddress());
+}
+
+/// How `child` ended, reaping it, or null while it runs.
+pub fn poll(p: Programs, child: *std.process.Child) std.process.Child.WaitError!?Term {
+    return calls.poll(p.core, child, @returnAddress());
+}
+
+/// `Child.wait` until `timeout`: how `child` ended, reaping it, or null
+/// once the time is up.
+pub fn waitFor(p: Programs, child: *std.process.Child, timeout: Io.Timeout) std.process.Child.WaitError!?Term {
+    return calls.waitFor(p.core, child, timeout, @returnAddress());
 }
