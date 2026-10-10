@@ -389,7 +389,8 @@ configurable. Simulated handles cannot address real OS files.
 An inode's live contents and metadata differ from its persisted state. `fileSync`
 syncs that inode; on a directory handle it syncs its entry operations.
 `fs.flush(handle, kind)` and `fs.flushDir(handle, kind)` let raw-call seams
-express durability: `writeout` hands changes to the device, `barrier` orders
+express durability (`Sim.fsOf(io)` finds a simulation's disk from its `Io`, and
+a flush a task makes is a step of the run, a crash point and a record): `writeout` hands changes to the device, `barrier` orders
 previous writeouts before subsequent effects, `data` persists contents and
 length, and `full` persists metadata too. A device flush also persists earlier
 writeouts on this disk. `writeout` includes retrieval metadata, as Darwin
@@ -515,6 +516,17 @@ process it waits for. Process ids and pipe handles are values no system issues,
 so a raw `kill` or `read` on one fails. `std.process.exit`, `fatal` and `abort`
 end the real process, the test with it, and `std.debug.print` and `std.log`
 write to the real stderr: a simulated program returns from `main`.
+
+A handed pipe end (`.file`, `.inherit`) is the child's own copy, as an inherited
+descriptor is: a pipe's side stays open while any copy is. A package whose own
+calls start, signal and wait for processes past `std.process` finds the
+simulation from its `Io` (`Sim.programsOf`) and makes them there:
+`terminal(size)` is a master and a slave, one file each over two pipes, the
+slave a terminal to a program (`File.isTty`), with a window size
+(`windowSize`, `setWindowSize`); `end(child, term)` ends a child as an uncaught
+signal would; `poll(child)` is a wait that does not wait and `waitFor(child,
+timeout)` one with a deadline on the simulation's clock. conduit's simulated
+route is built on these.
 
 ## Scope
 
