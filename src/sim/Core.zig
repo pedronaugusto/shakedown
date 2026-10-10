@@ -384,6 +384,31 @@ pub fn contextOf(c: *Core, node: NodeId) *Context {
 pub fn disk(c: *Core, node: NodeId) ?Fs {
     return if (node == first_node) c.fs else c.contextOf(node).disk;
 }
+/// A seam's raw sync on `fs`, as a step of the run when a task makes it:
+/// the schedule may switch there, it touches that disk for a search, and the
+/// trace records it as a foreign call. Outside a run it is made at once.
+pub fn flushStep(ptr: *anyopaque, fs: *Fs, handle: Io.File.Handle, kind: Fs.Flush, dir: bool) Fs.FlushError!void {
+    const c: *Core = @ptrCast(@alignCast(ptr)); // safe: Sim installs its own Core as the stepper's core
+    if (c.current == null) return fs.flushNow(handle, kind, dir);
+    const entered = c.enter(@returnAddress(), true);
+    c.touch(Object.disk(c.diskNode(fs)), true);
+    const result = fs.flushNow(handle, kind, dir);
+    // The portable description id, not the platform's handle encoding.
+    const id: u64 = if (handle == Io.Dir.cwd().handle) 0 else if (fs.model.handle(handle)) |h| h.id else |_| std.math.maxInt(u64);
+    var hash: std.hash.Wyhash = .init(0);
+    hash.update(std.mem.asBytes(&id));
+    hash.update(@tagName(kind));
+    if (result) |_| {} else |err| hash.update(@errorName(err));
+    c.record(.foreign, entered, hash.final());
+    return result;
+}
+
+/// The node whose disk `fs` is.
+fn diskNode(c: *Core, fs: *const Fs) NodeId {
+    for (c.contexts.items) |ctx| if (ctx.disk) |d| if (d.model == fs.model) return ctx.node;
+    return first_node;
+}
+
 pub fn notifyNetwork(c: *Core) void {
     c.network.now = c.clocks[@backingInt(Kept.awake)];
     c.network.pump();
