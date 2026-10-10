@@ -394,7 +394,10 @@ fn fuzzed(
         errdefer gpa.free(input);
         try inputs.append(gpa, input);
     }
-    var runner: Runner = try .init(gpa, options);
+    // The runner outlives every input, its arena and tape growing as the
+    // inputs ask: it allocates from the page allocator, not the test's, whose
+    // leak check after each input would count what it keeps for the next.
+    var runner: Runner = try .init(std.heap.page_allocator, options);
     defer runner.deinit();
     const Body = Bound(@TypeOf(ctx), body);
     var bound: Body = .{ .ctx = ctx };

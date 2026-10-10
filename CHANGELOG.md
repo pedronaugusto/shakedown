@@ -201,6 +201,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Under `--fuzz`, a property whose cases allocate failed every input with a leak:
+  the runner kept its arena and tape for the next input on the test's allocator,
+  which the test runner checks after each one. It keeps them on the page allocator.
+
 - A `Sim` directory listing resumes after the last entry it returned, by a
   cookie each entry keeps, as readdir does: a listing that removes what it
   lists (a prune of temporary files) no longer skips the entry after each one
