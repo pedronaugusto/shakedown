@@ -373,13 +373,12 @@ test {
     _ = Log;
 }
 
-test "the model's states of every workload, counted" {
+test "the model reaches a bounded set of states from every workload" {
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     for (workloads.all) |w| {
-        const before = Io.Clock.awake.now(std.testing.io);
         const allowed = try modelStates(arena.allocator(), std.testing.allocator, w);
-        const after = Io.Clock.awake.now(std.testing.io);
-        std.debug.print("{s}: {d} strict, {d} ordered, {d} ms\n", .{ w.name, allowed.strict.count(), allowed.ordered.count(), @divTrunc(before.durationTo(after).nanoseconds, std.time.ns_per_ms) });
+        try std.testing.expect(allowed.strict.count() > 0);
+        try std.testing.expect(allowed.ordered.count() <= allowed.strict.count());
     }
 }

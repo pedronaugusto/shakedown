@@ -74,6 +74,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `crashreplay/` (`zig build crash-replay`): real crash replay under
+  dm-log-writes on Linux, by hand, checking that every state a real file system
+  recovers to is one `Sim.Fs` reaches. ext4, xfs and btrfs, five workloads: every
+  recovered state is in the model.
+
 - `alloc.Erased`: checks every block is erased, every byte zero, by the time
   it is freed; valid in every build for frees through `rawFree`, and it counts
   rather than passes the frees `Allocator.free` hid.

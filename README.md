@@ -618,6 +618,17 @@ Windows as well, plus the Linux Debug suite on Zig master, which never blocks. `
 `aarch64-linux-gnu`, `x86_64-linux-musl`, `x86_64-windows-gnu`,
 `aarch64-windows-gnu`, `x86_64-macos` and `aarch64-macos`.
 
+
+`crashreplay/` checks `Sim.Fs`'s crash model against real file systems, by hand
+before a cut and never in CI (Linux, as root): `zig build crash-replay`, then
+`sudo zig-out/bin/shakedown-crash-replay --fs ext4 --fs xfs --fs btrfs`. Each
+workload (an atomic replace, a synced log, a careless save, an overwrite, files
+made and named) runs on a loop disk under dm-log-writes; the log is replayed onto
+the disk as it was, one entry at a time, and after each one a snapshot is
+mounted, recovered by the file system, and read. Every state it recovers to must
+be one `everyCrash` reaches from the same workload on `Sim.Fs`, and the replay
+must rebuild the disk the run left. Crash points are the log's prefixes, in
+order, as xfstests replays them.
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
