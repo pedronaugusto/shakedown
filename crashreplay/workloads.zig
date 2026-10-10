@@ -40,8 +40,8 @@ fn writeSynced(io: Io, dir: Io.Dir, name: []const u8, bytes: []const u8) !void {
     try file.sync(io);
 }
 
-const old_text = repeat("old ", 300);
-const new_text = repeat("new ", 1100);
+const old_text = repeat("old ", 200);
+const new_text = repeat("new ", 380);
 
 /// A temp file written and synced, renamed over the target, the directory
 /// synced: the target is the old file or the new one, never part of one.
@@ -60,7 +60,7 @@ fn append(io: Io, dir: Io.Dir, marker: Marker) !void {
     defer file.close(io);
     var at: u64 = (try file.stat(io)).size;
     for (0..4) |i| {
-        var record: [600]u8 = undefined;
+        var record: [300]u8 = undefined;
         @memset(&record, 'a' + @as(u8, @intCast(i)));
         try file.writePositionalAll(io, &record, at);
         at += record.len;
@@ -87,9 +87,9 @@ fn careless(io: Io, dir: Io.Dir, marker: Marker) !void {
 fn overwrite(io: Io, dir: Io.Dir, marker: Marker) !void {
     const file = try dir.openFile(io, "target", .{ .mode = .read_write });
     defer file.close(io);
-    var middle: [4096]u8 = undefined;
+    var middle: [1024]u8 = undefined;
     @memset(&middle, 'N');
-    try file.writePositionalAll(io, &middle, 2048);
+    try file.writePositionalAll(io, &middle, 1024);
     marker.mark("written");
     try file.sync(io);
     marker.mark("synced");
@@ -109,7 +109,7 @@ pub const all = [_]Workload{
     .{ .name = "replace", .initial = &.{.{ .name = "target", .bytes = old_text }}, .run = replace },
     .{ .name = "append", .initial = &.{.{ .name = "log", .bytes = "" }}, .run = append },
     .{ .name = "careless", .initial = &.{.{ .name = "target", .bytes = old_text }}, .run = careless },
-    .{ .name = "overwrite", .initial = &.{.{ .name = "target", .bytes = repeat("o", 8192) }}, .run = overwrite },
+    .{ .name = "overwrite", .initial = &.{.{ .name = "target", .bytes = repeat("o", 4096) }}, .run = overwrite },
     .{ .name = "create", .initial = &.{}, .run = create },
 };
 

@@ -312,6 +312,8 @@ fn crashState(a: std.mem.Allocator, io: Io, d: *Devices, fs: Fs, origin: []const
     return workloads.describe(a, io, work);
 }
 
+const max_states = 4096;
+
 const Allowed = struct {
     strict: std.StringHashMapUnmanaged(void) = .empty,
     ordered: std.StringHashMapUnmanaged(void) = .empty,
@@ -325,7 +327,8 @@ fn modelStates(a: std.mem.Allocator, gpa: std.mem.Allocator, w: workloads.Worklo
     var allowed: Allowed = .{};
     inline for (.{ .strict, .ordered_metadata }) |durability| {
         var ctx: Collect = .{ .a = a, .gpa = gpa, .w = w, .into = if (durability == .strict) &allowed.strict else &allowed.ordered };
-        _ = try shakedown.everyCrash(gpa, &ctx, .{ .sim = .{ .watchdog = null, .fs = .{ .durability = durability } }, .max_states = 4096 });
+        const report = try shakedown.everyCrash(gpa, &ctx, .{ .sim = .{ .watchdog = null, .fs = .{ .durability = durability } }, .max_states = max_states });
+        if (report.bounded > 0) return error.ModelBounded;
     }
     return allowed;
 }
@@ -363,4 +366,15 @@ const Collect = struct {
 
 test {
     _ = Log;
+}
+
+test "the model's states of every workload, counted" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    for (workloads.all) |w| {
+        const before = Io.Clock.awake.now(std.testing.io);
+        const allowed = try modelStates(arena.allocator(), std.testing.allocator, w);
+        const after = Io.Clock.awake.now(std.testing.io);
+        std.debug.print("{s}: {d} strict, {d} ordered, {d} ms\n", .{ w.name, allowed.strict.count(), allowed.ordered.count(), @divTrunc(before.durationTo(after).nanoseconds, std.time.ns_per_ms) });
+    }
 }
