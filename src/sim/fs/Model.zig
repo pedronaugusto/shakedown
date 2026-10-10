@@ -810,13 +810,25 @@ const Unit = struct { record: usize, sector: ?u64 };
 /// Bounded exploration: increasing number of retained effects, all subsets and
 /// all orders within each subset, including individual sectors of pending writes.
 /// Identical persisted trees reached by distinct histories are returned once.
+///
+/// Two units that touch different things (other sectors, files, names)
+/// leave the same tree in either order, so each subset is tried in the
+/// orders that differ only where units conflict: a sequence is generated
+/// only if every unit placed after a later-issued one conflicts with it, the
+/// least sequence of every class of equivalent orders. The states are those
+/// of every order; the cost is that of the orders that can differ.
 pub const CrashStateIterator = struct {
     fs: *Model,
     before: Snapshot,
     units: []Unit,
-    indices: []usize,
+    /// The unit chosen at each depth of the current sequence.
+    chosen_at: []usize,
+    /// Which units the current sequence holds.
+    used: []bool,
     order: []Unit,
     kept: usize = 0,
+    /// How much of the current sequence is chosen; `kept` once complete.
+    depth: usize = 0,
     started: bool = false,
     done: bool = false,
     emitted: u32 = 0,
@@ -827,35 +839,98 @@ pub const CrashStateIterator = struct {
         it.seen.deinit(it.fs.gpa);
         it.before.deinit();
         it.fs.gpa.free(it.units);
-        it.fs.gpa.free(it.indices);
+        it.fs.gpa.free(it.chosen_at);
+        it.fs.gpa.free(it.used);
         it.fs.gpa.free(it.order);
         it.* = undefined;
     }
     fn advance(it: *CrashStateIterator) void {
         if (!it.started) {
+            // The empty sequence: nothing pending persisted.
             it.started = true;
             return;
         }
-        if (nextPermutation(it.order[0..it.kept])) return;
-        var j = it.kept;
-        while (j > 0) {
-            j -= 1;
-            if (it.indices[j] < it.units.len - it.kept + j) {
-                it.indices[j] += 1;
-                for (j + 1..it.kept) |k| it.indices[k] = it.indices[k - 1] + 1;
-                for (0..it.kept) |k| it.order[k] = it.units[it.indices[k]];
+        while (!it.nextSequence()) {
+            it.kept += 1;
+            if (it.kept > it.units.len) {
+                it.done = true;
                 return;
             }
+            it.depth = 0;
+            it.chosen_at[0] = 0;
         }
-        it.kept += 1;
-        if (it.kept > it.units.len) {
-            it.done = true;
-            return;
+    }
+    /// The next sequence of `kept` units in canonical order, depth first;
+    /// false once there is none left of this length.
+    fn nextSequence(it: *CrashStateIterator) bool {
+        var d = it.depth;
+        if (d == it.kept) {
+            // Go on from the sequence returned last.
+            if (d == 0) return false;
+            d -= 1;
+            it.used[it.chosen_at[d]] = false;
+            it.chosen_at[d] += 1;
         }
-        for (0..it.kept) |k| {
-            it.indices[k] = k;
-            it.order[k] = it.units[k];
+        while (true) {
+            var c = it.chosen_at[d];
+            while (c < it.units.len) : (c += 1) {
+                if (it.used[c]) continue;
+                // After a later unit, only one it conflicts with: the other
+                // order of two independent units is the same tree.
+                if (d > 0 and c < it.chosen_at[d - 1] and !it.conflicts(it.units[c], it.units[it.chosen_at[d - 1]])) continue;
+                break;
+            }
+            if (c < it.units.len) {
+                it.chosen_at[d] = c;
+                it.used[c] = true;
+                it.order[d] = it.units[c];
+                if (d + 1 == it.kept) {
+                    it.depth = it.kept;
+                    return true;
+                }
+                d += 1;
+                it.chosen_at[d] = 0;
+            } else {
+                if (d == 0) {
+                    it.depth = 0;
+                    return false;
+                }
+                d -= 1;
+                it.used[it.chosen_at[d]] = false;
+                it.chosen_at[d] += 1;
+            }
         }
+    }
+    /// Whether applying `a` and `b` in either order can leave different
+    /// trees: the same sector, the same file's length or metadata, or the
+    /// same name. Names are compared without case, which only adds orders.
+    fn conflicts(it: *const CrashStateIterator, a: Unit, b: Unit) bool {
+        const records = it.before.root.pending.items;
+        const x = records[a.record].op.effect;
+        const y = records[b.record].op.effect;
+        const sector = it.fs.options.sector;
+        return switch (x) {
+            .write => |w| switch (y) {
+                .write => |v| w.inode == v.inode and w.offset / sector + (a.sector orelse 0) == v.offset / sector + (b.sector orelse 0),
+                .length => |l| w.inode == l.inode,
+                else => false,
+            },
+            .length => |l| switch (y) {
+                .write => |v| l.inode == v.inode,
+                .length => |m| l.inode == m.inode,
+                else => false,
+            },
+            .metadata => |m| y == .metadata and y.metadata.inode == m.inode,
+            .entries => |e| switch (y) {
+                .entries => |f| blk: {
+                    for (e.changes[0..e.len]) |c| for (f.changes[0..f.len]) |g| {
+                        if (c.parent == g.parent and std.ascii.eqlIgnoreCase(c.name.bytes, g.name.bytes)) break :blk true;
+                    };
+                    break :blk false;
+                },
+                else => false,
+            },
+        };
     }
     fn allowed(it: *const CrashStateIterator, chosen: []const Unit, unit: Unit) bool {
         const records = it.before.root.pending.items;
@@ -931,23 +1006,6 @@ fn sameStorage(fs: *const Model, other: *const State) bool {
     }
     return true;
 }
-fn unitLess(a: Unit, b: Unit) bool {
-    return a.record < b.record or (a.record == b.record and (a.sector orelse 0) < (b.sector orelse 0));
-}
-fn nextPermutation(items: []Unit) bool {
-    if (items.len < 2) return false;
-    var i = items.len - 1;
-    while (i > 0 and !unitLess(items[i - 1], items[i])) i -= 1;
-    if (i == 0) {
-        std.mem.reverse(Unit, items);
-        return false;
-    }
-    var j = items.len - 1;
-    while (!unitLess(items[i - 1], items[j])) j -= 1;
-    std.mem.swap(Unit, &items[i - 1], &items[j]);
-    std.mem.reverse(Unit, items[i..]);
-    return true;
-}
 pub fn crashStates(fs: *Model, limit: u32) error{OutOfMemory}!CrashStateIterator {
     var units: std.ArrayList(Unit) = .empty;
     errdefer units.deinit(fs.gpa);
@@ -958,13 +1016,17 @@ pub fn crashStates(fs: *Model, limit: u32) error{OutOfMemory}!CrashStateIterator
             for (0..@intCast(count)) |s| try units.append(fs.gpa, .{ .record = i, .sector = s });
         } else try units.append(fs.gpa, .{ .record = i, .sector = null });
     };
-    const indices = try fs.gpa.alloc(usize, units.items.len);
-    errdefer fs.gpa.free(indices);
+    const chosen_at = try fs.gpa.alloc(usize, units.items.len + 1);
+    errdefer fs.gpa.free(chosen_at);
+    @memset(chosen_at, 0);
+    const in_sequence = try fs.gpa.alloc(bool, units.items.len);
+    errdefer fs.gpa.free(in_sequence);
+    @memset(in_sequence, false);
     const order = try fs.gpa.alloc(Unit, units.items.len);
     errdefer fs.gpa.free(order);
     const owned = try units.toOwnedSlice(fs.gpa);
     errdefer fs.gpa.free(owned);
-    return .{ .fs = fs, .before = try fs.snapshot(), .units = owned, .indices = indices, .order = order, .limit = limit };
+    return .{ .fs = fs, .before = try fs.snapshot(), .units = owned, .chosen_at = chosen_at, .used = in_sequence, .order = order, .limit = limit };
 }
 pub fn dump(fs: *const Model, w: *Io.Writer) Io.Writer.Error!void {
     for (fs.root.entries.items) |e| try w.print("{d}/{s} -> {d} {t} {d} bytes\n", .{ e.parent, e.name.bytes, e.inode, fs.root.nodes.items[e.inode].kind, fs.root.nodes.items[e.inode].live.size });
@@ -1012,4 +1074,105 @@ pub fn realPath(fs: *const Model, inode: u32, out: []u8) Error!usize {
         };
     }
     return used_len;
+}
+
+/// Every subset in every order, the states `CrashStateIterator` must reach.
+fn everyOrderCount(fs: *Model) !u32 {
+    var it = try fs.crashStates(std.math.maxInt(u32));
+    defer it.deinit();
+    const n = it.units.len;
+    var count: u32 = 0;
+    var seen: std.ArrayList(Snapshot) = .empty;
+    defer {
+        for (seen.items) |snap| snap.deinit();
+        seen.deinit(fs.gpa);
+    }
+    // Each subset by its bits, each order of it by Heap's algorithm.
+    const order = try fs.gpa.alloc(Unit, n);
+    defer fs.gpa.free(order);
+    var mask: u32 = 0;
+    while (mask < (@as(u32, 1) << @intCast(n))) : (mask += 1) {
+        var k: usize = 0;
+        for (it.units, 0..) |u, i| if (mask & (@as(u32, 1) << @intCast(i)) != 0) {
+            order[k] = u;
+            k += 1;
+        };
+        var c: [16]usize = @splat(0);
+        var i: usize = 0;
+        while (true) {
+            if (try tryOrder(fs, &it, order[0..k], &seen)) count += 1;
+            while (i < k and c[i] >= i) {
+                c[i] = 0;
+                i += 1;
+            }
+            if (i >= k) break;
+            if (i % 2 == 0) std.mem.swap(Unit, &order[0], &order[i]) else std.mem.swap(Unit, &order[c[i]], &order[i]);
+            c[i] += 1;
+            i = 0;
+        }
+    }
+    return count;
+}
+
+/// Whether applying `chosen` in order is legal and reaches a state not seen.
+fn tryOrder(fs: *Model, it: *CrashStateIterator, chosen: []const Unit, seen: *std.ArrayList(Snapshot)) !bool {
+    for (chosen) |u| if (!it.allowed(chosen, u)) return false;
+    const saved = try fs.snapshot();
+    defer saved.deinit();
+    fs.restoreStorage(it.before);
+    defer fs.restoreStorage(saved);
+    try fs.unique();
+    for (chosen) |u| try fs.apply(it.before.root.pending.items[u.record].op.effect, u.sector);
+    try fs.crashed();
+    for (seen.items) |snap| if (fs.sameStorage(snap.root)) return false;
+    try seen.append(fs.gpa, try fs.snapshot());
+    return true;
+}
+
+test "crash states in conflicting orders only are the states of every order" {
+    const gpa = std.testing.allocator;
+    var seed: u64 = 0;
+    while (seed < 40) : (seed += 1) {
+        var source: Source = try .init(gpa, .{ .prng = seed });
+        defer source.deinit();
+        var prng: std.Random.DefaultPrng = .init(seed);
+        const random = prng.random();
+        const fs = try Model.init(gpa, &source, .{ .sector = 2 });
+        defer fs.deinit();
+        try fs.write("a", "old");
+        try fs.mkdir("d");
+        const files = [_][]const u8{ "a", "b", "d/c" };
+        // A few random calls, barriers among them, while the units stay few.
+        var steps: u32 = 0;
+        while (steps < 6) : (steps += 1) {
+            var units: usize = 0;
+            for (fs.root.pending.items) |r| units += if (r.op.effect == .write) 2 else 1;
+            if (units >= 8) break;
+            const name = files[random.uintLessThan(usize, files.len)];
+            switch (random.uintLessThan(u8, 5)) {
+                0 => {
+                    const id = fs.openOrCreate(0, name, .default_file, false) catch continue;
+                    _ = fs.put(id, random.uintLessThan(u64, 3), "xy") catch continue;
+                },
+                1 => fs.rename(0, name, 0, files[random.uintLessThan(usize, files.len)], false) catch continue,
+                2 => fs.remove(0, name, false) catch continue,
+                3 => {
+                    const id = fs.resolve(0, name, true) catch continue;
+                    fs.setLength(id, random.uintLessThan(u64, 4)) catch continue;
+                },
+                else => {
+                    const id = fs.resolve(0, name, true) catch continue;
+                    fs.flushInode(id, if (random.boolean()) .barrier else .writeout) catch continue;
+                },
+            }
+        }
+        var it = try fs.crashStates(std.math.maxInt(u32));
+        defer it.deinit();
+        var canonical: u32 = 0;
+        while (try it.next()) |snap| {
+            snap.deinit();
+            canonical += 1;
+        }
+        try std.testing.expectEqual(try everyOrderCount(fs), canonical);
+    }
 }

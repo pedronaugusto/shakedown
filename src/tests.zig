@@ -8,6 +8,7 @@ test {
     _ = @import("sim/programs/Pipes.zig");
     _ = @import("sim/programs/Heap.zig");
     _ = @import("sim/programs/Model.zig");
+    _ = @import("sim/fs/Model.zig");
     _ = @import("shakedown.zig");
     _ = @import("layer.zig");
     _ = @import("Clock.zig");
