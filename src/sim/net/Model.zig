@@ -52,6 +52,10 @@ pub const Socket = struct {
     /// The simulated process that opened it, closed when it ends; 0 for
     /// the test's own.
     owner: u32 = 0,
+    /// Closed by its owner while its last bytes were still on their way: it
+    /// stays until they arrive and its peer closes, so the peer reads them
+    /// and then the end of the stream, as TCP's orderly close has it.
+    closed: bool = false,
 };
 const Packet = struct {
     from: Handle,
@@ -289,6 +293,7 @@ fn socket(m: *Model, node: NodeId, kind: @FieldType(Socket, "kind"), address_: A
 }
 pub fn get(m: *Model, handle: Handle, node: NodeId) Error!*Socket {
     const s = m.sockets.get(handle) orelse return error.SocketUnconnected;
+    if (s.closed) return error.SocketUnconnected;
     if (s.node != node) return error.SocketUnconnected;
     if (s.timed_out) return error.ConnectionTimedOut;
     if (s.reset) return error.ConnectionResetByPeer;
@@ -319,7 +324,7 @@ fn bound(m: *Model, node: NodeId, addr: Address, kind: @FieldType(Socket, "kind"
 pub fn pair(m: *Model, a: NodeId, b: NodeId, local: bool) Error![2]*Socket {
     const capacity = m.links.getPtr(key(a, b)).?.value.buffer;
     const left = try m.socket(a, .stream, m.address(a), capacity);
-    errdefer m.close(left.handle);
+    errdefer m.abort(left.handle);
     const right = try m.socket(b, .stream, m.address(b), capacity);
     left.peer = right.handle;
     right.peer = left.handle;
@@ -341,8 +346,8 @@ pub fn connectListener(m: *Model, node: NodeId, listener: *Socket, local: bool) 
     if (count >= listener.backlog) return error.ConnectionRefused;
     const endpoints = try m.pair(node, listener.node, local);
     errdefer {
-        m.close(endpoints[0].handle);
-        m.close(endpoints[1].handle);
+        m.abort(endpoints[0].handle);
+        m.abort(endpoints[1].handle);
     }
     endpoints[0].address.setPort(m.next_port);
     m.next_port = if (m.next_port == 65535) 49152 else m.next_port + 1;
@@ -412,6 +417,12 @@ pub fn write(m: *Model, s: *Socket, bytes: []const u8) Error!?usize {
     if (s.kind != .stream or s.send_closed) return error.SocketUnconnected;
     const receiver = m.sockets.get(s.peer orelse return error.SocketUnconnected) orelse return error.ConnectionResetByPeer;
     if (receiver.reset) return error.ConnectionResetByPeer;
+    if (receiver.closed) {
+        // Bytes sent to a closed socket draw a reset.
+        s.reset = true;
+        m.abort(receiver.handle);
+        return error.ConnectionResetByPeer;
+    }
     if (receiver.receive_closed) return error.SocketUnconnected;
     const capacity = @min(receiver.bytes.len, m.links.getPtr(key(s.node, receiver.node)).?.value.buffer);
     const available = capacity -| (receiver.len + receiver.reserved);
@@ -473,7 +484,34 @@ pub fn receive(m: *Model, s: *Socket, out: []u8, peek: bool) ?Received {
     }
     return result;
 }
+/// Closes a socket as its owner does. A connected stream that read all it
+/// was sent closes in order: what it sent still arrives, then its peer
+/// reads the end of the stream; one that leaves bytes unread, or has bytes
+/// on their way to it, resets its peer, as TCP does.
 pub fn close(m: *Model, handle: Handle) void {
+    const s = m.sockets.get(handle) orelse return;
+    if (s.closed) return;
+    const orderly = s.kind == .stream and s.connected and !s.reset and !s.timed_out and s.len == 0 and s.reserved == 0;
+    const peer = if (s.peer) |p| m.sockets.get(p) else null;
+    if (orderly and peer != null and !peer.?.reset) {
+        if (peer.?.closed) {
+            // Both ends closed: nothing is left to deliver to either.
+            m.abort(peer.?.handle);
+            m.abort(handle);
+            return;
+        }
+        s.closed = true;
+        s.send_closed = true;
+        s.receive_closed = true;
+        m.change +%= 1;
+        return;
+    }
+    m.abort(handle);
+}
+
+/// Closes a socket at once: what it had in flight is lost, and its peer
+/// is reset (a node killed, a reset).
+pub fn abort(m: *Model, handle: Handle) void {
     const s = m.sockets.fetchRemove(handle) orelse return;
     var index: usize = 0;
     while (index < m.queue.items.len) {
@@ -494,11 +532,12 @@ pub fn close(m: *Model, handle: Handle) void {
                 child = item.*.handle;
                 break;
             };
-            m.close(child orelse break);
+            m.abort(child orelse break);
         }
     }
     if (s.value.peer) |peer| if (m.sockets.get(peer)) |other| {
-        other.reset = true;
+        // A peer that closed in order is let go with it.
+        if (other.closed) m.abort(peer) else other.reset = true;
     };
     for (s.value.datagrams.items) |p| m.recycle(p);
     s.value.datagrams.clearRetainingCapacity();
@@ -526,7 +565,7 @@ pub fn closeOwned(m: *Model, owner: u32) void {
     while (true) {
         var found: ?Handle = null;
         var it = m.sockets.valueIterator();
-        while (it.next()) |s| if (s.*.owner == owner and (found == null or handleId(s.*.handle) < handleId(found.?))) {
+        while (it.next()) |s| if (s.*.owner == owner and !s.*.closed and (found == null or handleId(s.*.handle) < handleId(found.?))) {
             found = s.*.handle;
         };
         m.close(found orelse break);
@@ -541,7 +580,7 @@ pub fn kill(m: *Model, node: NodeId) void {
             found = s.*.handle;
             break;
         };
-        m.close(found orelse break);
+        m.abort(found orelse break);
     }
 }
 pub fn nextDeadline(m: *Model) ?i64 {

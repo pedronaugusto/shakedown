@@ -92,6 +92,7 @@ fn invoke(comptime name: []const u8, userdata: ?*anyopaque, args: anytype, ret: 
     };
     const fs = disk.model;
     fs.at = c.now(.real);
+    c.touch(Core.Object.disk(e.node), true);
     const local = workingDirectory(c, args);
     const input = inputDigest(fs, local);
     const value = @call(.auto, @field(slots, name), .{ c, fs } ++ local);

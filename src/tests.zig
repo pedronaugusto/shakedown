@@ -44,6 +44,7 @@ test {
     _ = @import("fault_test.zig");
     _ = @import("every_fault_test.zig");
     _ = @import("check_test.zig");
+    _ = @import("explore_test.zig");
     _ = @import("shrink_challenge_test.zig");
     _ = @import("sim_test.zig");
     _ = @import("sim_bugs_test.zig");

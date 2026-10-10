@@ -40,12 +40,16 @@ pub const Case = struct {
     /// its schedules, faults and timings shrink with the case's inputs. It
     /// is torn down when the case ends. Unless the options name one, it
     /// shares the run's watchdog, so a case starts no thread.
+    ///
+    /// Under `explore`, its schedule is the bounded one the search takes
+    /// apart, whatever the options say.
     pub fn sim(c: *Case, options: Sim.Options) Sim.InitError!*Sim {
         var with = options;
         with.source = c.source;
+        if (c.runner.bounded) |bounded| with.schedule = .{ .bounded = bounded };
         if (with.watched_by == null) with.watched_by = &c.runner.watchdog;
         try c.runner.sims.ensureUnusedCapacity(c.runner.gpa, 1);
-        const s = try Sim.init(c.runner.gpa, with);
+        const s = try Sim.init(c.gpa, with);
         c.runner.sims.appendAssumeCapacity(s);
         return s;
     }
@@ -142,7 +146,7 @@ pub fn check(
     }
 }
 
-fn invalid(err: Tape.ParseError) CheckError {
+pub fn invalid(err: Tape.ParseError) CheckError {
     return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.InvalidTape => error.InvalidTape,
@@ -164,7 +168,7 @@ fn seedOf(gpa: Allocator, options: CheckOptions) CheckError!u64 {
 }
 
 /// A variable of the test binary's environment; null outside tests.
-fn environment(gpa: Allocator, name: []const u8) error{OutOfMemory}!?[]u8 {
+pub fn environment(gpa: Allocator, name: []const u8) error{OutOfMemory}!?[]u8 {
     if (!builtin.is_test) return null;
     return std.testing.environ.getAlloc(gpa, name) catch |err| switch (err) {
         error.OutOfMemory => error.OutOfMemory,
@@ -179,31 +183,33 @@ fn environmentNumber(gpa: Allocator, name: []const u8) CheckError!?u64 {
 }
 
 /// The body with its context, behind one function pointer.
-fn Bound(comptime Ctx: type, comptime body: fn (Ctx, *Case) anyerror!void) type {
+pub fn Bound(comptime Ctx: type, comptime body: fn (Ctx, *Case) anyerror!void) type {
     return struct {
         ctx: Ctx,
 
         const Self = @This();
 
-        fn run(erased: *anyopaque, c: *Case) anyerror!void {
+        pub fn run(erased: *anyopaque, c: *Case) anyerror!void {
             const self: *Self = @ptrCast(@alignCast(erased)); // safe: `Runner.body` pairs this function with a pointer to its own struct
             return body(self.ctx, c);
         }
     };
 }
 
-const Outcome = union(enum) { pass, discard, fail: anyerror };
+pub const Outcome = union(enum) { pass, discard, fail: anyerror };
 
 /// Where a failure came from, for the report.
-const Origin = union(enum) {
+pub const Origin = union(enum) {
     regression: usize,
     case: struct { seed: u64, index: u64, passed: u64 },
     replay,
+    /// The run of `explore` that failed, counted from 1.
+    explored: u64,
 };
 
-/// The state of one `check`: the recording source and the arena every case
-/// reuses, and the notes of the final run.
-const Runner = struct {
+/// The state of one `check` or `explore`: the recording source and the
+/// arena every case reuses, and the notes of the final run.
+pub const Runner = struct {
     gpa: Allocator,
     options: CheckOptions,
     source: Source,
@@ -213,12 +219,14 @@ const Runner = struct {
     /// The one watchdog every case's simulations share.
     watchdog: Sim.Watchdog = .init(),
     notes: ?std.ArrayList(u8) = null,
+    /// Under `explore`: the schedule every case's simulations take.
+    bounded: ?Sim.Schedule.Bounded = null,
     /// The final run's error return trace, taken before the error is
     /// handled and its frames are let go.
     trace: [32]usize = undefined,
     trace_len: usize = 0,
 
-    fn init(gpa: Allocator, options: CheckOptions) error{OutOfMemory}!Runner {
+    pub fn init(gpa: Allocator, options: CheckOptions) error{OutOfMemory}!Runner {
         return .{
             .gpa = gpa,
             .options = options,
@@ -234,7 +242,7 @@ const Runner = struct {
         r.trace_len = n;
     }
 
-    fn deinit(r: *Runner) void {
+    pub fn deinit(r: *Runner) void {
         r.source.deinit();
         r.arena.deinit();
         r.sims.deinit(r.gpa);
@@ -244,7 +252,7 @@ const Runner = struct {
     }
 
     /// One case from `backend`. Its tape stays in `r.source` until the next.
-    fn once(r: *Runner, backend: Source.Backend) error{OutOfMemory}!Outcome {
+    pub fn once(r: *Runner, backend: Source.Backend) error{OutOfMemory}!Outcome {
         r.source.restart(backend);
         _ = r.arena.reset(.retain_capacity);
         var c: Case = .{ .source = &r.source, .gpa = r.arena.allocator(), .runner = r };
@@ -261,7 +269,7 @@ const Runner = struct {
         return .pass;
     }
 
-    fn replayOnly(r: *Runner, choices: []const u64) CheckError!void {
+    pub fn replayOnly(r: *Runner, choices: []const u64) CheckError!void {
         switch (try r.once(.{ .replay = choices })) {
             .pass => return,
             .discard => return error.Unsatisfiable,
@@ -270,7 +278,7 @@ const Runner = struct {
     }
 
     /// Shrinks the failing case in `r.source`, then reports it.
-    fn failed(r: *Runner, err: anyerror, origin: Origin) CheckError {
+    pub fn failed(r: *Runner, err: anyerror, origin: Origin) CheckError {
         const first = r.source.tape();
         const choices = r.gpa.dupe(u64, first.choices) catch return error.OutOfMemory;
         defer r.gpa.free(choices);
@@ -322,6 +330,7 @@ fn print(w: *std.Io.Writer, err: anyerror, origin: Origin, choices: []const u64,
         .regression => |i| try w.print("shakedown: property failed on regression {d}", .{i}),
         .case => |c| try w.print("shakedown: property failed after {d} passing cases (seed 0x{x}, case {d})", .{ c.passed, c.seed, c.index }),
         .replay => try w.writeAll("shakedown: property failed on SHAKEDOWN_TAPE"),
+        .explored => |run| try w.print("shakedown: property failed on run {d} of the search", .{run}),
     }
     if (shrink_runs > 0) try w.print(", shrunk in {d} runs", .{shrink_runs});
     try w.print(": error.{t}\n", .{err});

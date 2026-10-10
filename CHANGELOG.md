@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- `Case.sim` allocates the simulation from the case's arena: a case that
+  allocates and frees heavily in one long simulation keeps its peak until the
+  case ends. A search or a property pays no allocator per case for it.
+- A connected stream that closes having read all it was sent closes in order:
+  its peer reads what was sent, then the end of the stream; a write to it then
+  resets the writer. A close leaving bytes unread resets the peer, as before.
+
 - `Sim` spawns processes: `std.process.spawn` and `run` start the programs
   registered on `Sim.programs()`, and fail with `FileNotFound` for any other,
   where every process call failed with `Unexpected`. `TaskReport.Waiting` adds
@@ -60,6 +67,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a call of its own, so steps and counts of code that batches include them.
 
 ### Added
+
+- `explore`: a property run once for every way its choices can go, its
+  simulations on the new `Sim.Schedule.bounded` (preemption-bounded, every
+  switch a choice), with dynamic partial-order reduction and sleep sets;
+  `ExploreOptions.memory = .per_process` takes nodes and simulated processes for
+  separate memories. Finds the four planted bugs and proves their fixes within
+  two preemptions. `Source.Chooser` is the backend a search drives a source with.
 
 - Simulated processes (`Sim.programs()`, `Sim.Options.programs`): a real
   `main` registered by name runs as a process when `std.process` spawns it, with

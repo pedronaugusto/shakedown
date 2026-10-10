@@ -13,7 +13,7 @@ const shakedown = @import("shakedown");
 
 const WorkloadError = blk: {
     var E: type = error{};
-    for (.{ netRpc, netGossip, fsCycleSim, fsCycleThreaded, fsCrashStates, fsSnapshot, nowThreaded, nowLayer, nowClock, nowFaultIo, checkCancelThreaded, checkCancelFaultIo, preadSim, preadThreaded, preadLayer, preadClock, preadFaultEmpty, preadFaultTrace, preadFaultPlan, allocRaw, allocCounting, allocFailing, allocFaultIo, allocQuarantine, randomThreaded, randomFaultIo, randomFaultSeeded, batchThreaded, batchFaultIo, everyFaultSweep, simNow, simSwitchFibers, simSwitchThreads, simSpawn, simContentionRandom, simContentionPct, simTimers, simNew, simDeterminism, simReplay, checkCases, checkSimCases, checkShrink }) |callback| {
+    for (.{ netRpc, netGossip, fsCycleSim, fsCycleThreaded, fsCrashStates, fsSnapshot, nowThreaded, nowLayer, nowClock, nowFaultIo, checkCancelThreaded, checkCancelFaultIo, preadSim, preadThreaded, preadLayer, preadClock, preadFaultEmpty, preadFaultTrace, preadFaultPlan, allocRaw, allocCounting, allocFailing, allocFaultIo, allocQuarantine, randomThreaded, randomFaultIo, randomFaultSeeded, batchThreaded, batchFaultIo, everyFaultSweep, simNow, simSwitchFibers, simSwitchThreads, simSpawn, simContentionRandom, simContentionPct, simTimers, simNew, simDeterminism, simReplay, checkCases, checkSimCases, checkShrink, exploreRuns, exploreReduced }) |callback| {
         E = E || @typeInfo(@typeInfo(@TypeOf(callback)).@"fn".return_type.?).error_union.error_set;
     }
     break :blk E;
@@ -75,6 +75,8 @@ const rows = [_]Row{
     .{ .name = "check/sum-cases", .unit = "op", .run = checkCases },
     .{ .name = "check/sim-cases", .unit = "op", .run = checkSimCases },
     .{ .name = "check/shrink-distinct", .unit = "op", .run = checkShrink },
+    .{ .name = "explore/mutex-4x4", .unit = "run", .initial = 64, .run = exploreRuns },
+    .{ .name = "explore/nodes-3-reduced", .unit = "search", .initial = 1, .run = exploreReduced },
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -507,6 +509,99 @@ fn emptySim(_: void, c: *shakedown.Case) !void {
 
 fn checkSimCases(ctx: *Context, ops: u64) !void {
     try shakedown.check(ctx.gpa, {}, emptySim, .{ .cases = @intCast(ops), .seed = 1 });
+}
+
+/// Four tasks, each locking a shared mutex around a call four times: a
+/// search far larger than any sample, cut at `ops` runs.
+fn lockers(io: Io) !void {
+    const Shared = struct {
+        mutex: Io.Mutex = .init,
+        count: u32 = 0,
+        fn work(s: *@This(), inner: Io) Io.Cancelable!void {
+            for (0..4) |_| {
+                try s.mutex.lock(inner);
+                defer s.mutex.unlock(inner);
+                try inner.checkCancel();
+                s.count += 1;
+            }
+        }
+    };
+    var shared: Shared = .{};
+    var group: Io.Group = .init;
+    for (0..4) |_| try group.concurrent(io, Shared.work, .{ &shared, io });
+    try group.await(io);
+    if (shared.count != 16) return error.BenchFailed;
+}
+
+fn lockersProperty(_: void, c: *shakedown.Case) !void {
+    const sim = try c.sim(.{});
+    if (sim.run(lockers, .{sim.io()}) != .finished) return error.BenchFailed;
+}
+
+fn exploreRuns(ctx: *Context, ops: u64) !void {
+    const result = try shakedown.explore(ctx.gpa, {}, lockersProperty, .{ .max_runs = ops });
+    if (result.runs != ops) return error.BenchFailed;
+}
+
+/// Three nodes that each work on their own disk, then report to a fourth:
+/// a whole search under `per_process`, where only the reports' order counts.
+fn reporters(io: Io, sim: *shakedown.Sim) !void {
+    const address: Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 10, 0, 0, 9 }, .port = 7000 } };
+    const Report = struct {
+        fn send(inner: Io, id: u8, to: Io.net.IpAddress) !void {
+            for (0..2) |i| {
+                var name: [8]u8 = undefined;
+                try Io.Dir.cwd().writeFile(inner, .{ .sub_path = try std.mem.print(&name, "f{d}", .{i}), .data = "x" });
+            }
+            var stream = while (true) break to.connect(inner, .{ .mode = .stream }) catch |err| switch (err) {
+                error.ConnectionRefused => {
+                    try inner.sleep(.fromMilliseconds(1), .awake);
+                    continue;
+                },
+                else => return err,
+            };
+            defer stream.close(inner);
+            var buffer: [8]u8 = undefined;
+            var w = stream.writer(inner, &buffer);
+            try w.interface.writeByte(id);
+            try w.interface.flush();
+        }
+        fn collect(inner: Io, at: Io.net.IpAddress) !void {
+            var server = try at.listen(inner, .{});
+            defer server.deinit(inner);
+            for (0..3) |_| {
+                var stream = try server.accept(inner);
+                defer stream.close(inner);
+                var buffer: [8]u8 = undefined;
+                var r = stream.reader(inner, &buffer);
+                _ = try r.interface.takeByte();
+            }
+        }
+    };
+    const collector = try sim.node("collector", .{ .addresses = &.{address} });
+    try collector.restart(Report.collect, .{ collector.io(), address });
+    for (0..3) |i| {
+        var name: [8]u8 = undefined;
+        const n = try sim.node(try std.mem.print(&name, "n{d}", .{i}), .{});
+        try n.restart(Report.send, .{ n.io(), @as(u8, @intCast(i)), address });
+    }
+    try io.sleep(.fromSeconds(60), .awake);
+}
+
+fn reportersProperty(_: void, c: *shakedown.Case) !void {
+    const sim = try c.sim(.{});
+    switch (sim.run(reporters, .{ sim.io(), sim })) {
+        .finished => {},
+        else => return error.BenchFailed,
+    }
+}
+
+fn exploreReduced(ctx: *Context, ops: u64) !void {
+    for (0..ops) |_| {
+        const result = try shakedown.explore(ctx.gpa, {}, reportersProperty, .{ .preemptions = 1, .memory = .per_process });
+        if (!result.complete) return error.BenchFailed;
+        ctx.sink +%= result.runs;
+    }
 }
 
 fn distinctBelowThree(_: void, c: *shakedown.Case) !void {

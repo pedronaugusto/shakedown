@@ -91,6 +91,17 @@ live: u32 = 0,
 ready: std.ArrayList(*Task) = .empty,
 /// FIFO: where the queue in `ready` starts.
 ready_head: usize = 0,
+/// Bounded: the ids of the tasks a choice is between, room for all of them.
+picks: std.ArrayList(u32) = .empty,
+/// Bounded: the task the last preemption chose to run next.
+forced: ?*Task = null,
+/// Bounded: preemptions and spurious wakes taken so far.
+preempted: u8 = 0,
+woke_spuriously: u8 = 0,
+/// Whether a search makes the source's choices, and hears what steps touch.
+searched: bool = false,
+/// The first of the actor numbers the source gave this simulation.
+actor_base: u32 = 0,
 ready_seq: u64 = 0,
 current: ?*Task = null,
 driver: executor.Context,
@@ -207,6 +218,8 @@ pub const Task = struct {
     seq: u64 = 0,
     priority: u64 = 0,
     spawned_at: usize = 0,
+    /// Under a bounded schedule, how many times the task filled random bytes.
+    random_draws: u64 = 0,
     /// Where the task last called into the simulation.
     call_site: usize = 0,
     report: TaskReport = .{ .id = ids.outside, .spawned_at = 0, .waiting = .none },
@@ -232,7 +245,7 @@ pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
     if (options.net) |net_options| try Network.validate(net_options.default_link);
     switch (options.schedule) {
         .pct => |pct| if (pct.depth < 1 or pct.depth > max_depth or pct.length < 1) return error.InvalidSchedule,
-        .fifo, .random => {},
+        .fifo, .random, .bounded => {},
     }
     const kind: executor.Kind = switch (options.executor) {
         .auto => executor.best orelse return error.ExecutorUnavailable,
@@ -264,8 +277,10 @@ pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
             for (c.change_points[0..c.change_count]) |*point| point.* = 1 + c.draw(pct.length - 1);
             std.mem.sort(u64, c.change_points[0..c.change_count], {}, std.sort.asc(u64));
         },
-        .fifo, .random => {},
+        .fifo, .random, .bounded => {},
     }
+    c.searched = source.searched();
+    c.actor_base = source.actorSpace();
     return c;
 }
 
@@ -288,6 +303,7 @@ pub fn deinit(c: *Core) void {
     c.tasks.deinit(c.gpa);
     c.idle.deinit(c.gpa);
     c.ready.deinit(c.gpa);
+    c.picks.deinit(c.gpa);
     c.reports.deinit(c.gpa);
     c.trace.deinit();
     if (c.fs) |fs| {
@@ -441,7 +457,10 @@ pub fn spawn(
     c.live += 1;
     switch (c.options.schedule) {
         .pct => |pct| t.priority = pct.depth + c.draw(1 << 20),
-        .fifo, .random => {},
+        .fifo, .random, .bounded => {},
+    }
+    if (c.searched) {
+        if (c.current) |parent| c.source.spawned(c.actorOf(parent), c.actorOf(t));
     }
     switch (start) {
         .ready => c.makeReady(t),
@@ -458,6 +477,7 @@ fn newTask(c: *Core) SpawnError!*Task {
     try c.tasks.ensureUnusedCapacity(c.gpa, 1);
     try c.idle.ensureTotalCapacity(c.gpa, c.tasks.items.len + 1);
     try c.ready.ensureTotalCapacity(c.gpa, c.tasks.items.len + 1);
+    try c.picks.ensureTotalCapacity(c.gpa, c.tasks.items.len + 2);
     const t = try c.gpa.create(Task);
     errdefer c.gpa.destroy(t);
     const stack_size = c.options.stack_size.raw();
@@ -520,6 +540,17 @@ pub threadlocal var running_core: ?*Core = null;
 fn finish(c: *Core, t: *Task) void {
     if (t.timer_armed) c.disarm(t);
     c.live -= 1;
+    if (c.searched) {
+        // The step that ends a task: its code since its last call, and
+        // what its end tells others.
+        if (c.options.schedule == .bounded) c.touch(c.memoryOf(t), true);
+        c.touch(Object.task(c.actorOf(t)), true);
+        switch (t.job) {
+            .member => c.touch(Object.group(@intFromPtr(t.group.?)), true), // safe: the address only names the group
+            .program => |p| c.touch(Object.process(p.pid), true),
+            else => {},
+        }
+    }
     switch (t.job) {
         .future => {
             t.state = .done;
@@ -579,7 +610,7 @@ pub fn makeReady(c: *Core, t: *Task) void {
             }
             c.ready.appendAssumeCapacity(t);
         },
-        .random => c.ready.appendAssumeCapacity(t),
+        .random, .bounded => c.ready.appendAssumeCapacity(t),
         .pct => {
             c.ready.appendAssumeCapacity(t);
             siftUp(c.ready.items, c.ready.items.len - 1);
@@ -608,6 +639,19 @@ fn pickReady(c: *Core) ?*Task {
         .random => {
             const index = if (n == 1) 0 else c.draw(n - 1);
             return c.ready.swapRemove(@intCast(index));
+        },
+        .bounded => {
+            if (c.forced) |t| {
+                c.forced = null;
+                const at = std.mem.findScalar(*Task, c.ready.items, t).?;
+                return c.ready.orderedRemove(at);
+            }
+            if (n == 1) return c.ready.orderedRemove(0);
+            c.picks.clearRetainingCapacity();
+            for (c.ready.items) |t| c.picks.appendAssumeCapacity(c.actorOf(t));
+            const index = c.source.pick(c.picks.items, false);
+            c.noteDecision(index);
+            return c.ready.orderedRemove(@intCast(index));
         },
         .pct => {
             const items = c.ready.items;
@@ -660,6 +704,7 @@ pub fn dispatch(c: *Core, from: *executor.Context) void {
         c.current = n;
         n.state = .running;
         c.running.store(n.id, .monotonic);
+        if (c.searched) c.source.step(c.actorOf(n));
         break :to &n.ctx;
     } else to: {
         c.current = null;
@@ -801,7 +846,7 @@ fn unready(c: *Core, t: *Task) void {
     const items = c.ready.items;
     const at = std.mem.findScalarPos(*Task, items, c.ready_head, t) orelse return;
     switch (c.options.schedule) {
-        .fifo, .random => _ = c.ready.orderedRemove(at),
+        .fifo, .random, .bounded => _ = c.ready.orderedRemove(at),
         .pct => {
             items[at] = items[items.len - 1];
             c.ready.items.len -= 1;
@@ -1077,7 +1122,9 @@ pub fn enter(c: *Core, call_site: usize, yields: bool) Call {
         c.capture(t);
         c.abandon(t, .{ .stuck = t.report });
     }
-    if (c.next_change < c.change_count and c.steps >= c.change_points[c.next_change]) {
+    if (c.options.schedule == .bounded) {
+        c.preemptionPoint(t);
+    } else if (c.next_change < c.change_count and c.steps >= c.change_points[c.next_change]) {
         // A PCT change point: the running task drops below every other.
         t.priority = c.change_count - c.next_change;
         c.next_change += 1;
@@ -1086,6 +1133,99 @@ pub fn enter(c: *Core, call_site: usize, yields: bool) Call {
         c.yield(t);
     }
     return .{ .task = t, .step = step, .node = node };
+}
+
+/// Under a bounded schedule, before every call a task makes: the step it
+/// ran so far touched its memory, and, while it may still be preempted and
+/// another task can run, the source chooses whether it goes on.
+fn preemptionPoint(c: *Core, t: *Task) void {
+    if (c.searched) {
+        c.touch(c.memoryOf(t), true);
+        // A plan's counters are shared by every call it sees.
+        if (c.fault_io != null) c.touch(Object.faults, true);
+    }
+    const bound = c.options.schedule.bounded;
+    if (c.preempted >= bound.preemptions or c.readyCount() == 0) {
+        if (c.searched) c.source.step(c.actorOf(t));
+        return;
+    }
+    c.picks.clearRetainingCapacity();
+    c.picks.appendAssumeCapacity(c.actorOf(t));
+    for (c.ready.items) |r| c.picks.appendAssumeCapacity(c.actorOf(r));
+    const index = c.source.pick(c.picks.items, true);
+    c.noteDecision(index);
+    if (index == 0) {
+        if (c.searched) c.source.step(c.actorOf(t));
+        return;
+    }
+    c.preempted += 1;
+    c.forced = c.ready.items[@intCast(index - 1)];
+    c.yield(t);
+}
+
+fn noteDecision(c: *Core, choice: u64) void {
+    c.decision = std.hash.int((c.decision orelse 0) ^ choice);
+}
+
+/// Under a bounded schedule, whether a futex wait wakes at once with no
+/// wake: a choice while the run has spurious wakes left.
+pub fn spurious(c: *Core) bool {
+    switch (c.options.schedule) {
+        .bounded => |bound| {
+            if (c.woke_spuriously >= bound.spurious_wakes) return false;
+            if (c.draw(1) == 0) return false;
+            c.woke_spuriously += 1;
+            return true;
+        },
+        else => return c.chance(c.options.spurious_wake_per_million),
+    }
+}
+
+/// What a search knows a step touched, named the same in every run.
+pub const Object = struct {
+    const kind_shift = 60;
+    pub const faults: u64 = 1 << kind_shift;
+    pub const network: u64 = 2 << kind_shift;
+    pub const pipes: u64 = 3 << kind_shift;
+    pub fn memory(domain: u64) u64 {
+        return (4 << kind_shift) | (domain & mask);
+    }
+    pub fn futex(address: usize) u64 {
+        return (5 << kind_shift) | (@as(u64, address) & mask);
+    }
+    pub fn task(actor: u32) u64 {
+        return (6 << kind_shift) | @as(u64, actor);
+    }
+    pub fn group(address: usize) u64 {
+        return (7 << kind_shift) | (@as(u64, address) & mask);
+    }
+    pub fn disk(node: NodeId) u64 {
+        return (8 << kind_shift) | @as(u64, node.raw());
+    }
+    pub fn process(pid: u32) u64 {
+        return (9 << kind_shift) | @as(u64, pid);
+    }
+    const mask = (1 << kind_shift) - 1;
+};
+
+/// The number a search knows task `t` by.
+pub fn actorOf(c: *const Core, t: *const Task) u32 {
+    return c.actor_base | t.id.raw();
+}
+
+/// The memory a task's steps touch, as `Bounded.memory` says it is shared.
+fn memoryOf(c: *const Core, t: *const Task) u64 {
+    return switch (c.options.schedule.bounded.memory) {
+        .shared => Object.memory(0),
+        .per_process => Object.memory((@as(u64, t.node.raw()) << 32) | (if (t.process) |p| p.pid else 0)),
+    };
+}
+
+/// The running task's step touched `object`, for a search.
+pub fn touch(c: *Core, object: u64, write: bool) void {
+    if (!c.searched) return;
+    const t = c.current orelse return;
+    c.source.touch(c.actorOf(t), object, write);
 }
 
 /// The end of a call: its record in the trace.

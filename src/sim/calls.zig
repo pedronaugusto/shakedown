@@ -110,6 +110,7 @@ const slots = struct {
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("await");
         const target: *Task = @ptrCast(@alignCast(any_future)); // safe: a future of this simulation is its task
+        c.touch(Core.Object.task(c.actorOf(target)), true);
         if (target.state != .done) {
             target.awaiter = t;
             if (c.block(t, .{ .task = target }, true) == .canceled) {
@@ -131,6 +132,7 @@ const slots = struct {
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("cancel");
         const target: *Task = @ptrCast(@alignCast(any_future)); // safe: a future of this simulation is its task
+        c.touch(Core.Object.task(c.actorOf(target)), true);
         c.requestCancel(target);
         target.awaiter = t;
         while (target.state != .done) _ = c.block(t, .{ .task = target }, false);
@@ -182,6 +184,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("Group.await");
+        c.touch(Core.Object.group(@intFromPtr(group)), true); // safe: the address only names the group
         startDeferred(c, group);
         defer group.token.raw = null;
         if (group.state == 0) return c.record(.groupAwait, e, 0);
@@ -201,6 +204,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("Group.cancel");
+        c.touch(Core.Object.group(@intFromPtr(group)), true); // safe: the address only names the group
         startDeferred(c, group);
         cancelMembers(c, group);
         group.token.raw = t;
@@ -273,6 +277,7 @@ const slots = struct {
     pub fn futexWake(userdata: ?*anyopaque, ptr: *const u32, max_waiters: u32) void {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), true);
+        c.touch(Core.Object.futex(@intFromPtr(ptr)), true); // safe: the address only identifies the futex
         const woken = c.wakeFutex(@intFromPtr(ptr), max_waiters); // safe: the address only identifies the futex
         c.record(.futexWake, e, woken);
     }
@@ -452,10 +457,11 @@ fn noTerminal(comptime call: IoCall, userdata: ?*anyopaque) Io.Cancelable!bool {
 
 /// A futex wait from task `t`, after its cancelation point.
 fn wait(c: *Core, t: *Task, ptr: *const u32, expected: u32, timeout: Io.Timeout, cancelable: bool) Core.Wake {
+    c.touch(Core.Object.futex(@intFromPtr(ptr)), true); // safe: the address only identifies the futex
     if (@atomicLoad(u32, ptr, .acquire) != expected) return .woken;
     const deadline = c.deadline(timeout);
     if (deadline == .due) return .timeout;
-    if (c.chance(c.options.spurious_wake_per_million)) {
+    if (c.spurious()) {
         // A spurious wake, as std allows: others may run, then it returns.
         c.yield(t);
         return .spurious;
@@ -481,6 +487,15 @@ fn wait(c: *Core, t: *Task, ptr: *const u32, expected: u32, timeout: Io.Timeout,
 }
 
 fn fill(c: *Core, buffer: []u8) void {
+    if (c.options.schedule == .bounded) if (c.current) |t| {
+        // Searched orders differ in which task draws first: each task's
+        // bytes are its own stream, so one task's draws never move
+        // another's.
+        var prng: std.Random.Xoshiro256 = .init(c.options.seed ^ std.hash.int(@as(u64, c.actorOf(t))) ^ (t.random_draws *% 0x9e37_79b9_7f4a_7c15));
+        t.random_draws += 1;
+        prng.fill(buffer);
+        return;
+    };
     var rest = buffer;
     while (rest.len > 0) {
         const word: [8]u8 = @bitCast(std.mem.nativeToLittle(u64, c.draw(std.math.maxInt(u64))));
@@ -488,6 +503,10 @@ fn fill(c: *Core, buffer: []u8) void {
         @memcpy(rest[0..n], word[0..n]);
         rest = rest[n..];
     }
+}
+
+fn touchGroup(c: *Core, group: *Io.Group) void {
+    c.touch(Core.Object.group(@intFromPtr(group)), true); // safe: the address only names the group
 }
 
 fn spawnMember(
@@ -499,6 +518,7 @@ fn spawnMember(
     state: Core.Start,
     spawned_at: usize,
 ) Core.SpawnError!*Task {
+    touchGroup(c, group);
     const t = try c.spawn(.{ .member = start }, context, context_alignment, 0, .@"1", state);
     t.group = group;
     t.spawned_at = spawned_at;
@@ -569,8 +589,15 @@ fn failed(comptime tag: Io.Operation.Tag) Io.Operation.Result {
 /// operation on the network model, a stream of a pipe on the pipes, the
 /// rest at once.
 fn attempt(c: *Core, node: Model.NodeId, op: Io.Operation) ?Io.Operation.Result {
-    if (net_calls.isNetwork(op) and c.options.net != null) return net_calls.perform(c, node, op);
-    if (process_calls.isPipe(op)) return process_calls.perform(c, op);
+    if (net_calls.isNetwork(op) and c.options.net != null) {
+        c.touch(Core.Object.network, true);
+        return net_calls.perform(c, node, op);
+    }
+    if (process_calls.isPipe(op)) {
+        c.touch(Core.Object.pipes, true);
+        return process_calls.perform(c, op);
+    }
+    c.touch(Core.Object.disk(node), true);
     return perform(c, op);
 }
 

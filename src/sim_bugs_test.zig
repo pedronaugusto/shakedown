@@ -24,6 +24,20 @@ fn failure(comptime property: anytype, cases: u32) !?shakedown.CheckReport {
     return null;
 }
 
+/// Runs `property` under `explore`: the failure, which the test frees, or
+/// null when the search completed without one.
+fn searched(comptime property: anytype, options: shakedown.ExploreOptions) !?shakedown.CheckReport {
+    var report: shakedown.CheckReport = undefined;
+    var with = options;
+    with.diagnostics = &report;
+    const result = shakedown.explore(testing.allocator, {}, property, with) catch |err| switch (err) {
+        error.PropertyFailed => return report,
+        else => return err,
+    };
+    try testing.expect(result.complete);
+    return null;
+}
+
 /// The choices a tape holds that are not 0: the decisions that had to go
 /// one particular way.
 fn decisions(tape: []const u64) usize {
@@ -284,4 +298,28 @@ test "an ABA in a lock-free stack, found and shrunk; a versioned head passes" {
     try testing.expectEqual(error.NodeInTwoPlaces, report.err);
     try testing.expect(decisions(report.tape) <= 6);
     try testing.expectEqual(@as(?shakedown.CheckReport, null), try failure(Stack.versioned, 300));
+}
+
+// The same bugs under `explore`: each is found within two preemptions, and
+// each fix is proven within them, every schedule searched.
+
+test "explore finds 0.16's lost cancel, and proves 0.17's condition within the bound" {
+    var report = (try searched(Journal(Condition016).property, .{})) orelse return error.BugNotFound;
+    defer report.deinit();
+    try testing.expectEqual(error.Deadlock, report.err);
+    try testing.expectEqual(@as(?shakedown.CheckReport, null), try searched(Journal(Io.Condition).property, .{}));
+}
+
+test "explore finds the lost wake-up, and proves the fixed inbox within the bound" {
+    var report = (try searched(Inbox.lossy, .{})) orelse return error.BugNotFound;
+    defer report.deinit();
+    try testing.expectEqual(error.Deadlock, report.err);
+    try testing.expectEqual(@as(?shakedown.CheckReport, null), try searched(Inbox.sound, .{}));
+}
+
+test "explore finds the ABA, and proves the versioned stack within the bound" {
+    var report = (try searched(Stack.untagged, .{})) orelse return error.BugNotFound;
+    defer report.deinit();
+    try testing.expectEqual(error.NodeInTwoPlaces, report.err);
+    try testing.expectEqual(@as(?shakedown.CheckReport, null), try searched(Stack.versioned, .{}));
 }

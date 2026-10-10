@@ -215,6 +215,8 @@ fn closeSlot(comptime inner: @FieldType(Io.VTable, "fileClose")) @FieldType(Io.V
                 if (process != null and standardIndex(file.handle) != null) break;
             } else return inner(u, files);
             const e = c.enter(@returnAddress(), true);
+            c.touch(Core.Object.pipes, true);
+            c.touch(Core.Object.disk(e.node), true);
             var h: std.hash.Wyhash = .init(0);
             const disk = c.disk(e.node);
             for (files) |file| {
@@ -247,6 +249,7 @@ fn pipeCall(comptime name: []const u8, c: *Core, file: Io.File, ret: usize) Retu
         c.record(call, e, digestOf(error.Canceled));
         return error.Canceled;
     };
+    c.touch(Core.Object.pipes, true);
     const end: u64 = Pipes.id(file.handle) orelse std.math.maxInt(u64);
     const value: R = pipeAnswer(name, c, file);
     c.record(call, e, std.hash.int(end) ^ switch (@typeInfo(R)) {
@@ -358,7 +361,9 @@ fn spawn(c: *Core, e: Core.Call, options: std.process.SpawnOptions, ret: usize) 
     const m = &c.processes;
     const parent = c.processOf();
     const environ = options.environ_map orelse if (parent) |p| &p.inherited else &m.environ;
+    c.touch(Core.Object.pipes, true);
     const p = try m.make(program, e.node, options.argv, path, environ);
+    c.touch(Core.Object.process(p.pid), true);
     errdefer {
         m.pipes.closeOwned(p.pid);
         if (c.disk(e.node)) |disk| disk.model.closeOwned(p.pid);
@@ -494,6 +499,7 @@ const slots = struct {
             c.record(.childWait, e, digestOf(error.Unexpected));
             return error.Unexpected;
         };
+        c.touch(Core.Object.process(p.pid), true);
         while (p.term == null) {
             if (c.block(t, .{ .process = p.pid }, true) == .canceled) {
                 c.record(.childWait, e, digestOf(error.Canceled));
@@ -510,7 +516,9 @@ const slots = struct {
     pub fn childKill(userdata: ?*anyopaque, child: *std.process.Child) void {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), true);
+        c.touch(Core.Object.pipes, true);
         if (processOfChild(c, child)) |p| {
+            c.touch(Core.Object.process(p.pid), true);
             c.endProcess(p, Processes.killed());
             c.processes.reap(p);
         }

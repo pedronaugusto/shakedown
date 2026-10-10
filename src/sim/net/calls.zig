@@ -94,8 +94,8 @@ const slots = struct {
         errdefer {
             if (m.sockets.get(handle)) |left| {
                 const peer = left.peer;
-                m.close(handle);
-                if (peer) |p| m.close(p);
+                m.abort(handle);
+                if (peer) |p| m.abort(p);
             }
         }
         const deadline = c.deadline(o.timeout);
@@ -150,8 +150,8 @@ const slots = struct {
         const handle = s.handle;
         errdefer {
             const peer = s.peer;
-            m.close(handle);
-            if (peer) |p| m.close(p);
+            m.abort(handle);
+            if (peer) |p| m.abort(p);
         }
         while (!(try m.get(handle, node)).connected) try wait(c, c.current, .never);
         return handle;
@@ -227,6 +227,7 @@ fn invoke(comptime name: []const u8, user: ?*anyopaque, args: anytype, ret: usiz
         if (return_type == void) return;
         return error.Unexpected;
     }
+    c.touch(Core.Object.network, true);
     const input = inputs(e.node, args);
     const result = @call(.auto, @field(slots, name), .{ c, e.node } ++ args);
     if (comptime @typeInfo(@TypeOf(result)) == .error_union) {

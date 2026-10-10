@@ -1,8 +1,7 @@
 # shakedown
 
-Work in progress: network simulation, simulated processes, stateful models and
-bounded linearizability checking are implemented. Exhaustive schedule search is
-still planned.
+Work in progress: network simulation, simulated processes, exhaustive schedule
+search, stateful models and bounded linearizability checking are implemented.
 
 shakedown tests Zig code written against `std.Io`. A `Sim` is a simulated `Io`
 that runs the code's tasks one at a time and owns their time, so one seed
@@ -259,6 +258,39 @@ and the count. Under `zig build test --fuzz` the same property runs on the
 fuzzer's input instead, with the regressions as its corpus, and a failure it
 finds prints as a tape. `corpus.fromTape` turns any tape into such an input.
 
+### Exhaustive search
+
+`explore(gpa, ctx, body, options)` runs the same body once for every way its
+choices can go, depth first, where `check` samples them: a stateless model
+checker over the property's own tape. A choice with more than `max_branch`
+alternatives (16 by default: a latency, a byte of `random`, a fault's chance)
+keeps its simplest value and is counted in `Exploration.held`; the search spans
+the small ones, schedules first. A simulation made with `Case.sim` takes the
+bounded schedule (`Sim.Schedule.bounded`): before every call a task makes while
+another can run, the search chooses whether it goes on, at most `preemptions`
+times a run (2 by default, CHESS's bound), and whenever a task waits, which runs
+next; spurious wakes are choices too, at most `spurious_wakes`. `explore` returns
+the runs it made and whether the search was complete within `max_runs`; a
+failing run is shrunk and reported as `check` reports it, and
+`SHAKEDOWN_TAPE` replays it under the same schedule. A body whose choices
+change between runs of one tape fails with `Nondeterministic`.
+
+Orders that differ only in steps that cannot affect each other are run once
+(dynamic partial-order reduction with sleep sets, kept sound under the
+preemption bound). Two steps affect each other when they touch one simulated
+object (a futex, a task, a group, a disk, the network, the pipes, a process)
+or one memory. Memory is invisible to the simulation, so `memory = .shared`, the
+default, takes every step of every task to touch the same memory: every order
+of steps of different tasks is searched. With `.per_process`, a simulated
+process and each node's own tasks are separate memories, as separate address
+spaces are, and their steps are ordered only by what passes through `Io`: in the
+package's own test, two workers on two nodes reporting to a third take 41 runs
+instead of 8048. A test whose tasks on different nodes write memory of its own
+(a history for `linearizable`, a fake program's recorder) shares that memory
+and keeps `.shared`. Under `Case.sim` a simulation allocates from the case's
+arena, so a search pays no allocator per run: 53k runs a second of four tasks
+contending a mutex on an M3.
+
 ### Simulation
 
 `Sim` is one simulated `Io`. Its tasks run one at a time, on fibers of their own
@@ -274,7 +306,8 @@ sleeps and timeouts, and `random` run on it unchanged. Every call that can retur
 than one behaviour the simulation draws one: whether `async` runs the function
 at once or starts a task, a spurious futex wake (1% by default), a wake and a
 cancel landing together (reporting the cancel hands the wake on to the next
-waiter), and, with `yield_per_million`, a switch at any call. Each draw is made
+waiter), and, with `yield_per_million`, a switch at any call. The `bounded`
+schedule makes every switch a choice (see Exhaustive search). Each draw is made
 only when there is a choice, so a tape holds only decisions that could have
 gone another way, and a `Case`'s simulation (`Case.sim`) shrinks its schedule
 with the case's inputs.
@@ -390,8 +423,11 @@ Unsupported protocols and socket modes return their named Io errors.
 
 `partition` queues packets until healing or a 60-second virtual expiry, which
 leaves streams timed out. `hold` queues without expiry and `release` resumes
-pending delivery. `resetConnections`, peer close and `node.kill()` reset streams;
-`shutdown(.send)` produces EOF after the queued bytes. Kill cooperatively
+pending delivery. `resetConnections` and `node.kill()` reset streams. A close
+is TCP's: a stream that read all it was sent closes in order, its peer reading
+what was sent and then the end of the stream (a write to it then resets the
+writer), and one that leaves bytes unread resets its peer. `shutdown(.send)`
+produces EOF after the queued bytes. Kill cooperatively
 cancels the node's tasks while respecting blocked cancellation protection.
 `node.crash(policy)` also applies that node's disk crash model and can fail with
 `OutOfMemory`. `node.restart(f, args)` starts an owned task; it reports `NodeBusy`

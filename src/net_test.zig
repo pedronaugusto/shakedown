@@ -129,7 +129,7 @@ test "Net UDP duplicate peek truncate loss timeout and canceled batches" {
     try finished(sim.run(Work.run, .{ sim, a, b, aa, ba }));
 }
 
-test "Net Unix namespace and peer close reset" {
+test "Net Unix namespace, orderly close and reset" {
     const sim = try Sim.init(t.allocator, .{ .watchdog = null });
     defer sim.deinit();
     const a = try sim.node("a", .{});
@@ -146,8 +146,19 @@ test "Net Unix namespace and peer close reset" {
             try t.expectEqual(2, try write(left.io(), client, "ok"));
             var buf: [2]u8 = undefined;
             try t.expectEqual(2, try read(left.io(), peer, &buf));
+            // An orderly close: the peer reads the end of the stream, and
+            // what it then sends draws a reset.
             client.close(left.io());
-            try t.expectError(error.ConnectionResetByPeer, read(left.io(), peer, &buf));
+            try t.expectEqual(0, try read(left.io(), peer, &buf));
+            try t.expectError(error.ConnectionResetByPeer, write(left.io(), peer, "late"));
+            // A close that leaves bytes unread resets the peer at once.
+            const second = try address.connect(left.io());
+            const other = try server.accept(left.io());
+            defer other.close(left.io());
+            try t.expectEqual(2, try write(left.io(), other, "no"));
+            try left.io().sleep(.fromMilliseconds(1), .awake);
+            second.close(left.io());
+            try t.expectError(error.ConnectionResetByPeer, read(left.io(), other, &buf));
         }
     };
     try finished(sim.run(Work.run, .{ a, b }));

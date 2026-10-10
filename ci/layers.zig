@@ -56,6 +56,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/alloc.zig",
         "src/bench/compare.zig",
         "src/check.zig",
+        "src/explore.zig",
         "src/Machine.zig",
         "src/linearizable.zig",
         "src/conformance.zig",

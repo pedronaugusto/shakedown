@@ -62,6 +62,15 @@ pub const CheckOptions = @import("check.zig").CheckOptions;
 pub const CheckError = @import("check.zig").CheckError;
 /// How a property failed: its minimal tape and its report.
 pub const CheckReport = @import("check.zig").CheckReport;
+/// A property run once for every way its choices can go: schedules within a
+/// preemption bound, with partial-order reduction.
+pub const explore = @import("explore.zig").explore;
+/// How `explore` searches.
+pub const ExploreOptions = @import("explore.zig").ExploreOptions;
+/// What a search did.
+pub const Exploration = @import("explore.zig").Exploration;
+/// Why `explore` failed.
+pub const ExploreError = @import("explore.zig").ExploreError;
 /// One simulated `Io` that owns time, tasks and randomness.
 pub const Sim = @import("Sim.zig");
 /// One call into a `Sim`, as its trace records it.

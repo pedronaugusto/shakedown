@@ -204,8 +204,44 @@ are responsible for terminating and keeping referenced state immutable.
 Fixtures independently model register reads/writes, journal append sequence and
 reader cursors, and ledger visibility/revisions. A separate whole-permutation
 oracle checks randomized small histories. These fixtures do not import consumers
-and do not establish their adoption or correctness. B7 schedule exploration
-remains outside this implementation.
+and do not establish their adoption or correctness.
+
+## Exhaustive search
+
+`explore` is a stateless model checker over the `Source`: its `Chooser`
+backend answers every draw, depth first along a path of choice points kept
+across runs, and a run replays the path's prefix before it leaves it. The
+search never owns a simulation: a `Sim` drawing from a searched source reports
+what the search needs through the same source (`pick` names the actors a
+schedule choice is between, `step` marks where an actor begins a step, `touch`
+names what a step touched, `spawned` orders a new task after its parent), and
+draws nothing else differently, so a failing run's tape replays under a plain
+replaying source.
+
+A step is an actor's run from one call's entry to the next, or to a wait: the
+granularity at which the bounded schedule can switch. Its footprint is what the
+simulation's calls touched in it (futex, task, group, disk, network, pipes,
+process, the fault plan's counters) plus the memory its domain stands for, by
+`Bounded.memory`. Reduction is Flanagan and Godefroid's: after each run, every
+step's latest dependent step of another actor it does not already follow, by
+vector clocks over each object's last write and reads since, is a race, and
+the choice before that step must also try this step's actor (or every option,
+where it could not run). Where that choice was a preemption, or no choice was
+offered because the bound was spent, the actor is also tried where the racing
+step's actor was last chosen without one (Coons, Musuvathi and McKinley), so the
+bound hides no order. Sleep sets keep the options tried at a choice asleep
+until a step they depend on runs; a run that would schedule a sleeping actor
+is redundant, counted, and adds nothing to search. With `.shared` memory every
+step of every task conflicts, and the reduction searches exactly the orders the
+full search does (a test checks it).
+
+The path's choice points keep their actors, options and sleep sets in pools
+that grow and shrink with the path, since a point adds to them only while it is
+the deepest; a run's steps, accesses and race analysis reuse their room. The
+`bounded` schedule draws its preemption choices at every call's entry, keeps the
+ready queue in arrival order (so a choice of 0 is the oldest), and gives each
+task its own stream for `random`, so independent tasks' bytes do not depend on
+their order.
 
 ## Simulated processes
 

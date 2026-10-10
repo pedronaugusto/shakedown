@@ -33,6 +33,28 @@ pub const Schedule = union(enum) {
     /// where the running task drops below every other. Finds a bug of depth
     /// d in one run of about n^(d-1) (Burckhardt et al., ASPLOS 2010).
     pct: struct { depth: u8 = 3, length: u64 = 10_000 },
+    /// Any order with at most `preemptions` preemptions: at every call a
+    /// task makes while another can run, the source chooses whether it goes
+    /// on, and whenever it waits, which runs next. `explore` searches every
+    /// such order (CHESS's bound: most bugs need few preemptions); any other
+    /// source draws one. Spurious wakes are choices too, at most
+    /// `spurious_wakes` of them, and `yield_per_million` does not apply.
+    bounded: Bounded,
+
+    pub const Bounded = struct {
+        preemptions: u8 = 2,
+        spurious_wakes: u8 = 0,
+        /// What a search may assume tasks share. `shared`: any two tasks
+        /// may share memory, so every order of their steps is searched.
+        /// `per_process`: a simulated process, and each node's own tasks,
+        /// share memory with no other, as separate machines and address
+        /// spaces cannot; steps on different ones are ordered only by what
+        /// they pass through `Io` (sockets, pipes, files, waits), and orders
+        /// that differ in nothing else are searched once. A test whose tasks
+        /// on different nodes or processes write memory of its own (a
+        /// history for `linearizable`, a fake program's recorder) shares it.
+        memory: enum { shared, per_process } = .shared,
+    };
 };
 
 /// What `async` and `Group.async` do, among what std allows.

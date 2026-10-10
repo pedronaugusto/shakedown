@@ -42,6 +42,8 @@ recording: bool = false,
 overran: bool = false,
 /// Private: see `setGrowth`.
 growth: u16 = 1000,
+/// Private: the actor numbers handed out (`actorSpace`).
+actor_spaces: u32 = 0,
 
 /// Where the choices come from.
 pub const Backend = union(enum) {
@@ -52,12 +54,40 @@ pub const Backend = union(enum) {
     replay: []const u64,
     /// The fuzzer's input. `Smith` reads each draw as an integer.
     smith: *std.testing.Smith,
+    /// A search that makes every choice itself: `explore`'s.
+    chooser: Chooser,
+};
+
+/// What makes the choices of a source that searches them (`explore`): it
+/// answers every draw, and hears which actor each schedule choice is
+/// between and what each actor's steps touch, so it can tell orders that
+/// differ from orders that only look different.
+pub const Chooser = struct {
+    ctx: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        /// A choice in `[0, max]`.
+        choose: *const fn (ctx: *anyopaque, max: u64) u64,
+        /// Which of `actors` runs next: an index into it. With `preemptive`,
+        /// `actors[0]` is the one running, which may go on.
+        pick: *const fn (ctx: *anyopaque, actors: []const u32, preemptive: bool) u64,
+        /// `actor` begins a step: it runs from here to its next call, or
+        /// to its next wait.
+        step: *const fn (ctx: *anyopaque, actor: u32) void,
+        /// The running `actor`'s step touched `object`.
+        touch: *const fn (ctx: *anyopaque, actor: u32, object: u64, write: bool) void,
+        /// `parent` started `child`: what `child` does happens after what
+        /// `parent` did so far.
+        spawned: *const fn (ctx: *anyopaque, parent: u32, child: u32) void,
+    };
 };
 
 const From = union(enum) {
     prng: std.Random.Xoshiro256,
     replay: struct { choices: []const u64, at: usize = 0 },
     smith: *std.testing.Smith,
+    chooser: Chooser,
 };
 
 /// A run's choices, and the spans its generators grouped them into.
@@ -132,6 +162,7 @@ pub fn restart(s: *Source, backend: Backend) void {
     s.spans.clearRetainingCapacity();
     s.depth = 0;
     s.overran = false;
+    s.actor_spaces = 0;
 }
 
 fn fromBackend(backend: Backend) From {
@@ -139,6 +170,7 @@ fn fromBackend(backend: Backend) From {
         .prng => |seed| .{ .prng = .init(seed) },
         .replay => |choices| .{ .replay = .{ .choices = choices } },
         .smith => |smith| .{ .smith = smith },
+        .chooser => |chooser| .{ .chooser = chooser },
     };
 }
 
@@ -157,7 +189,7 @@ pub fn below(s: *Source, max: u64) u64 {
     // through it.
     if (!s.recording) switch (s.from) {
         .prng => |*prng| return lemire(prng, max),
-        .replay, .smith => {},
+        .replay, .smith, .chooser => {},
     };
     return s.draw(max, @returnAddress());
 }
@@ -173,8 +205,61 @@ fn draw(s: *Source, max: u64, site: usize) u64 {
             break :choice if (c <= max) c else 0;
         },
         .smith => |smith| smith.valueRangeAtMostWithHash(u64, 0, max, @truncate(std.hash.int(@as(u64, site)))),
+        .chooser => |c| @min(c.vtable.choose(c.ctx, max), max),
     };
     return s.keep(choice, max);
+}
+
+/// Which of `actors` runs next, as an index into them: a choice like any
+/// other, which a searching source makes knowing what it chooses between.
+/// With `preemptive`, `actors[0]` is the actor running, and 0 lets it go on.
+pub fn pick(s: *Source, actors: []const u32, preemptive: bool) u64 {
+    if (actors.len < 2) return 0;
+    switch (s.from) {
+        .chooser => |c| {
+            if (s.full()) return 0;
+            return s.keep(@min(c.vtable.pick(c.ctx, actors, preemptive), actors.len - 1), actors.len - 1);
+        },
+        else => return s.below(actors.len - 1),
+    }
+}
+
+/// Whether a search makes this source's choices, and hears `touch`.
+pub fn searched(s: *const Source) bool {
+    return s.from == .chooser;
+}
+
+/// The running `actor`'s step touched `object`, for a search; nothing
+/// otherwise.
+pub fn touch(s: *Source, actor: u32, object: u64, write: bool) void {
+    switch (s.from) {
+        .chooser => |c| c.vtable.touch(c.ctx, actor, object, write),
+        else => {},
+    }
+}
+
+/// `actor` begins a step, for a search; nothing otherwise.
+pub fn step(s: *Source, actor: u32) void {
+    switch (s.from) {
+        .chooser => |c| c.vtable.step(c.ctx, actor),
+        else => {},
+    }
+}
+
+/// `parent` started `child`, for a search; nothing otherwise.
+pub fn spawned(s: *Source, parent: u32, child: u32) void {
+    switch (s.from) {
+        .chooser => |c| c.vtable.spawned(c.ctx, parent, child),
+        else => {},
+    }
+}
+
+/// A range of actor numbers of its own for one simulation drawing from this
+/// source: the next `1 << 24` numbers. A search tells actors apart by them.
+pub fn actorSpace(s: *Source) u32 {
+    const base = s.actor_spaces << 24;
+    s.actor_spaces +%= 1;
+    return base;
 }
 
 /// Whether a recording has no room for another choice; it then says so.
@@ -203,7 +288,7 @@ pub fn integer(s: *Source, max: u64) u64 {
     if (max == 0) return 0;
     switch (s.from) {
         .prng => |*prng| return if (s.full()) 0 else s.keep(leaning(prng, max), max),
-        .replay, .smith => return s.draw(max, @returnAddress()),
+        .replay, .smith, .chooser => return s.draw(max, @returnAddress()),
     }
 }
 
@@ -290,7 +375,7 @@ pub fn more(s: *Source, average: u32) bool {
             const choice = if (going) stop + lemire(prng, 999_999 - stop) else lemire(prng, stop - 1);
             return s.keep(choice, 999_999) >= stop;
         },
-        .replay, .smith => {},
+        .replay, .smith, .chooser => {},
     }
     return s.below(999_999) >= stop;
 }
