@@ -1143,12 +1143,13 @@ test "crash states in conflicting orders only are the states of every order" {
         try fs.write("a", "old");
         try fs.mkdir("d");
         const files = [_][]const u8{ "a", "b", "d/c" };
-        // A few random calls, barriers among them, while the units stay few.
+        // A few random calls, barriers among them, while the units stay few:
+        // at most six, so every order (6! = 720) is cheap to enumerate.
         var steps: u32 = 0;
         while (steps < 6) : (steps += 1) {
             var units: usize = 0;
             for (fs.root.pending.items) |r| units += if (r.op.effect == .write) 2 else 1;
-            if (units >= 8) break;
+            if (units >= 5) break;
             const name = files[random.uintLessThan(usize, files.len)];
             switch (random.uintLessThan(u8, 5)) {
                 0 => {
