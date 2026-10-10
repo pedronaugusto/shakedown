@@ -64,8 +64,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `undefined` first where runtime safety is on, and `expectNone` skips the test there
   instead of passing it.
 - `alloc.LockProbe`: an allocator that counts the calls made while a lock is held
-  and keeps the first with its frames. `Held.flag`, `Held.mutex` and `Held.spinMutex`
-  read an atomic flag, a `std.Io.Mutex` and a `std.atomic.Mutex`.
+  and keeps the first with its frames. `Held.guarded`, `Held.flag`, `Held.mutex` and
+  `Held.spinMutex` read an `aegis.Guarded`, an atomic flag, a `std.Io.Mutex` and a
+  `std.atomic.Mutex`.
 - Optional `bench.Row.setup(ctx)` and `teardown(ctx)` hooks share the workload's
   declared error set and run outside timing once per sample batch, including
   warmup, calibration and smoke. Teardown runs on workload failure; the original

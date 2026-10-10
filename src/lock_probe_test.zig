@@ -72,9 +72,9 @@ test "a std.atomic.Mutex is held between tryLock and unlock" {
     try testing.expectEqual(@as(usize, 2), probe.underLock());
 }
 
-test "the lock of an aegis.Guarded is the flag" {
+test "an aegis.Guarded is held between acquire and deinit" {
     var guarded: aegis.Guarded(u32) = .init(0);
-    var probe: LockProbe = .init(testing.allocator, .flag(&guarded.lock));
+    var probe: LockProbe = .init(testing.allocator, .guarded(&guarded));
     const gpa = probe.allocator();
     {
         var held = guarded.acquire();

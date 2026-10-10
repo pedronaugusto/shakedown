@@ -51,6 +51,14 @@ pub const Held = struct {
         };
     }
 
+    /// The lock of an `aegis.Guarded`, read without taking it. `Guarded` has
+    /// no call that asks whether it is held, and this is the one place a
+    /// probe reaches for its flag, so a test does not.
+    pub fn guarded(owner: anytype) Held {
+        // glint-ignore: A001 -- safe-type-internals: docs/design.md#aegis-types-and-the-raw-sites; the flag is read, never written, and Guarded offers no call that asks
+        return flag(&owner.lock);
+    }
+
     /// A `std.Io.Mutex`.
     pub fn mutex(lock: *const std.Io.Mutex) Held {
         return .{

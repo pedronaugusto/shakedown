@@ -75,15 +75,13 @@ pub fn allocator(q: *Quarantine) std.mem.Allocator {
 
 /// Gives back every reservation, freed or not.
 pub fn deinit(q: *Quarantine) void {
-    {
-        var held = q.state.acquire();
-        defer held.deinit();
-        const state = held.value();
-        var it = state.mappings.iterator();
-        while (it.next()) |entry| release(.{ .base = entry.key_ptr.*, .len = entry.value_ptr.* });
-        state.mappings.deinit(bookkeeping);
-        state.freed.deinit(bookkeeping);
-    }
+    // The owner ends here: no other thread may hold the lock, and teardown
+    // asserts it.
+    const state = q.state.teardown();
+    var it = state.mappings.iterator();
+    while (it.next()) |entry| release(.{ .base = entry.key_ptr.*, .len = entry.value_ptr.* });
+    state.mappings.deinit(bookkeeping);
+    state.freed.deinit(bookkeeping);
     q.* = undefined;
 }
 
