@@ -78,6 +78,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is a step of the run like any `Io` call: the schedule may switch there, it is
   a crash point of `everyCrash`, a search sees it touch the disk, and the trace
   records it as a foreign call. airlock's simulated route syncs through it.
+- `shakedown-fuzz --step <name>` fuzzes a step other than `test`, one whose
+  every test binary has a property (the fuzzer refuses a binary with none);
+  shakedown's own is `unit`, the suite alone.
 - `Sim.programsOf(io)` and the process seams on `Sim.Programs`, for a package
   whose own calls start, signal and wait for processes past `std.process`:
   `terminal` (a master and a slave, one file each, over two pipes and a

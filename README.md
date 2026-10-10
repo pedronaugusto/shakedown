@@ -278,7 +278,9 @@ long tape the fuzzer found comes back minimal.
 `shakedown-fuzz` (an artifact of the package, as `shakedown-bench-compare` is)
 fuzzes a package's `check` properties off the landing path, for as long as it
 is given: `shakedown-fuzz --package ../relic --store ~/fuzz --limit 50M
---sessions 4` runs `zig build test --fuzz=<limit>` in the package with
+--sessions 4` runs `zig build test --fuzz=<limit>` (or `--step <name>`, a step
+whose every test binary has a property, since the fuzzer refuses one with none)
+in the package with
 `<store>/<package>/cache` as its cache, so the fuzzer's corpora live outside
 the package and grow from session to session. Each property the fuzzer fails
 is replayed on its tape (`SHAKEDOWN_TAPE`, which `check` shrinks) and written to

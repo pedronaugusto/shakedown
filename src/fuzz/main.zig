@@ -5,7 +5,9 @@
 //!
 //!     shakedown-fuzz --package ../relic --store ~/fuzz --limit 50M --sessions 4
 //!
-//! Each session runs `zig build test --fuzz=<limit>` in the package with
+//! Each session runs `zig build <step> --fuzz=<limit>` in the package (the
+//! step `test` unless `--step` names one whose every test binary has a
+//! property, since the fuzzer refuses a binary with none) with
 //! `<store>/<package>/cache` as its cache, which holds the fuzzer's corpora
 //! from session to session. A property that fails prints its tape; the
 //! runner replays it (`SHAKEDOWN_TAPE`, which `check` shrinks) and writes
@@ -20,6 +22,7 @@ const Options = struct {
     store: ?[]const u8 = null,
     limit: []const u8 = "10M",
     filter: ?[]const u8 = null,
+    step: []const u8 = "test",
     sessions: u32 = 1,
     zig: []const u8 = "zig",
 };
@@ -28,7 +31,7 @@ pub fn main(init: std.process.Init) !u8 {
     const a = init.arena.allocator();
     const io = init.io;
     const options = parse(try init.minimal.args.toSlice(a)) catch {
-        try say(io, "usage: shakedown-fuzz [--package dir] [--store dir] [--limit 10M] [--filter test] [--sessions n] [--zig path]\n", .{});
+        try say(io, "usage: shakedown-fuzz [--package dir] [--store dir] [--limit 10M] [--step test] [--filter test] [--sessions n] [--zig path]\n", .{});
         return 2;
     };
     const package = try Io.Dir.cwd().realPathFileAlloc(io, options.package, a);
@@ -42,7 +45,7 @@ pub fn main(init: std.process.Init) !u8 {
     var total: usize = 0;
     for (0..options.sessions) |session| {
         var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(a, &.{ options.zig, "build", "test", try a.print("--fuzz={s}", .{options.limit}), "--cache-dir", cache });
+        try argv.appendSlice(a, &.{ options.zig, "build", options.step, try a.print("--fuzz={s}", .{options.limit}), "--cache-dir", cache });
         if (options.filter) |f| try argv.append(a, try a.print("-Dtest-filter={s}", .{f}));
         try say(io, "shakedown-fuzz: {s}, session {d} of {d}\n", .{ name, session + 1, options.sessions });
         const result = try std.process.run(a, io, .{ .argv = argv.items, .cwd = .{ .path = package } });
@@ -78,6 +81,8 @@ fn parse(args: []const [:0]const u8) !Options {
             o.limit = value;
         } else if (std.mem.eql(u8, arg, "--filter")) {
             o.filter = value;
+        } else if (std.mem.eql(u8, arg, "--step")) {
+            o.step = value;
         } else if (std.mem.eql(u8, arg, "--sessions")) {
             o.sessions = try std.fmt.parseUnsigned(u32, value, 10);
         } else if (std.mem.eql(u8, arg, "--zig")) {
@@ -94,7 +99,7 @@ fn shrink(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Map, 
     var environ = try parent.clone(a);
     try environ.put("SHAKEDOWN_TAPE", f.tape);
     const result = try std.process.run(a, io, .{
-        .argv = &.{ o.zig, "build", "test", try a.print("-Dtest-filter={s}", .{f.filter}), "--cache-dir", cache },
+        .argv = &.{ o.zig, "build", o.step, try a.print("-Dtest-filter={s}", .{f.filter}), "--cache-dir", cache },
         .cwd = .{ .path = package },
         .environ_map = &environ,
     });

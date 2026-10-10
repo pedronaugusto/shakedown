@@ -90,7 +90,11 @@ pub fn build(b: *std.Build) !void {
     tests.root_module.addImport("aegis", aegis_dependency.module("aegis"));
 
     const test_step = b.step("test", "Run the tests, the fault programs and the example");
-    test_step.dependOn(&b.addRunArtifact(tests).step);
+    const unit_run = b.addRunArtifact(tests);
+    test_step.dependOn(&unit_run.step);
+    // The suite alone: what the fuzzer runs (`zig build unit --fuzz`), every
+    // binary of it having properties.
+    b.step("unit", "Run the shakedown suite alone, without the programs and the example").dependOn(&unit_run.step);
 
     // A build-time API contract: an isolated consumer requests the comparator
     // artifact, using only a path dependency and with package fetching off.
