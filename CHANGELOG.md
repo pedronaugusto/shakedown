@@ -78,6 +78,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   is a step of the run like any `Io` call: the schedule may switch there, it is
   a crash point of `everyCrash`, a search sees it touch the disk, and the trace
   records it as a foreign call. airlock's simulated route syncs through it.
+- `Sim.programsOf(io)` and the process seams on `Sim.Programs`, for a package
+  whose own calls start, signal and wait for processes past `std.process`:
+  `terminal` (two pipes and a window size; its slave's ends are a terminal to
+  a program), `pipe`, `windowSize` and `setWindowSize`, `end` (a child ended as
+  a term at once, as an uncaught signal does), `poll` (a wait that does not
+  wait) and `waitFor` (a wait with a deadline). Each is a step of the run.
+- A pipe end handed to a child (`StdIo.file`, `.inherit`) is the child's own
+  copy, as an inherited descriptor is: the parent closing its end leaves the
+  child's open, and the other side sees the end of the stream only when every
+  copy is closed. `File.isTty` and the ANSI calls on a pipe end answer as a
+  pipe does, where they returned `error.Canceled`.
 - `Sim.fsOf(io)`: the simulated disk an `Io` of a simulation works on (its
   node's), null for any other `Io`, so a seam whose raw calls go past the `Io`
   makes them on the simulation whenever it is handed one.

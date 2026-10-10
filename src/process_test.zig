@@ -447,3 +447,69 @@ test "processes need no disk" {
     try sim.programs().register("echo", echo, .{});
     try t.expectEqual(Sim.Outcome.finished, sim.run(Run.echoRun, .{sim.io()}));
 }
+
+/// Says whether its streams are a terminal, then echoes a line it reads.
+fn termEcho(init: std.process.Init) !void {
+    const out = Io.File.stdout();
+    var line: [64]u8 = undefined;
+    const tty = try out.isTty(init.io);
+    try out.writeStreamingAll(init.io, if (tty) "tty\n" else "pipe\n");
+    var buffer: [64]u8 = undefined;
+    var r = Io.File.stdin().reader(init.io, &buffer);
+    const got = try r.interface.takeDelimiterInclusive('\n');
+    try out.writeStreamingAll(init.io, try std.mem.print(&line, "echo {s}", .{got}));
+}
+
+/// Never ends on its own.
+fn forever(init: std.process.Init) !void {
+    while (true) try init.io.sleep(.fromSeconds(1), .awake);
+}
+
+const Seams = struct {
+    fn onTerminal(io: Io, programs: Sim.Programs) !void {
+        const term = try programs.terminal(.{ .rows = 24, .cols = 80 });
+        defer term.master_read.close(io);
+        defer term.master_write.close(io);
+        var child = try std.process.spawn(io, .{ .argv = &.{"term-echo"}, .stdin = .{ .file = term.slave_read }, .stdout = .{ .file = term.slave_write }, .stderr = .{ .file = term.slave_write } });
+        // The child holds copies of the slave's ends: the test's can go,
+        // and the master reads to the end once the child ends.
+        term.slave_read.close(io);
+        term.slave_write.close(io);
+        try term.master_write.writeStreamingAll(io, "hi\n");
+        try programs.setWindowSize(term.master_write, .{ .rows = 50, .cols = 132 });
+        try t.expectEqual(@as(u16, 132), (try programs.windowSize(term.master_read)).cols);
+        var buffer: [64]u8 = undefined;
+        var r = term.master_read.reader(io, &buffer);
+        const all = try r.interface.allocRemaining(t.allocator, .unlimited);
+        defer t.allocator.free(all);
+        try t.expectEqualStrings("tty\necho hi\n", all);
+        try t.expect((try child.wait(io)).success());
+    }
+
+    fn endAndWait(io: Io, programs: Sim.Programs) !void {
+        var child = try std.process.spawn(io, .{ .argv = &.{"forever"}, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+        try t.expectEqual(@as(?Sim.Programs.Term, null), try programs.poll(&child));
+        const before = io.vtable.now(io.userdata, .awake);
+        try t.expectEqual(@as(?Sim.Programs.Term, null), try programs.waitFor(&child, .{ .duration = .{ .raw = .fromSeconds(5), .clock = .awake } }));
+        const after = io.vtable.now(io.userdata, .awake);
+        try t.expectEqual(@as(i96, std.time.ns_per_s * 5), after.nanoseconds - before.nanoseconds);
+        programs.end(&child, .{ .exited = 3 });
+        const ended = try programs.waitFor(&child, .none);
+        try t.expectEqual(Sim.Programs.Term{ .exited = 3 }, ended.?);
+    }
+};
+
+test "a seam's terminal: a child on it sees a terminal, and the master reads it to the end" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    try sim.programs().register("term-echo", termEcho, .{});
+    try t.expectEqual(Sim.Outcome.finished, sim.run(Seams.onTerminal, .{ sim.io(), Sim.programsOf(sim.io()).? }));
+}
+
+test "a seam's end and timed wait: a child polled, waited for past a deadline, ended and reaped" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    try sim.programs().register("forever", forever, .{});
+    try t.expectEqual(Sim.Outcome.finished, sim.run(Seams.endAndWait, .{ sim.io(), sim.programs().* }));
+    try t.expectEqual(@as(?Sim.Programs, null), Sim.programsOf(t.io));
+}

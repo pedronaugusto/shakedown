@@ -50,8 +50,9 @@ pub const Term = std.process.Child.Term;
 
 pub const Stream = struct {
     file: Io.File,
-    /// Whether the process owns the handle: its pipe ends, its null device.
-    /// A file it was handed (`StdIo.file`, `.inherit`) stays its parent's.
+    /// Whether the process owns the handle: its pipe ends, its null device,
+    /// its copy of a pipe end it was handed. Any other file it was handed
+    /// (`StdIo.file`, `.inherit`) stays its parent's.
     owned: bool,
     open: bool = true,
 };

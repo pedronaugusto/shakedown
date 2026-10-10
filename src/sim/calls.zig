@@ -20,14 +20,17 @@ const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
 
 pub const vtable: Io.VTable = blk: {
+    @setEvalBranchQuota(4000);
     var table: Io.VTable = undefined;
     for (@typeInfo(Io.VTable).@"struct".field_names) |name| {
-        @field(table, name) = if (@hasDecl(slots, name))
+        // A file slot reaches a pipe end through `fileSlot` first, whoever
+        // answers it for every other file.
+        @field(table, name) = if (process_calls.wrapsFile(name) and !process_calls.supports(name))
+            process_calls.fileSlot(name, if (@hasDecl(slots, name)) @field(slots, name) else if (fs_calls.supports(name)) fs_calls.slot(name) else unsupported(name))
+        else if (@hasDecl(slots, name))
             @field(slots, name)
         else if (process_calls.supports(name))
             process_calls.slot(name)
-        else if (process_calls.wrapsFile(name))
-            process_calls.fileSlot(name, if (fs_calls.supports(name)) fs_calls.slot(name) else unsupported(name))
         else if (net_calls.supports(name))
             net_calls.slot(name)
         else if (fs_calls.supports(name))
