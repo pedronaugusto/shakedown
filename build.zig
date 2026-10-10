@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -11,13 +11,27 @@ pub fn build(b: *std.Build) void {
     // modules and never from production code.
     //=====================================================================
 
-    const aegis_dependency = b.dependency("aegis", .{ .target = target, .optimize = optimize });
+    // aegis's types are in shakedown's API (task ids, byte counts, limits),
+    // so a build links one aegis: shakedown's own by default, or, with
+    // `.aegis = .consumer`, the consumer's, bound with `useAegis`, and
+    // shakedown's is then never fetched.
+    const aegis_from = b.option(enum { own, consumer }, "aegis", "Which aegis shakedown imports: its own pin, or the consumer's, bound with useAegis (default own)") orelse .own;
     const module = b.addModule("shakedown", .{
         .root_source_file = b.path("src/shakedown.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "aegis", .module = aegis_dependency.module("aegis") }},
     });
+    // The first configure pass may only learn that aegis must be fetched;
+    // the module is declared either way, so a consumer can ask for it.
+    var needed: error{LazyDependencyNeeded}!void = {};
+    const own_aegis: ?*std.Build.Dependency = switch (aegis_from) {
+        .own => b.dependencyLazy("aegis", .{ .target = target, .optimize = optimize }) catch |err| blk: {
+            needed = err;
+            break :blk null;
+        },
+        .consumer => null,
+    };
+    if (own_aegis) |aegis| module.addImport("aegis", aegis.module("aegis"));
 
     // Available to build tools without fetching preflight or building tests.
     const comparison = b.addExecutable(.{
@@ -35,7 +49,8 @@ pub fn build(b: *std.Build) void {
     // Everything below is this repository's own: a project depending on
     // shakedown builds the module and nothing else, and fetches nothing for
     // it.
-    if (b.dep_prefix.len != 0) return;
+    if (b.dep_prefix.len != 0) return needed;
+    const aegis_dependency = own_aegis orelse return needed;
 
     //=====================================================================
     // Tests
@@ -76,6 +91,15 @@ pub fn build(b: *std.Build) void {
     comparison_consumer.setCwd(b.path("."));
     comparison_consumer.has_side_effects = true;
     b.step("check-bench-consumer", "Smoke-run the comparator as an isolated dependency artifact").dependOn(&comparison_consumer.step);
+
+    // A consumer that brings its own aegis binds shakedown to it: one aegis
+    // links, and shakedown's own pin is not asked for.
+    const aegis_consumer = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--build-file", "ci/aegis-consumer/build.zig", "--system" });
+    aegis_consumer.addDirectoryArg2(empty_packages.getDirectory(), .{});
+    aegis_consumer.setEnvironmentVariable("ZIG_GLOBAL_CACHE_DIR", ".zig-cache/aegis-consumer-global");
+    aegis_consumer.setCwd(b.path("."));
+    aegis_consumer.has_side_effects = true;
+    b.step("check-aegis-consumer", "Build a consumer that binds shakedown to its own aegis").dependOn(&aegis_consumer.step);
 
     const check_step = b.step("check", "Compile the tests, programs and example without running them");
     check_step.dependOn(&tests.step);
@@ -191,13 +215,14 @@ pub fn build(b: *std.Build) void {
         // shakedown needs: the build a consumer gets.
         preflight.addConsumerCheck(b, .{ .package = "shakedown", .program = b.path("ci/consumer.zig"), .packages = &.{aegis_dependency} });
     }
+    return needed;
 }
 
 /// shakedown in the mode a benchmark builds in: an imported module keeps
 /// its own mode, so a ReleaseFast benchmark over the Debug module would time
 /// the Debug module.
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
-    const aegis = b.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis");
+    const aegis = (b.dependencyLazy("aegis", .{ .target = target, .optimize = optimize }) catch @panic("aegis is fetched before benchmarks are built")).module("aegis");
     const module = b.createModule(.{ .root_source_file = b.path("src/shakedown.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "aegis", .module = aegis }} });
     // Git state is a build input, not a cached configuration-time observation.
     const revision = b.addSystemCommand(&.{ "git", "rev-parse", "HEAD" });
@@ -224,4 +249,14 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
         .{ .name = "measuring", .module = b.createModule(.{ .root_source_file = b.path("src/bench.zig"), .target = target, .optimize = optimize }) },
         .{ .name = "bench_compare", .module = compare_driver },
     }) catch @panic("OOM");
+}
+
+/// Binds a fetched shakedown to the consumer's aegis, so its build links one
+/// aegis and shakedown's ids and byte counts are the consumer's own types.
+/// Fetch shakedown with `.aegis = .consumer`, so its own pin is not fetched:
+///
+///     const shakedown = try b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer });
+///     @import("shakedown").useAegis(shakedown, aegis.module("aegis"));
+pub fn useAegis(shakedown: *std.Build.Dependency, aegis: *std.Build.Module) void {
+    shakedown.module("shakedown").addImport("aegis", aegis);
 }

@@ -21,6 +21,16 @@ git+https://github.com/pedronaugusto/shakedown`, mark the dependency `.lazy = tr
 in `build.zig.zon`, and add the `shakedown` module only to your test modules'
 imports. It is a test dependency: production code never imports it.
 
+shakedown's API carries aegis's types (task ids, byte counts, limits), so a build
+should link one aegis. A project with aegis in its own graph fetches shakedown
+with `.aegis = .consumer` and binds it to its own, and shakedown's pin is then
+never fetched:
+
+```zig
+const shakedown = try b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer });
+@import("shakedown").useAegis(shakedown, aegis.module("aegis"));
+```
+
 ## Usage
 
 [examples/usage.zig](examples/usage.zig) tests a retry loop that backs off one second, then two.

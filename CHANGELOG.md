@@ -68,6 +68,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `.aegis = .consumer` and `useAegis` (build.zig): a project with aegis in its own
+  graph binds shakedown to it, so its tests link one aegis and shakedown's types
+  are the project's own; aegis is now a lazy dependency of shakedown.
+
 - `explore`: a property run once for every way its choices can go, its
   simulations on the new `Sim.Schedule.bounded` (preemption-bounded, every
   switch a choice), with dynamic partial-order reduction and sleep sets;

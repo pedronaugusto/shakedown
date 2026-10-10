@@ -21,6 +21,7 @@
         .aegis = .{
             .url = "git+https://github.com/pedronaugusto/aegis#be2523ffd337fa31b5336e6f652f642c43622471",
             .hash = "aegis-0.0.0-rsxoutrdBgCSI4l3iGMCx8rEymViUGaDM3yuGFI3z01T",
+            .lazy = true,
         },
     },
 }
