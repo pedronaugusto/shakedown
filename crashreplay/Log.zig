@@ -22,7 +22,8 @@ pub const Entry = struct {
     /// How long, in `sectorsize` units.
     sectors: u64,
     flags: Flags,
-    /// A mark's name, or a write's data: borrowed from the log's bytes.
+    /// A mark's name, or a write's data: borrowed from the log's bytes. A
+    /// write of file system metadata (`flags.metadata`) is a write like any.
     data: []const u8,
 };
 
@@ -57,7 +58,7 @@ pub const Iterator = struct {
         const data_len = std.mem.readInt(u64, header[24..32], .little);
         it.at += size;
         it.left -= 1;
-        if (flags.mark or flags.metadata) {
+        if (flags.mark) {
             if (32 + data_len > size) return error.Truncated;
             return .{ .sector = sector, .sectors = 0, .flags = flags, .data = header[32..][0..@intCast(data_len)] };
         }
@@ -76,7 +77,7 @@ pub fn iterator(log: *const Log) Iterator {
 
 /// What an entry does to the data device's bytes.
 pub fn apply(log: *const Log, entry: Entry, image: []u8) error{OutOfRange}!void {
-    if (entry.flags.mark or entry.flags.metadata) return;
+    if (entry.flags.mark) return;
     const start = std.math.mul(u64, entry.sector, log.sectorsize) catch return error.OutOfRange;
     const len = std.math.mul(u64, entry.sectors, log.sectorsize) catch return error.OutOfRange;
     if (start + len > image.len) return error.OutOfRange;
