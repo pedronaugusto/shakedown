@@ -46,6 +46,11 @@ pub const ExploreOptions = struct {
     reduction: enum { partial_order, none } = .partial_order,
     /// A choice with more alternatives than this keeps its simplest value.
     max_branch: u32 = 16,
+    /// Choices other than schedules a run may make other than the simplest
+    /// (0), or null for any number: a delay bound (Emmi, Qadeer and
+    /// Rakamaric, POPL 2011), for a body whose small choices go on as long
+    /// as they are made (an operation that may complete at any later poll).
+    max_deviations: ?u32 = null,
     /// Runs the search may make; past them it ends incomplete.
     max_runs: u64 = 1 << 20,
     /// The most choices one run may draw; a larger one is discarded.
@@ -191,6 +196,10 @@ const Search = struct {
     picks: std.ArrayList(Option) = .empty,
     sleepers: std.ArrayList(Sleeper) = .empty,
     prints: std.ArrayList(Access) = .empty,
+    /// The first steps options took, recorded after deeper points were
+    /// made: not on the stack the other pools keep, so compacted instead
+    /// when what the path still holds is a small part of it.
+    footprints: std.ArrayList(Access) = .empty,
     /// Where the next run changes the path: its choices before this point
     /// are the last run's.
     branch: ?usize = null,
@@ -236,6 +245,7 @@ const Search = struct {
         s.picks.deinit(s.gpa);
         s.sleepers.deinit(s.gpa);
         s.prints.deinit(s.gpa);
+        s.footprints.deinit(s.gpa);
         s.steps.deinit(s.gpa);
         s.accesses.deinit(s.gpa);
         s.parents.deinit(s.gpa);
@@ -348,7 +358,7 @@ const Search = struct {
         const actors = s.actorsOf(p);
         for (s.optionsOf(p), 0..) |o, i| {
             if (!o.done or i == p.chosen) continue;
-            if (o.footprint) |f| try s.sleep(actors[i], Range.of(Access, s.prints.items, f));
+            if (o.footprint) |f| try s.sleep(actors[i], Range.of(Access, s.footprints.items, f));
         }
     }
 
@@ -479,10 +489,9 @@ const Search = struct {
             const p = &s.path.items[at];
             const o = &s.optionsOf(p)[@intCast(p.chosen)];
             if (o.footprint != null) continue;
-            const start: u32 = @intCast(s.prints.items.len);
-            try s.prints.appendSlice(s.gpa, s.accessesOf(st));
+            const start: u32 = @intCast(s.footprints.items.len);
+            try s.footprints.appendSlice(s.gpa, s.accessesOf(st));
             o.footprint = .{ .start = start, .len = st.len };
-            p.marks = s.marks();
         }
         switch (s.options.reduction) {
             .none => {},
@@ -613,7 +622,7 @@ const Search = struct {
             const at = s.path.items.len - 1;
             const p = &s.path.items[at];
             switch (p.kind) {
-                .data => if (p.chosen < p.bound) {
+                .data => if (p.chosen < p.bound and (p.chosen > 0 or s.mayDeviate(at))) {
                     p.chosen += 1;
                     s.branch = at;
                     return true;
@@ -636,8 +645,38 @@ const Search = struct {
             s.picks.shrinkRetainingCapacity(m.options);
             s.sleepers.shrinkRetainingCapacity(m.sleepers);
             s.prints.shrinkRetainingCapacity(m.prints);
+            try s.compact();
         }
         return false;
+    }
+
+    /// Copies the footprints the path still holds to the front of their
+    /// pool, once they are a quarter of it or less.
+    fn compact(s: *Search) Allocator.Error!void {
+        var live: usize = 0;
+        for (s.picks.items) |o| if (o.footprint) |f| {
+            live += f.len;
+        };
+        if (s.footprints.items.len < 4096 or live * 4 > s.footprints.items.len) return;
+        var kept: std.ArrayList(Access) = try .initCapacity(s.gpa, live);
+        for (s.picks.items) |*o| if (o.footprint) |*f| {
+            const start: u32 = @intCast(kept.items.len);
+            kept.appendSliceAssumeCapacity(Range.of(Access, s.footprints.items, f.*));
+            f.start = start;
+        };
+        s.footprints.deinit(s.gpa);
+        s.footprints = kept;
+    }
+
+    /// Whether a run may deviate at data point `at`, given the choices
+    /// before it.
+    fn mayDeviate(s: *const Search, at: usize) bool {
+        const most = s.options.max_deviations orelse return true;
+        var made: u32 = 0;
+        for (s.path.items[0..at]) |q| {
+            if (q.kind == .data and q.chosen != 0) made += 1;
+        }
+        return made < most;
     }
 
     fn asleepAt(s: *const Search, p: *const Point, actor: u32) bool {

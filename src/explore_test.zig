@@ -260,3 +260,60 @@ test "a process and its parent are searched as separate memories" {
     try t.expect(full.complete and reduced.complete);
     try t.expect(reduced.runs < full.runs);
 }
+
+/// A poll that may leave its operation for later, each time: unbounded but
+/// for the delay bound.
+const Polls = struct {
+    fn body(longest: *u32, c: *Case) !void {
+        var polls: u32 = 1;
+        while (c.source.below(1) == 1) polls += 1;
+        longest.* = @max(longest.*, polls);
+    }
+};
+
+test "the delay bound makes a body that can always wait once more finite" {
+    var longest: u32 = 0;
+    const result = try explored(Polls.body, &longest, .{ .max_deviations = 3 });
+    try t.expect(result.complete);
+    try t.expectEqual(@as(u64, 4), result.runs);
+    try t.expectEqual(@as(u32, 4), longest);
+}
+
+/// Tasks that draw choices of their own between calls, with spurious wakes
+/// allowed: data choices made below schedule choices, the shape whose first
+/// steps a search records after deeper choices were made.
+const Mixed = struct {
+    mutex: Io.Mutex = .init,
+    seen: u32 = 0,
+
+    fn work(m: *Mixed, io: Io, source: *shakedown.Source) Io.Cancelable!void {
+        try m.mutex.lock(io);
+        defer m.mutex.unlock(io);
+        if (source.below(1) == 1) try io.checkCancel();
+        m.seen += 1;
+    }
+
+    fn all(m: *Mixed, io: Io, source: *shakedown.Source) !void {
+        var group: Io.Group = .init;
+        for (0..3) |_| try group.concurrent(io, work, .{ m, io, source });
+        try group.await(io);
+        if (m.seen != 3) return error.Lost;
+    }
+
+    fn body(_: void, c: *Case) !void {
+        var m: Mixed = .{};
+        const sim = try c.sim(.{});
+        switch (sim.run(all, .{ &m, sim.io(), c.source })) {
+            .finished => {},
+            .failed => |err| return err,
+            else => return error.Unexpected,
+        }
+    }
+};
+
+test "a search through choices drawn under schedule choices completes" {
+    const reduced = try explored(Mixed.body, {}, .{ .spurious_wakes = 1 });
+    const full = try explored(Mixed.body, {}, .{ .spurious_wakes = 1, .reduction = .none });
+    try t.expect(reduced.complete and full.complete);
+    try t.expect(reduced.runs <= full.runs);
+}

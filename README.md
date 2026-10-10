@@ -286,7 +286,10 @@ next; spurious wakes are choices too, at most `spurious_wakes`. `explore` return
 the runs it made and whether the search was complete within `max_runs`; a
 failing run is shrunk and reported as `check` reports it, and
 `SHAKEDOWN_TAPE` replays it under the same schedule. A body whose choices
-change between runs of one tape fails with `Nondeterministic`.
+change between runs of one tape fails with `Nondeterministic`. A body whose
+small choices can always go one step further (an operation a fake may hold
+back at every poll) is made finite by `max_deviations`, a delay bound: at most
+that many choices other than schedules take a value other than 0.
 
 Orders that differ only in steps that cannot affect each other are run once
 (dynamic partial-order reduction with sleep sets, kept sound under the
