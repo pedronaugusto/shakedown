@@ -201,7 +201,7 @@ fn decommit(at: usize, len: usize) bool {
     }
     const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // safe: `at` is a page boundary inside a mapping this allocator made
     const advice = if (builtin.target.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
-    // ziglint-ignore: Z026 pages not given back stay resident; the range is still closed below
+    // glint-ignore: Z026 -- pages not given back stay resident; the range is still closed below
     std.posix.madvise(start, len, advice) catch {};
     return close(at, len);
 }

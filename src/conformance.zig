@@ -161,6 +161,7 @@ const Box = struct {
 fn conditionHandsOff(_: Allocator, io: Io) !void {
     var b: Box = .{};
     var consumer = try io.concurrent(Box.consume, .{ &b, io });
+    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer _ = consumer.cancel(io) catch {};
     for (0..b.total) |_| {
         try b.mutex.lock(io);
@@ -186,6 +187,7 @@ fn eventWakes(_: Allocator, io: Io) !void {
     try ready.wait(io);
     var gate: Io.Event = .unset;
     var waiter = try io.concurrent(Io.Event.wait, .{ &gate, io });
+    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer _ = waiter.cancel(io) catch {};
     gate.set(io);
     try waiter.await(io);
@@ -202,6 +204,7 @@ fn queueInOrder(_: Allocator, io: Io) !void {
     var buffer: [4]u32 = undefined;
     var q: Io.Queue(u32) = .init(&buffer);
     var producer = try io.concurrent(produce, .{ io, &q, 50 });
+    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer producer.cancel(io) catch {};
     for (0..50) |i| if (try q.getOne(io) != i) return error.OutOfOrder;
     if (q.getOne(io)) |_| return error.NotClosed else |err| if (err != error.Closed) return err;
@@ -287,6 +290,7 @@ const PingPong = struct {
 fn concurrentRuns(_: Allocator, io: Io) !void {
     var p: PingPong = .{};
     var task = try io.concurrent(PingPong.answer, .{ &p, io });
+    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer task.cancel(io) catch {};
     p.ping.set(io);
     try p.pong.wait(io);
@@ -341,6 +345,7 @@ fn cancelProtected(_: Allocator, io: Io) !void {
     var p: Protected = .{};
     var task = try io.concurrent(Protected.run, .{ &p, io });
     var lifter = try io.concurrent(Protected.lift, .{ &p, io });
+    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer lifter.cancel(io) catch {};
     try p.started.wait(io);
     if (task.cancel(io)) |_| return error.NotCanceled else |err| if (err != error.Canceled) return err;

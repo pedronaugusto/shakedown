@@ -89,6 +89,7 @@ pub fn main(init: std.process.Init) !void {
     // The file the reads read, in the working directory, gone at the end.
     const cwd = Io.Dir.cwd();
     var scratch = try cwd.createDirPathOpen(io, "shakedown-bench-scratch", .{});
+    // glint-ignore: Z026 -- removing the scratch directory is best effort after the run has its verdict
     defer cwd.deleteTree(io, "shakedown-bench-scratch") catch {};
     defer scratch.close(io);
     var page: [4096]u8 = @splat(0x5a);

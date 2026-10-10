@@ -58,7 +58,6 @@ pub const Result = struct {
 /// responses. Hash collisions are confirmed by equality; a full cache cannot
 /// change correctness. Workspace is O(n * sizeof(State) + cache * (n +
 /// sizeof(State))); native stack usage is independent of n.
-// ziglint-ignore: Z023 blocking drivers take Io first; the history type depends on Model
 pub fn check(io: std.Io, gpa: std.mem.Allocator, comptime Model: type, initial: Model.State, history: []const Operation(Model.Input, Model.Output), options: Options) Error!Result {
     try io.checkCancel();
     const n = history.len;

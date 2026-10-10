@@ -51,7 +51,6 @@ pub const DeterminismError = error{ Nondeterministic, OutOfMemory, ExecutorUnava
 pub fn expectDeterministic(
     gpa: Allocator,
     ctx: anytype,
-    // ziglint-ignore: Z023 the body's type is made from the context's, so it follows it
     comptime body: fn (@TypeOf(ctx), Io) anyerror!void,
     options: DeterminismOptions(@TypeOf(ctx)),
 ) DeterminismError!void {
@@ -68,7 +67,7 @@ pub fn expectDeterministic(
     var buffer: [256]u8 = undefined;
     const stderr = std.debug.lockStderr(&buffer).terminal();
     defer std.debug.unlockStderr();
-    // ziglint-ignore: Z026 a report stderr cannot take is lost; the error still fails the test
+    // glint-ignore: Z026 -- a report stderr cannot take is lost; the error still fails the test
     stderr.writer.writeAll(text) catch {};
     return error.Nondeterministic;
 }

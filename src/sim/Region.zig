@@ -179,7 +179,7 @@ fn decommit(at: usize, len: usize) void {
     }
     const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // safe: a large block starts on a page
     const advice = if (builtin.target.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
-    // ziglint-ignore: Z026 pages not given back stay resident until the region goes
+    // glint-ignore: Z026 -- pages not given back stay resident until the region goes
     std.posix.madvise(start, len, advice) catch {};
 }
 

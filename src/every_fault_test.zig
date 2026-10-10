@@ -69,6 +69,7 @@ const Save = struct {
                     .atomic, .in_place, .leaky => "save.tmp",
                 };
                 try writeSynced(io, s.dir, name, contents);
+                // glint-ignore: Z026 -- a leftover temporary that cannot be removed is what the injected fault caused; the save's own error is the one returned
                 errdefer s.dir.deleteFile(testing.io, name) catch {};
                 try s.dir.rename(name, s.dir, "save", io);
             },

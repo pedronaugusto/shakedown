@@ -65,8 +65,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of passing it.
 - `alloc.LockProbe`: an allocator that counts the calls made while a lock is held
   and keeps the first with its frames. `Held.guarded`, `Held.flag`, `Held.mutex` and
-  `Held.spinMutex` read an `aegis.Guarded`, an atomic flag, a `std.Io.Mutex` and a
-  `std.atomic.Mutex`.
+  `Held.spinMutex` read an aegis lock (`Guarded`, `BlockingGuarded` or `Order.Ordered`, through its
+  own `isHeld`), an atomic flag, a `std.Io.Mutex` and a `std.atomic.Mutex`.
 - `bench.Row` states what its batches need, outside timing, in the declared error
   set of the workload: a `fixture` (`setup`, optional `teardown`) whose `lifetime`
   the workload chooses, `.row` (built once, every warmup, calibration and sample

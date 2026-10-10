@@ -32,7 +32,7 @@ pub const Case = struct {
     /// Kept, and printed, only for the final, minimal failing case.
     pub fn note(c: *Case, comptime fmt: []const u8, args: anytype) void {
         const notes = &(c.runner.notes orelse return);
-        // ziglint-ignore: Z026 a note that cannot be kept is lost; the failure itself is still reported
+        // glint-ignore: Z026 -- a note that cannot be kept is lost; the failure itself is still reported
         notes.print(c.runner.gpa, "    " ++ fmt ++ "\n", args) catch {};
     }
 
@@ -101,7 +101,6 @@ pub const CheckError = error{ PropertyFailed, OutOfMemory, Unsatisfiable, Invali
 pub fn check(
     gpa: Allocator,
     ctx: anytype,
-    // ziglint-ignore: Z023 the body's type is made from the context's, so it follows it
     comptime body: fn (@TypeOf(ctx), *Case) anyerror!void,
     options: CheckOptions,
 ) CheckError!void {
@@ -297,14 +296,14 @@ const Runner = struct {
         print(&text.writer, err, origin, choices, shrink_runs, outcome, r.notes.?.items) catch return error.OutOfMemory;
         if (r.trace_len > 0) {
             const t: std.builtin.StackTrace = .{ .instruction_addresses = r.trace[0..r.trace_len], .index = r.trace_len };
-            // ziglint-ignore: Z026 a trace that cannot be written leaves the report without it
+            // glint-ignore: Z026 -- a trace that cannot be written leaves the report without it
             std.debug.writeErrorReturnTrace(&t, .{ .writer = &text.writer, .mode = .no_color }) catch {};
         }
         const diagnostics = r.options.diagnostics orelse {
             var buffer: [256]u8 = undefined;
             const stderr = std.debug.lockStderr(&buffer).terminal();
             defer std.debug.unlockStderr();
-            // ziglint-ignore: Z026 a report stderr cannot take is lost; the error still fails the test
+            // glint-ignore: Z026 -- a report stderr cannot take is lost; the error still fails the test
             stderr.writer.writeAll(text.written()) catch {};
             return error.PropertyFailed;
         };
@@ -354,7 +353,6 @@ const Same = struct {
 fn fuzz(
     gpa: Allocator,
     ctx: anytype,
-    // ziglint-ignore: Z023 the body's type is made from the context's, so it follows it
     comptime body: fn (@TypeOf(ctx), *Case) anyerror!void,
     options: CheckOptions,
 ) CheckError!void {

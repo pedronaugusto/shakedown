@@ -68,7 +68,6 @@ pub fn add(w: *Watchdog, watched: *Watched) bool {
     w.mutex.lockUncancelable(real());
     defer w.mutex.unlock(real());
     if (w.thread == null) {
-        // ziglint-ignore: Z026 without its thread the watchdog is off; the run itself is unchanged
         w.thread = std.Thread.spawn(.{ .stack_size = 64 * 1024 }, run, .{w}) catch return false;
     }
     watched.next = w.first;
@@ -104,7 +103,7 @@ fn run(w: *Watchdog) void {
         const seen = w.signal.load(.acquire);
         const next = w.sample() orelse return;
         const timeout: Io.Timeout = if (next.slice) |ns| .{ .duration = .{ .raw = .fromNanoseconds(ns), .clock = .awake } } else .none;
-        // ziglint-ignore: Z026 a wait cut short only samples sooner
+        // glint-ignore: Z026 -- a wait cut short only samples sooner
         real().futexWaitTimeout(u32, &w.signal.raw, seen, timeout) catch {};
     }
 }
@@ -151,6 +150,6 @@ fn say(comptime fmt: []const u8, args: anytype) void {
     var buffer: [256]u8 = undefined;
     const stderr = std.debug.lockStderr(&buffer).terminal();
     defer std.debug.unlockStderr();
-    // ziglint-ignore: Z026 a message stderr cannot take is lost
+    // glint-ignore: Z026 -- a message stderr cannot take is lost
     stderr.writer.print(fmt, args) catch {};
 }

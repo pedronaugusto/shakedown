@@ -351,6 +351,7 @@ test "Net standard HTTP Client talks to standard HTTP Server over DNS TCP" {
             defer listener.deinit(right.io());
             var ack: Io.Event = .unset;
             var server = try right.io().concurrent(serve, .{ right.io(), &listener, &ack });
+            // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
             defer server.cancel(s.io()) catch {};
             var client: std.http.Client = .{ .allocator = t.allocator, .io = left.io() };
             defer client.deinit();

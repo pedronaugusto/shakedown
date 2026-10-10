@@ -372,6 +372,7 @@ const LockWork = struct {
         var ready: Io.Event = .unset;
         var obtained = false;
         var waiter = try io.concurrent(wait, .{ io, second, &ready, &obtained });
+        // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
         defer waiter.cancel(io) catch {};
         try ready.wait(io);
         try t.expect(!obtained);

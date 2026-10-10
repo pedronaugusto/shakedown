@@ -155,7 +155,7 @@ sees a free as the allocator receives it, and `Allocator.free` fills a block wit
 never reach it, whatever the program did. `Unwiped.sees` says which builds can
 tell, and `expectNone` skips the test in the others instead of passing it, so run
 such tests in ReleaseFast or ReleaseSmall. `alloc.LockProbe` is given a lock
-(`Held.guarded` for an `aegis.Guarded`, `Held.flag` for an atomic flag,
+(`Held.guarded` for an aegis `Guarded`, `BlockingGuarded` or `Order.Ordered`, `Held.flag` for an atomic flag,
 `Held.mutex` for `std.Io.Mutex`, `Held.spinMutex` for `std.atomic.Mutex`) and counts the allocator
 calls made while it is held, keeping the first with its frames. It reads the lock
 and never takes it, and a lock does not say who holds it: it reports a call made

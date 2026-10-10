@@ -556,7 +556,7 @@ fn record(f: *FaultIo, step: u64, event: IoEvent) void {
     const at = f.base.vtable.now(f.base.userdata, .awake);
     f.lock();
     defer f.unlock();
-    // ziglint-ignore: Z026 a record that cannot be stored is dropped; the counts and steps still hold
+    // glint-ignore: Z026 -- a record that cannot be stored is dropped; the counts and steps still hold
     f.trace_.append(.{ .step = step, .at = at, .event = event }) catch {};
 }
 
@@ -1610,9 +1610,8 @@ fn remember(f: *FaultIo, comptime name: []const u8, result: Return(name), path: 
     const handle = if (comptime std.mem.eql(u8, name, "dirCreateFileAtomic")) handleId(opened.file.handle) else handleId(opened.handle);
     f.lock();
     defer f.unlock();
-    // ziglint-ignore: Z026 a path that cannot be stored leaves the handle unnamed, nothing worse
     const copy = f.path_arena.allocator().dupe(u8, p) catch return;
-    // ziglint-ignore: Z026 as above
+    // glint-ignore: Z026 -- a path that cannot be stored leaves the handle unnamed, nothing worse
     f.paths.put(f.gpa, handle, copy) catch {};
 }
 

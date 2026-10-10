@@ -277,8 +277,7 @@ pub fn nodeId(c: *Core) NodeId {
 
 /// The context of a node made by `Sim.node`: the first is `c.context`.
 pub fn contextOf(c: *Core, node: NodeId) *Context {
-    // glint-ignore: A004 -- safe-type-internals: docs/design.md#aegis-types-and-the-raw-sites; nodes after the first are `contexts` in the order the network issued their ids
-    return c.contexts.items[node.raw() - 1];
+    return c.contexts.items[Network.followerIndex(node)];
 }
 
 pub fn disk(c: *Core, node: NodeId) ?Fs {
@@ -939,7 +938,7 @@ pub fn record(c: *Core, call: IoCall, entered: Call, outcome: u64) void {
     const id = if (entered.task) |t| t.id else ids.outside;
     const event: Event = .{ .call = call, .task = id, .node = entered.node, .decision = c.decision, .outcome = outcome };
     const at: Io.Timestamp = .fromNanoseconds(c.clocks[@backingInt(Kept.awake)]);
-    // ziglint-ignore: Z026 a record that cannot be kept is dropped; the hash still counts it
+    // glint-ignore: Z026 -- a record that cannot be kept is dropped; the hash still counts it
     c.trace.append(.{ .step = entered.step, .task = id, .at = at, .event = event }) catch {};
 }
 

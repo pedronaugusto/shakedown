@@ -19,6 +19,7 @@ test "a sleep ends when the clock reaches it, and not before" {
     const io = clock.io();
     const start = Io.Timestamp.now(io, .awake);
     var task = try io.concurrent(sleepFor, .{ io, .fromSeconds(3600), .awake });
+    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer _ = task.cancel(io) catch {};
     try clock.awaitArmed(1, patience);
     try testing.expectEqual(@as(?Io.Clock.Timestamp, .{ .raw = start.addDuration(.fromSeconds(3600)), .clock = .awake }), clock.nextDeadline());
@@ -83,6 +84,7 @@ test "suspend moves boot and real time but not awake time" {
     const boot = Io.Timestamp.now(io, .boot);
     const real = Io.Timestamp.now(io, .real);
     var on_awake = try io.concurrent(sleepFor, .{ io, .fromSeconds(60), .awake });
+    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer _ = on_awake.cancel(io) catch {};
     var on_boot = try io.concurrent(sleepFor, .{ io, .fromSeconds(60), .boot });
     try clock.awaitArmed(2, patience);
@@ -103,6 +105,7 @@ test "a backward step of real time moves only real time and delays real-time tim
     const real = Io.Timestamp.now(io, .real);
     const deadline: Io.Clock.Timestamp = .{ .raw = real.addDuration(.fromSeconds(10)), .clock = .real };
     var task = try io.concurrent(Io.Clock.Timestamp.wait, .{ deadline, io });
+    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer _ = task.cancel(io) catch {};
     try clock.awaitArmed(1, patience);
     clock.stepReal(real.subDuration(.fromSeconds(50)));

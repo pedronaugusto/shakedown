@@ -125,27 +125,29 @@ The raw sites that remain, each with the reason it is allowed:
   Virtual time is `i64` nanoseconds, all clocks in the same unit, every addition
   saturating by design (a sleep of the largest duration is a sleep for ever) and
   every conversion from `Io.Duration` or `Io.Timestamp` made in
-  `Core.nanoseconds`, which saturates. aegis's `Instant` and `Duration` check
-  their sums and differences and have no saturating form, so adopting them here
-  would turn a sleep for ever into an error path at every site.
+  `Core.nanoseconds`, which saturates. aegis's `Instant` and `Duration` now have
+  saturating forms, so the reason against adopting them has gone; the clock,
+  the network model and the watchdog still keep plain `i64` nanoseconds, and
+  moving them is a change of its own, measured on its own.
   `FaultIo`'s key for the calling task is a `u64` of its caller's own choosing over
   any base `Io`: `Sim` hands it the task's number at one place.
   Hashing a task or node id into a trace digest or a seed (the digest of
   a new task, the network's input digests) takes its number.
 - Safe-type internals. `net/Model.key` joins two node ids into the link table's
-  key, and `Core.contextOf` maps a node id to its place in `contexts`, which holds
-  the nodes in the order their ids were issued. Each is the one function that
-  knows the representation.
+  key, and `net/Model.followerIndex` maps a node id to its place in `Core.contexts`,
+  which holds the nodes after the first in the order their ids were issued. Each is
+  the one function that knows the representation, in the model that issues the ids.
 - A C or OS boundary. `Quarantine` and `executor` do page arithmetic on `usize`
   for `mmap`, `mprotect` and `madvise`, and the fiber layout does stack arithmetic
   for the first frame.
 
-The package's glint configuration (`ci/preflight.json`) sets the aegis rules for
-the adopted types (A001 to A003 for `Guarded`, A004 for ids and units) to gate over
-`src` and `bench`, tests and benchmarks included. preflight runs ziglint until
-glint's integration lands, and published glint recognises the aegis it was
-pinned to, not this one, so the gate takes effect when both do; sites carry
-`glint-ignore` lines in the form preflight's own use.
+The package's glint configuration (`ci/preflight.json`) gates A004 (ids, byte counts and
+limits) and Z026 over `src` and `bench`, tests and benchmarks included. A001 to A003,
+which watch `Guarded`, are reports: glint decides them only for a receiver whose type
+it resolves and an acquisition whose `defer` is the last statement of its block, so on
+this code they leave 42 sites undecided, and a gate treats an undecided site as a
+failure. They gate once glint can decide the code as written. A site that carries
+`glint-ignore` says why; one that glint no longer finds fails as stale.
 
 The tests that guard these types are written with plain integers and without
 importing aegis (`src/reference_test.zig`): an event hashed as its plain twin, task

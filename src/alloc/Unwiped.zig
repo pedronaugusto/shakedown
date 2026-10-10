@@ -99,7 +99,7 @@ fn say(comptime fmt: []const u8, args: anytype) void {
     var buffer: [512]u8 = undefined;
     const stderr = std.debug.lockStderr(&buffer).terminal();
     defer std.debug.unlockStderr();
-    // ziglint-ignore: Z026 a message stderr cannot take is lost
+    // glint-ignore: Z026 -- a message stderr cannot take is lost
     stderr.writer.print(fmt, args) catch {};
 }
 

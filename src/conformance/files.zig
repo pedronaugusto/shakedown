@@ -8,6 +8,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io) !void {
     const name = "shakedown-conformance-" ++ std.fmt.hex(@as(u64, @bitCast(random)));
     const cwd = Io.Dir.cwd();
     const dir = try cwd.createDirPathOpen(io, name, .{ .open_options = .{ .iterate = true } });
+    // glint-ignore: Z026 -- removing the scratch directory is best effort after the run has its verdict
     defer cwd.deleteTree(io, name) catch {};
     defer dir.close(io);
     _ = try dir.createDirPath(io, "nested/deep");

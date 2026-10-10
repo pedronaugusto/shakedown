@@ -37,8 +37,7 @@ pub const Held = struct {
     context: *const anyopaque,
     isHeld: *const fn (context: *const anyopaque) bool,
 
-    /// A spin lock that is one atomic flag, true while held, as the lock of
-    /// an `aegis.Guarded` is.
+    /// A spin lock that is one atomic flag, true while held.
     pub fn flag(lock: *const std.atomic.Value(bool)) Held {
         return .{
             .context = lock,
@@ -51,12 +50,19 @@ pub const Held = struct {
         };
     }
 
-    /// The lock of an `aegis.Guarded`, read without taking it. `Guarded` has
-    /// no call that asks whether it is held, and this is the one place a
-    /// probe reaches for its flag, so a test does not.
+    /// The lock of an aegis `Guarded`, `BlockingGuarded` or `Order.Ordered`, asked with its own
+    /// `isHeld` and never taken. `owner` is a pointer to it and must outlive the probe.
     pub fn guarded(owner: anytype) Held {
-        // glint-ignore: A001 -- safe-type-internals: docs/design.md#aegis-types-and-the-raw-sites; the flag is read, never written, and Guarded offers no call that asks
-        return flag(&owner.lock);
+        const Lock = @typeInfo(@TypeOf(owner)).pointer.child;
+        return .{
+            .context = owner,
+            .isHeld = struct {
+                fn is(context: *const anyopaque) bool {
+                    const l: *const Lock = @ptrCast(@alignCast(context)); // safe: made from a pointer to a `Lock` in `guarded`
+                    return l.isHeld();
+                }
+            }.is,
+        };
     }
 
     /// A `std.Io.Mutex`.
@@ -151,7 +157,7 @@ fn say(comptime fmt: []const u8, args: anytype) void {
     var buffer: [512]u8 = undefined;
     const stderr = std.debug.lockStderr(&buffer).terminal();
     defer std.debug.unlockStderr();
-    // ziglint-ignore: Z026 a message stderr cannot take is lost
+    // glint-ignore: Z026 -- a message stderr cannot take is lost
     stderr.writer.print(fmt, args) catch {};
 }
 
