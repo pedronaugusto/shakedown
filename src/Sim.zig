@@ -95,7 +95,10 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     _ = try s.core.network.addNode(&.{});
     s.network = .{ .core = &s.core };
     s.registry = .{ .core = &s.core };
-    if (s.core.fs) |*fs_| fs_.clock = &s.core.clocks[@backingInt(Core.Kept.real)];
+    if (s.core.fs) |*fs_| {
+        fs_.clock = &s.core.clocks[@backingInt(Core.Kept.real)];
+        fs_.stepper = .{ .core = &s.core, .flush = Core.flushStep };
+    }
     if (options.faults.len > 0) {
         s.fault_context = .{ .core = &s.core, .inherit = true };
         const base: Io = .{ .userdata = &s.fault_context, .vtable = &calls.vtable };
@@ -336,7 +339,7 @@ pub fn node(s: *Sim, name: []const u8, options: Node.Options) error{OutOfMemory}
     const ctx = try s.gpa.create(Core.Context);
     errdefer s.gpa.destroy(ctx);
     ctx.* = .{ .core = &s.core };
-    if (options.fs) |o| ctx.disk = .{ .model = try Disk.init(s.gpa, s.core.source, o), .clock = &s.core.clocks[@backingInt(Core.Kept.real)] };
+    if (options.fs) |o| ctx.disk = .{ .model = try Disk.init(s.gpa, s.core.source, o), .clock = &s.core.clocks[@backingInt(Core.Kept.real)], .stepper = .{ .core = &s.core, .flush = Core.flushStep } };
     errdefer if (ctx.disk) |disk| disk.model.deinit();
     const n = try s.gpa.create(Node);
     errdefer s.gpa.destroy(n);

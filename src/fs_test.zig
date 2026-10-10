@@ -780,3 +780,36 @@ test "Fs create follows dangling symlinks and exclusive create refuses them" {
     }
     try bytesEqual(sim.fs(), "dir/target", "through");
 }
+
+test "Fs a seam's raw sync from a task is a step of the run, a crash point and a record" {
+    const Work = struct {
+        fn run(io: Io, fs: *Sim.Fs) !void {
+            const file = try Io.Dir.cwd().createFile(io, "data", .{});
+            defer file.close(io);
+            try file.writePositionalAll(io, "durable", 0);
+            try fs.flush(file.handle, .full);
+            try fs.flushDir(Io.Dir.cwd().handle, .full);
+        }
+    };
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null, .trace = .all });
+    defer sim.deinit();
+    try t.expect(sim.run(Work.run, .{ sim.io(), sim.fs() }) == .finished);
+    var foreign: u32 = 0;
+    var dir_sync: u64 = 0;
+    for (sim.trace().records()) |r| {
+        if (r.event.call != .foreign) continue;
+        foreign += 1;
+        dir_sync = r.step;
+    }
+    try t.expectEqual(2, foreign);
+    try sim.fs().crash(.lose_all);
+    try bytesEqual(sim.fs(), "data", "durable");
+
+    // Stopped before the directory sync, the name may be lost: the syncs
+    // are crash points of their own.
+    const stopped = try Sim.init(t.allocator, .{ .watchdog = null, .max_steps = dir_sync - 1 });
+    defer stopped.deinit();
+    try t.expect(stopped.run(Work.run, .{ stopped.io(), stopped.fs() }) == .step_limit);
+    try stopped.fs().crash(.lose_all);
+    try t.expectError(error.FileNotFound, stopped.fs().read(t.allocator, "data"));
+}

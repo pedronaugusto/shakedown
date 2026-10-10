@@ -21,6 +21,15 @@ pub const CrashError = error{OutOfMemory};
 model: *Model,
 /// Private: the owning simulation's real clock, installed after Core reaches its final address.
 clock: ?*const i64 = null,
+/// Private: the owning simulation's step around a raw sync, installed with
+/// `clock`, so a sync a task makes is a step of the run.
+stepper: ?Stepper = null,
+
+/// Private: how the owning simulation makes a raw sync one of its steps.
+pub const Stepper = struct {
+    core: *anyopaque,
+    flush: *const fn (core: *anyopaque, fs: *Fs, handle: Io.File.Handle, kind: Flush, dir: bool) FlushError!void,
+};
 
 fn setTime(fs: *Fs) void {
     if (fs.clock) |clock| fs.model.at = .fromNanoseconds(clock.*);
@@ -65,11 +74,21 @@ pub fn misdirectNextWrite(fs: *Fs, path: []const u8, to_offset: u64) StorageErro
     return fs.model.misdirectNextWrite(path, to_offset);
 }
 /// Raw durability for seams: a device flush covers earlier writeouts on this disk.
+/// Made by a simulated task, it is a step of the run like any `Io` call: a
+/// place the schedule may switch, a crash point, and a record in the trace.
 pub fn flush(fs: *Fs, handle: Io.File.Handle, kind: Flush) FlushError!void {
+    if (fs.stepper) |s| return s.flush(s.core, fs, handle, kind, false);
     return fs.model.flush(handle, kind);
 }
+/// `flush` of a directory handle.
 pub fn flushDir(fs: *Fs, handle: Io.Dir.Handle, kind: Flush) FlushError!void {
+    if (fs.stepper) |s| return s.flush(s.core, fs, handle, kind, true);
     return fs.model.flushDir(handle, kind);
+}
+/// Private: the sync itself, at the simulation's current time.
+pub fn flushNow(fs: *Fs, handle: Io.File.Handle, kind: Flush, dir: bool) FlushError!void {
+    fs.setTime();
+    return if (dir) fs.model.flushDir(handle, kind) else fs.model.flush(handle, kind);
 }
 pub fn dump(fs: *const Fs, w: *Io.Writer) Io.Writer.Error!void {
     return fs.model.dump(w);
