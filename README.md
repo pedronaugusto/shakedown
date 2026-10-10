@@ -158,19 +158,22 @@ a page count.
 `alloc.Unwiped` is given the bytes that must not outlive their owner (a key, a
 token, a password) and scans every block as it is freed, counting the blocks that
 still held one and keeping the first with the frames of its free. It refuses
-resizes, so a block that shrinks or moves is freed with the contents it had. It
-sees a free as the allocator receives it, and `Allocator.free` fills a block with
-`undefined` first wherever runtime safety is on: in Debug and ReleaseSafe the bytes
-never reach it, whatever the program did. `Unwiped.sees` says which builds can
-tell, and `expectNone` skips the test in the others instead of passing it, so run
-such tests in ReleaseFast or ReleaseSmall. `alloc.LockProbe` is given a lock
+resizes, so a block that shrinks or moves is freed with the contents it had.
+`alloc.Erased` checks the stronger promise, every byte of every block zero by
+its free, those never written too. Both see a free as the allocator receives
+it, and `Allocator.free` fills a block with `undefined` first wherever runtime
+safety is on: in Debug and ReleaseSafe the bytes of such a free never reach
+them, whatever the program did. They count such a block as `unseen`, and their
+`expectNone` and `expectErased` skip the test rather than pass it. A free
+through `rawFree`, as code that wipes its secrets itself makes it, is seen in
+every build. `alloc.LockProbe` is given a lock
 (`Held.guarded` for an aegis `Guarded`, `BlockingGuarded` or `Order.Ordered`, `Held.flag` for an atomic flag,
 `Held.mutex` for `std.Io.Mutex`, `Held.spinMutex` for `std.atomic.Mutex`) and counts the allocator
 calls made while it is held, keeping the first with its frames. It reads the lock
 and never takes it, and a lock does not say who holds it: it reports a call made
 while anyone held the lock, which is the question for a lock the code takes itself
 on a test's one thread, and for a lock inside which nothing may allocate. Both are
-thread-safe, and `expectNone` on either prints the first offender.
+thread-safe, and `expectNone` or `expectErased` prints the first offender.
 
 `FaultIo` wraps every `Io` slot and every `operate` operation, by code generated
 from `Io.VTable` and `Io.Operation`, and forwards each call to its base. Each

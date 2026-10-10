@@ -8,6 +8,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- `CrashEveryFaultOptions` is `EveryCrashOptions`, and `EveryCrashError` names
+  what `everyCrash` returns.
+- `alloc.Unwiped.expectNone` decides per block: a free through `rawFree` is
+  seen in every build, and only a block `Allocator.free` overwrote first
+  (`unseen`) makes it skip. It skipped in every Debug and ReleaseSafe build.
+
 - `Case.sim` allocates the simulation from the case's arena: a case that
   allocates and frees heavily in one long simulation keeps its peak until the
   case ends. A search or a property pays no allocator per case for it.
@@ -67,6 +73,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a call of its own, so steps and counts of code that batches include them.
 
 ### Added
+
+- `alloc.Erased`: checks every block is erased, every byte zero, by the time
+  it is freed; valid in every build for frees through `rawFree`, and it counts
+  rather than passes the frees `Allocator.free` hid.
 
 - `.aegis = .consumer` and `useAegis` (build.zig): a project with aegis in its own
   graph binds shakedown to it, so its tests link one aegis and shakedown's types

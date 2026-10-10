@@ -15,6 +15,7 @@ test {
     _ = @import("alloc/Quarantine.zig");
     _ = @import("alloc/NoResize.zig");
     _ = @import("alloc/Unwiped.zig");
+    _ = @import("alloc/Erased.zig");
     _ = @import("alloc/LockProbe.zig");
     _ = @import("corpus.zig");
     _ = @import("Source.zig");
@@ -40,6 +41,7 @@ test {
     _ = @import("quarantine_test.zig");
     _ = @import("no_resize_test.zig");
     _ = @import("unwiped_test.zig");
+    _ = @import("erased_test.zig");
     _ = @import("lock_probe_test.zig");
     _ = @import("fault_test.zig");
     _ = @import("every_fault_test.zig");

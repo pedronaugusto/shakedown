@@ -10,21 +10,24 @@
 //!
 //! It sees a free only as the allocator receives it, and `Allocator.free`
 //! fills a block with `undefined` first wherever runtime safety is on
-//! (Debug and ReleaseSafe): there the bytes never reach this allocator,
-//! whatever the program did. `sees` says which builds can tell, and
-//! `expectNone` skips the test in the others rather than pass it. Run such
-//! tests in ReleaseFast or ReleaseSmall.
+//! (Debug and ReleaseSafe): there the bytes of such a free never reach this
+//! allocator, whatever the program did. Such a block is counted as unseen,
+//! and `expectNone` skips the test rather than pass it. A free through
+//! `rawFree`, as code that wipes its secrets itself makes it, is seen in
+//! every build, and so is every free in ReleaseFast and ReleaseSmall.
 //!
 //! Thread-safe.
 const std = @import("std");
 const aegis = @import("aegis");
 const Allocator = std.mem.Allocator;
+const Erased = @import("Erased.zig");
 const Alignment = std.mem.Alignment;
 
 const Unwiped = @This();
 
-/// Whether a free shows this allocator what the block held: not where
-/// `Allocator.free` overwrites it first.
+/// Whether a free through `Allocator.free` shows this allocator what the
+/// block held: not where it overwrites the block first. `rawFree` always
+/// does.
 pub const sees = !std.debug.runtime_safety;
 
 /// Private: where the memory comes from and goes back to.
@@ -32,8 +35,9 @@ child: Allocator,
 /// The bytes that must not be found in freed memory. Borrowed, and not empty
 /// each: an empty needle is in every block.
 needles: []const []const u8,
-/// Private: blocks freed with a needle in them.
+/// Private: blocks freed with a needle in them, and blocks freed unseen.
 count: std.atomic.Value(usize) = .init(0),
+unseen_count: std.atomic.Value(usize) = .init(0),
 /// Private: the first of those.
 first: aegis.Guarded(?Hit) = .init(null),
 
@@ -73,6 +77,11 @@ pub fn found(u: *const Unwiped) usize {
     return u.count.load(.acquire);
 }
 
+/// Blocks `Allocator.free` overwrote before this allocator could look.
+pub fn unseen(u: *const Unwiped) usize {
+    return u.unseen_count.load(.acquire);
+}
+
 /// The first block freed with a needle in it.
 pub fn firstHit(u: *Unwiped) ?Hit {
     var held = u.first.acquire();
@@ -83,12 +92,14 @@ pub fn firstHit(u: *Unwiped) ?Hit {
 /// What `expectNone` reports besides a pass.
 pub const ExpectError = error{ SkipZigTest, TestUnexpectedResult };
 
-/// Passes when no freed block held a needle. Where `sees` is false it skips
-/// the test instead, since a pass there would prove nothing.
+/// Fails when a freed block held a needle; skips when a block went unseen,
+/// since a pass would then prove nothing of it; passes otherwise.
 pub fn expectNone(u: *Unwiped) ExpectError!void {
-    if (!sees) return error.SkipZigTest;
     const n = u.found();
-    if (n == 0) return;
+    if (n == 0) {
+        if (u.unseen() > 0) return error.SkipZigTest;
+        return;
+    }
     const hit = u.firstHit().?; // a count above zero is published after the first hit
     say("{d} block(s) freed with unwiped contents; the first held {f}", .{ n, hit });
     return error.TestUnexpectedResult;
@@ -120,6 +131,10 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*
 
 fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) void {
     const u = of(ptr);
+    if (Erased.overwritten(memory)) {
+        _ = u.unseen_count.fetchAdd(1, .release);
+        return u.child.rawFree(memory, alignment, ret_addr);
+    }
     for (u.needles, 0..) |needle, which| {
         const offset = std.mem.find(u8, memory, needle) orelse continue;
         u.note(.{ .needle = which, .offset = offset, .len = memory.len }, ret_addr);

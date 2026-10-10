@@ -100,3 +100,14 @@ test "blocks freed on several threads are all counted" {
     for (threads) |t| t.join();
     try testing.expectEqual(@as(usize, 800), unwiped.found());
 }
+
+test "a free through rawFree is seen in every build, and an unseen one is counted" {
+    var unwiped: Unwiped = .init(testing.allocator, &.{"password"});
+    const gpa = unwiped.allocator();
+    const wiped = try gpa.dupe(u8, "the password");
+    std.crypto.secureZero(u8, wiped);
+    freeAsLeft(gpa, wiped);
+    try unwiped.expectNone();
+    gpa.free(try gpa.dupe(u8, "the password"));
+    try testing.expectEqual(@as(usize, if (Unwiped.sees) 0 else 1), unwiped.unseen());
+}

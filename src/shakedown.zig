@@ -92,7 +92,10 @@ pub const panic = Sim.panic;
 
 /// Recover every reachable disk state before each call and after return.
 pub const everyCrash = every.crash.everyCrash;
-pub const CrashEveryFaultOptions = every.crash.CrashEveryFaultOptions;
+/// What `everyCrash` tries, and what it keeps when a run fails.
+pub const EveryCrashOptions = every.crash.EveryCrashOptions;
+/// Why `everyCrash` failed.
+pub const EveryCrashError = every.crash.Error;
 
 /// Named benchmark workloads, resolution-aware measurement and run comparison.
 pub const bench = @import("bench.zig");

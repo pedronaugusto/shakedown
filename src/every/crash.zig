@@ -4,7 +4,7 @@ const Io = std.Io;
 const Sim = @import("../Sim.zig");
 const reports = @import("fault.zig");
 
-pub const CrashEveryFaultOptions = struct {
+pub const EveryCrashOptions = struct {
     sim: Sim.Options = .{},
     /// Bound exploration at each crash point; reaching it is reported explicitly.
     max_states: u32 = 256,
@@ -20,7 +20,7 @@ pub const Error = Sim.InitError || error{ OutOfMemory, Nondeterministic, CheckFa
 /// own application heap state in ctx and release it in tearDown.
 /// Recovery runs on a fresh scheduler with the crashed storage. The returned
 /// bounded count makes an incomplete exploration visible to the caller.
-pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: CrashEveryFaultOptions) Error!Report {
+pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptions) Error!Report {
     if (options.sim.fs == null) return error.FileSystemDisabled;
     if (options.max_states == 0) return error.CheckFailed;
     var config = options.sim;
@@ -99,7 +99,7 @@ fn teardown(ctx: anytype) void {
     if (@hasDecl(@typeInfo(@TypeOf(ctx)).pointer.child, "tearDown")) ctx.tearDown();
 }
 
-fn fail(gpa: std.mem.Allocator, options: CrashEveryFaultOptions, sim: *Sim, report: Report, injected: ?reports.Injected, err: anyerror) Error {
+fn fail(gpa: std.mem.Allocator, options: EveryCrashOptions, sim: *Sim, report: Report, injected: ?reports.Injected, err: anyerror) Error {
     const diagnostics = options.diagnostics orelse return error.CheckFailed;
     var writer: Io.Writer.Allocating = .init(gpa);
     errdefer writer.deinit();
