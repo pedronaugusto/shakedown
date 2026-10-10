@@ -290,7 +290,8 @@ fn change(fs: *Model, entries: *std.ArrayList(Entry), c: Change) !void {
         }
     } else if (c.inode) |id| {
         try entries.ensureUnusedCapacity(fs.gpa, 1);
-        entries.appendAssumeCapacity(.{ .parent = c.parent, .name = c.name.retain(), .inode = id });
+        entries.appendAssumeCapacity(.{ .parent = c.parent, .name = c.name.retain(), .inode = id, .cookie = fs.root.cookies });
+        fs.root.cookies += 1;
     }
 }
 fn entryEffect(fs: *Model, changes: []const Change, data_inode: ?u32) !void {

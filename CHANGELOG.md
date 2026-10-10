@@ -187,6 +187,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- A `Sim` directory listing resumes after the last entry it returned, by a
+  cookie each entry keeps, as readdir does: a listing that removes what it
+  lists (a prune of temporary files) no longer skips the entry after each one
+  removed. The conformance golden changes with it.
+
 - `Sim.Fs.crashStates` tries each subset of pending effects in the orders that
   can leave different trees, those where conflicting effects (one sector, one
   file's length or metadata, one name) trade places, rather than every
