@@ -8,6 +8,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Breaking
 
+- shakedown is developed with [bay](https://github.com/pedronaugusto/bay): preflight is a dev dependency, and the tests, fault programs, example, consumer checks and benchmarks are the development build's (`bay test`, `bay check`, `bay bench`). What a project that depends on shakedown builds is unchanged: the module and the two programs.
+- `shakedown-fuzz --bay <path>` builds the package's step as `bay dev <step>`, for a package developed with bay.
 - `CrashEveryFaultOptions` is `EveryCrashOptions`, and `EveryCrashError` names
   what `everyCrash` returns.
 - `alloc.Unwiped.expectNone` decides per block: a free through `rawFree` is

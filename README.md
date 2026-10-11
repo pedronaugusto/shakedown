@@ -16,20 +16,25 @@ secret, or see a call made while a lock is held.
 
 ## Install
 
-Requires Zig 0.17.0. Fetch with `zig fetch --save
-git+https://github.com/pedronaugusto/shakedown`, mark the dependency `.lazy = true`
-in `build.zig.zon`, and add the `shakedown` module only to your test modules'
-imports. It is a test dependency: production code never imports it.
+Requires Zig 0.17.0. shakedown is a test dependency: production code never imports
+it. With [bay](https://github.com/pedronaugusto/bay), it is a dev dependency, which a
+project that depends on yours never sees: `bay add --dev
+git+https://github.com/pedronaugusto/shakedown`, then add the `shakedown` module to the
+test modules your `dev` builds. Without bay, fetch it with `zig fetch --save
+git+https://github.com/pedronaugusto/shakedown`, mark the dependency `.lazy = true`,
+and add the module only to your test modules' imports.
 
 shakedown's API carries aegis's types (task ids, byte counts, limits), so a build
 should link one aegis. A project with aegis in its own graph fetches shakedown
 with `.aegis = .consumer` and binds it to its own, and shakedown's pin is then
-never fetched:
+never fetched. In `dev`, where shakedown's build script is `tools.shakedown`:
 
 ```zig
-const shakedown = try b.dependencyLazy("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer });
-@import("shakedown").useAegis(shakedown, aegis.module("aegis"));
+const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer });
+tools.shakedown.useAegis(shakedown, aegis.module("aegis"));
 ```
+
+Without bay, the same in `build`, through `@import("shakedown").useAegis`.
 
 ## Usage
 
@@ -278,7 +283,8 @@ long tape the fuzzer found comes back minimal.
 `shakedown-fuzz` (an artifact of the package, as `shakedown-bench-compare` is)
 fuzzes a package's `check` properties off the landing path, for as long as it
 is given: `shakedown-fuzz --package ../relic --store ~/fuzz --limit 50M
---sessions 4` runs `zig build test --fuzz=<limit>` (or `--step <name>`, a step
+--sessions 4` runs `zig build test --fuzz=<limit>`, or `bay dev test --fuzz=<limit>`
+with `--bay <path>` for a package developed with bay (or `--step <name>`, a step
 whose every test binary has a property, since the fuzzer refuses one with none)
 in the package with
 `<store>/<package>/cache` as its cache, so the fuzzer's corpora live outside
@@ -598,11 +604,11 @@ quarantines nothing; `Quarantine.supported` says which.
   the id, byte-count, limit and lock types the simulation and the quarantine are
   built on. A consumer fetches it with shakedown.
 - [preflight](https://github.com/pedronaugusto/preflight) runs the source checks,
-  the tests and CI, fetched only in shakedown's own tree.
+  the tests and CI: a dev dependency, which a project depending on shakedown never sees.
 
 ## Testing
 
-`zig build test` runs the unit suite, the death tests and the example. The
+`bay test` runs the unit suite, the death tests and the example. The
 conformance checks run on std's threaded `Io`, through an empty `Layer` and an
 empty `FaultIo`, and on simulations on both executors, all three schedules and
 eight seeds. A thousand seeds of that workload each repeat their run, and a
@@ -635,20 +641,20 @@ another thread, and checks that none hangs and none times out early;
 cancel on a task that holds its protection blocked and on one that does not, and
 re-arm one through std's `Queue`, which takes a cancel after a partial put. The
 batch tests count each operation once however often it is awaited, and wait out a
-stalled read's deadline on a clock. `zig build check` compiles the tests, programs
-and example without running them. `zig build bench` builds the benchmarks in
-ReleaseFast and runs them, by hand; `zig build test` runs each row once at its
+stalled read's deadline on a clock. `bay check` compiles the tests, programs
+and example without running them. `bay bench` builds the benchmarks in
+ReleaseFast and runs them, by hand; `bay test` runs each row once at its
 smallest, and nothing times them in CI.
 
 [CI](.github/workflows/ci.yml) runs the source checks and the Linux Debug suite
 on every push it is asked for, and before a merge the Debug suite on macOS and
-Windows as well, plus the Linux Debug suite on Zig master, which never blocks. `zig build check` cross-compiles for `x86_64-linux-gnu`,
+Windows as well, plus the Linux Debug suite on Zig master, which never blocks. `bay check` cross-compiles for `x86_64-linux-gnu`,
 `aarch64-linux-gnu`, `x86_64-linux-musl`, `x86_64-windows-gnu`,
 `aarch64-windows-gnu`, `x86_64-macos` and `aarch64-macos`.
 
 
 `crashreplay/` checks `Sim.Fs`'s crash model against real file systems, by hand
-before a cut and never in CI (Linux, as root): `zig build crash-replay`, then
+before a cut and never in CI (Linux, as root): `bay crash-replay`, then
 `sudo zig-out/bin/shakedown-crash-replay --fs ext4 --fs xfs --fs btrfs`. Each
 workload (an atomic replace, a synced log, a careless save, an overwrite, files
 made and named) runs on a loop disk under dm-log-writes; the log is replayed onto

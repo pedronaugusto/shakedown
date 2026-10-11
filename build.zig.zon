@@ -13,15 +13,16 @@
         "README.md",
     },
     .dependencies = .{
-        .preflight = .{
-            .url = "git+https://github.com/pedronaugusto/preflight#5a2d7c3f8efb70ead532a923ebb411a6324f2581",
-            .hash = "preflight-0.1.0-LX1Zwtq3CgC2_Gb44-qgEk3AqRQAMkx9dZbsdp_GTx4T",
+        .aegis = .{
+            .url = "git+https://github.com/pedronaugusto/aegis#5d2a92141f0298d76dc5fd602526d55a62b4e11a",
+            .hash = "aegis-0.0.0-rsxouhkfBwAnczorKhjMmKRuftu_PQWGF1UxyEaWISTL",
             .lazy = true,
         },
-        .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis#39d3bea8da17f1094ee85577e636b127f93e0973",
-            .hash = "aegis-0.0.0-rsxouiIXBwCCAncc-oK7MrA3OcZBLFlIBm1d0K9ME3uR",
-            .lazy = true,
+    },
+    .dev_dependencies = .{
+        .preflight = .{
+            .url = "git+https://github.com/pedronaugusto/preflight#ccf971143cc24ed8d8248b230a28727562ae5dd3",
+            .hash = "preflight-0.1.0-LX1ZwtYHDAC46P1if0wF55pTRNMGnDVtVH5CGnaKL1LV",
         },
     },
 }

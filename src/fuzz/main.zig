@@ -25,13 +25,20 @@ const Options = struct {
     step: []const u8 = "test",
     sessions: u32 = 1,
     zig: []const u8 = "zig",
+    /// bay, for a package developed with it: the step is then its development build's.
+    bay: ?[]const u8 = null,
+
+    /// The command that builds the package's step: `bay dev`, or `zig build`.
+    fn build(o: Options, a: std.mem.Allocator) ![]const []const u8 {
+        return if (o.bay) |bay| a.dupe([]const u8, &.{ bay, "dev" }) else a.dupe([]const u8, &.{ o.zig, "build" });
+    }
 };
 
 pub fn main(init: std.process.Init) !u8 {
     const a = init.arena.allocator();
     const io = init.io;
     const options = parse(try init.minimal.args.toSlice(a)) catch {
-        try say(io, "usage: shakedown-fuzz [--package dir] [--store dir] [--limit 10M] [--step test] [--filter test] [--sessions n] [--zig path]\n", .{});
+        try say(io, "usage: shakedown-fuzz [--package dir] [--store dir] [--limit 10M] [--step test] [--filter test] [--sessions n] [--zig path] [--bay path]\n", .{});
         return 2;
     };
     const package = try Io.Dir.cwd().realPathFileAlloc(io, options.package, a);
@@ -45,7 +52,8 @@ pub fn main(init: std.process.Init) !u8 {
     var total: usize = 0;
     for (0..options.sessions) |session| {
         var argv: std.ArrayList([]const u8) = .empty;
-        try argv.appendSlice(a, &.{ options.zig, "build", options.step, try a.print("--fuzz={s}", .{options.limit}), "--cache-dir", cache });
+        try argv.appendSlice(a, try options.build(a));
+        try argv.appendSlice(a, &.{ options.step, try a.print("--fuzz={s}", .{options.limit}), "--cache-dir", cache });
         if (options.filter) |f| try argv.append(a, try a.print("-Dtest-filter={s}", .{f}));
         try say(io, "shakedown-fuzz: {s}, session {d} of {d}\n", .{ name, session + 1, options.sessions });
         const result = try std.process.run(a, io, .{ .argv = argv.items, .cwd = .{ .path = package } });
@@ -87,6 +95,8 @@ fn parse(args: []const [:0]const u8) !Options {
             o.sessions = try std.fmt.parseUnsigned(u32, value, 10);
         } else if (std.mem.eql(u8, arg, "--zig")) {
             o.zig = value;
+        } else if (std.mem.eql(u8, arg, "--bay")) {
+            o.bay = value;
         } else return error.Usage;
         i += 1;
     }
@@ -99,7 +109,7 @@ fn shrink(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Map, 
     var environ = try parent.clone(a);
     try environ.put("SHAKEDOWN_TAPE", f.tape);
     const result = try std.process.run(a, io, .{
-        .argv = &.{ o.zig, "build", o.step, try a.print("-Dtest-filter={s}", .{f.filter}), "--cache-dir", cache },
+        .argv = try std.mem.concat(a, []const u8, &.{ try o.build(a), &.{ o.step, try a.print("-Dtest-filter={s}", .{f.filter}), "--cache-dir", cache } }),
         .cwd = .{ .path = package },
         .environ_map = &environ,
     });
