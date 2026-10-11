@@ -257,6 +257,14 @@ pub fn build(b: *std.Build) !void {
         // A project that depends on shakedown by path, with only the packages
         // shakedown needs: the build a consumer gets.
         preflight.addConsumerCheck(b, .{ .package = "shakedown", .program = b.path("ci/consumer.zig"), .packages = &.{aegis_dependency} });
+        // The aegis consumer pins aegis as this package does: its manifest is written from ours.
+        aegis_consumer.step.dependOn(preflight.addNestedManifest(b, .{
+            .directory = "ci/aegis-consumer",
+            .name = "aegis_consumer",
+            .fingerprint = 0x10a0b9d773e3265,
+            .path_dependencies = &.{.{ .name = "shakedown", .path = "../.." }},
+            .shared = &.{"aegis"},
+        }));
     }
     return needed;
 }

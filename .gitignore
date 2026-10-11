@@ -2,3 +2,6 @@
 zig-out/
 zig-pkg/
 .scratch/
+
+# Written by the build from build.zig.zon.
+ci/aegis-consumer/build.zig.zon
