@@ -240,6 +240,8 @@ pub fn build(b: *std.Build) !void {
         preflight.addCi(b, .{
             .tests = test_step,
             .portable_tests = true,
+            // shakedown cannot declare itself: its benchmarks measure through this build.
+            .shakedown = .own,
             // `zig build bench` runs them in ReleaseFast, by hand; never
             // timed in CI, where `zig build test` runs each once.
             .bench = .{
