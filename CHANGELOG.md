@@ -297,4 +297,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   options, and `EveryFaultReport` frees its trace with the allocator it was made
   with.
 
+### Changed
+
+- The aegis consumer's `build.zig.zon` under `ci/` is written by the build from shakedown's own aegis pin, and is no longer committed.
+
 [Unreleased]: https://github.com/pedronaugusto/shakedown/commits/main
