@@ -300,4 +300,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   options, and `EveryFaultReport` frees its trace with the allocator it was made
   with.
 
+### Changed
+
+- Pins aegis 0.1.0.
+
 [Unreleased]: https://github.com/pedronaugusto/shakedown/commits/main
