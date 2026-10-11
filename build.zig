@@ -26,7 +26,8 @@ pub fn build(b: *std.Build) void {
     });
     if (aegis_from == .own) {
         // The module is declared either way, so a consumer can ask for it while aegis is fetched.
-        if (b.lazyDependency("aegis", .{ .target = target, .optimize = optimize })) |aegis| module.addImport("aegis", aegis.module("aegis"));
+        // On the first pass Zig fetches aegis and configures again.
+        if (b.dependencyLazy("aegis", .{ .target = target, .optimize = optimize })) |aegis| module.addImport("aegis", aegis.module("aegis")) else |_| {}
     }
 
     // Available to build tools without building tests.
