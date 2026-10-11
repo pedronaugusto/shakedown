@@ -14,13 +14,13 @@
     },
     .dependencies = .{
         .preflight = .{
-            .url = "git+https://github.com/pedronaugusto/preflight#5a2d7c3f8efb70ead532a923ebb411a6324f2581",
-            .hash = "preflight-0.1.0-LX1Zwtq3CgC2_Gb44-qgEk3AqRQAMkx9dZbsdp_GTx4T",
+            .url = "git+https://github.com/pedronaugusto/preflight#d817e15f3cb8e89193b1cb618d5b86110f38d37f",
+            .hash = "preflight-0.1.0-LX1Zwks2CwB3NVkX3ThfzJZzZKeveSmU8Sraf-Le3lls",
             .lazy = true,
         },
         .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis#39d3bea8da17f1094ee85577e636b127f93e0973",
-            .hash = "aegis-0.0.0-rsxouiIXBwCCAncc-oK7MrA3OcZBLFlIBm1d0K9ME3uR",
+            .url = "git+https://github.com/pedronaugusto/aegis#5d2a92141f0298d76dc5fd602526d55a62b4e11a",
+            .hash = "aegis-0.0.0-rsxouhkfBwAnczorKhjMmKRuftu_PQWGF1UxyEaWISTL",
             .lazy = true,
         },
     },
