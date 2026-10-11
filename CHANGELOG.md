@@ -201,6 +201,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Fuzzing a `check` property gives each input a runner of its own. The test runner checks for leaks after every fuzz input, and a shared runner kept its arena between inputs, so a fuzz run failed with a false leak at the first input that grew it.
 - Under `--fuzz`, a property whose cases allocate failed every input with a leak:
   the runner kept its arena and tape for the next input on the test's allocator,
   which the test runner checks after each one. It keeps them on the page allocator.
