@@ -10,7 +10,9 @@
 //! Built for the fuzzer (`zig build test --fuzz`), `check` hands the body
 //! to `std.testing.fuzz` instead, with the regressions as its corpus and a
 //! source that reads the fuzzer's input; a failure the fuzzer finds prints
-//! as a tape the normal run then shrinks.
+//! as a tape the normal run then shrinks. A test that asserts how `check`
+//! ran (its cases, its seed, the error it returned) sets `.fuzz = false`:
+//! under the fuzzer it would run the fuzzer's inputs instead.
 const builtin = @import("builtin");
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -70,6 +72,10 @@ pub const CheckOptions = struct {
     /// Filled when a case fails, if given, and then nothing is printed.
     /// Free with `CheckReport.deinit`.
     diagnostics: ?*CheckReport = null,
+    /// Whether a test binary built for the fuzzer hands the property to it.
+    /// False for a test that asserts how `check` ran (its cases, its seed,
+    /// the error it returned, its report), which the fuzzer's inputs change.
+    fuzz: bool = true,
 };
 
 /// How a property failed: its minimal tape, and the report `check` prints.
@@ -374,14 +380,15 @@ const fuzz_capable = switch (builtin.zig_backend) {
 };
 
 /// The property under the fuzzer, each input one case, when the runner
-/// fuzzes; false, having run nothing, when it does not.
+/// fuzzes; false, having run nothing, when it does not or the check is not
+/// the fuzzer's.
 fn fuzzed(
     gpa: Allocator,
     ctx: anytype,
     comptime body: fn (@TypeOf(ctx), *Case) anyerror!void,
     options: CheckOptions,
 ) CheckError!bool {
-    if (!fuzz_capable or !builtin.is_test) return false;
+    if (!fuzz_capable or !builtin.is_test or !options.fuzz) return false;
     var inputs: std.ArrayList([]const u8) = .empty;
     defer {
         for (inputs.items) |input| gpa.free(input);

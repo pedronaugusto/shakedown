@@ -1,6 +1,7 @@
-//! What a fuzzing session's output says it found: each property the fuzzer
-//! failed, with the tape `check` printed for it, read from the lines
-//! `check` and the test runner write.
+//! What a fuzzing session found: each property the fuzzer failed, with the
+//! tape `check` printed for it, read from the lines `check` and the test
+//! runner write; and whether the session crashed or ran nothing, read from
+//! the cache it ran on, since Zig exits 0 from a bounded session either way.
 const std = @import("std");
 
 pub const Finding = struct {
@@ -59,4 +60,78 @@ test "a fuzzer's failure reads back as its test, its error and its tape" {
     try std.testing.expectEqualStrings("check fuzz", found[0].filter);
     try std.testing.expectEqualStrings("Found", found[0].err);
     try std.testing.expectEqualStrings("309", found[0].tape);
+}
+
+/// What the fuzzer has left in a session's cache: the runs its coverage files
+/// (`v/<id>`, each headed by `std.Build.abi.fuzz.SeenPcsHeader`) count, and
+/// when it last saved a crashing input to `f/crash`.
+pub const Cache = struct {
+    runs: u64 = 0,
+    crash: ?std.Io.Timestamp = null,
+
+    pub fn read(io: std.Io, dir: std.Io.Dir) !Cache {
+        var found: Cache = .{};
+        if (dir.statFile(io, "f/crash", .{})) |stat| {
+            found.crash = stat.mtime;
+        } else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
+        var coverage = dir.openDir(io, "v", .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => return found,
+            else => return err,
+        };
+        defer coverage.close(io);
+        var entries = coverage.iterate();
+        while (try entries.next(io)) |entry| {
+            if (entry.kind != .file) continue;
+            var file = try coverage.openFile(io, entry.name, .{});
+            defer file.close(io);
+            var buffer: [@sizeOf(std.Build.abi.fuzz.SeenPcsHeader)]u8 = undefined;
+            var reader = file.reader(io, &buffer);
+            var header: std.Build.abi.fuzz.SeenPcsHeader = undefined;
+            // A file the fuzzer is still creating holds no header yet, and counts no runs.
+            reader.interface.readSliceAll(std.mem.asBytes(&header)) catch continue;
+            found.runs += header.n_runs;
+        }
+        return found;
+    }
+};
+
+pub const Session = enum { ran, crashed, idle };
+
+/// A crash saved during the session, and a session that ran no input.
+pub fn judge(before: Cache, after: Cache) Session {
+    if (after.crash) |saved| {
+        const earlier = before.crash orelse return .crashed;
+        if (saved.nanoseconds != earlier.nanoseconds) return .crashed;
+    }
+    return if (after.runs > before.runs) .ran else .idle;
+}
+
+test "a crash saved during the session is one, a crash from before is not" {
+    const old: std.Io.Timestamp = .{ .nanoseconds = 1 };
+    const new: std.Io.Timestamp = .{ .nanoseconds = 2 };
+    try std.testing.expectEqual(Session.crashed, judge(.{}, .{ .runs = 10, .crash = new }));
+    try std.testing.expectEqual(Session.crashed, judge(.{ .crash = old }, .{ .runs = 10, .crash = new }));
+    try std.testing.expectEqual(Session.ran, judge(.{ .runs = 4, .crash = old }, .{ .runs = 10, .crash = old }));
+    try std.testing.expectEqual(Session.idle, judge(.{ .runs = 10 }, .{ .runs = 10 }));
+}
+
+test "a cache reads as its coverage files' runs and its saved crash" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try std.testing.expectEqual(Cache{}, try Cache.read(io, tmp.dir));
+    try tmp.dir.createDirPath(io, "v");
+    for ([_]usize{ 7, 35 }, [_][]const u8{ "v/1a", "v/2b" }) |runs, name| {
+        const header: std.Build.abi.fuzz.SeenPcsHeader = .{ .n_runs = runs, .unique_runs = 1, .pcs_len = 1 };
+        try tmp.dir.writeFile(io, .{ .sub_path = name, .data = std.mem.asBytes(&header) });
+    }
+    try tmp.dir.writeFile(io, .{ .sub_path = "v/partial", .data = "x" });
+    try tmp.dir.createDirPath(io, "f");
+    try tmp.dir.writeFile(io, .{ .sub_path = "f/crash", .data = "input" });
+    const found = try Cache.read(io, tmp.dir);
+    try std.testing.expectEqual(@as(u64, 42), found.runs);
+    try std.testing.expect(found.crash != null);
 }
