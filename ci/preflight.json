@@ -36,11 +36,6 @@
       "zig",
       "build",
       "check-bench-consumer"
-    ],
-    [
-      "zig",
-      "build",
-      "check-aegis-consumer"
     ]
   ],
   "glint": {

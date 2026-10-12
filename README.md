@@ -25,16 +25,9 @@ git+https://github.com/pedronaugusto/shakedown`, mark the dependency `.lazy = tr
 and add the module only to your test modules' imports.
 
 shakedown's API carries aegis's types (task ids, byte counts, limits), so a build
-should link one aegis. A project with aegis in its own graph fetches shakedown
-with `.aegis = .consumer` and binds it to its own, and shakedown's pin is then
-never fetched. In `dev`, where shakedown's build script is `tools.shakedown`:
-
-```zig
-const shakedown = b.dependency("shakedown", .{ .target = target, .optimize = optimize, .aegis = .consumer });
-tools.shakedown.useAegis(shakedown, aegis.module("aegis"));
-```
-
-Without bay, the same in `build`, through `@import("shakedown").useAegis`.
+links one aegis. bay gives a graph one version of each package, so a project
+with aegis in its own graph and shakedown share it. Without bay, pin the aegis
+release shakedown pins, and Zig fetches it once.
 
 ## Usage
 

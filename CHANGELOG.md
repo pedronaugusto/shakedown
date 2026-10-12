@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- `.aegis = .consumer` and `useAegis` are gone. bay gives a graph one version of each package, so a project with aegis in its own graph and shakedown already share one, and nothing binds them by hand. aegis is a plain dependency of shakedown, no longer lazy.
+
+### Changed
+
+- Pins aegis 0.1.1.
+- The benchmarks and the 32-bit check take shakedown's own module, where they built a copy of it to bind aegis to.
+
 ## [0.2.6] - 2026-10-12
 
 ### Changed
