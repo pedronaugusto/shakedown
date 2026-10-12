@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-12
+
 ### Fixed
 
 - Simulations on fibers run right in optimized builds on aarch64. The context switch declared the link register clobbered by the name std gives it, `x30`, which the compiler does not take for the link register, so optimized code kept a pointer in it across a switch, and read through a code address once back: a crash or a corrupt value in ReleaseSafe and ReleaseFast on aarch64 (macOS and Linux). The executor's switch declares it as `lr`.
