@@ -8,6 +8,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- Simulations on fibers run under ThreadSanitizer: each fiber is made known to it and each switch announced. It followed the thread by its stack, read one fiber's stack as another's, and crashed or hung.
+- A region lands at its fixed address under ThreadSanitizer too. The address it asks for elsewhere is ThreadSanitizer's shadow memory on x86_64 Linux, so its addresses did not repeat there.
+
 - A task reused for another job is reset field by field, leaving its context alone: on the threads executor its thread waits on the context's turn while the next job is laid out, and the whole task was copied over it, the turn included, which ThreadSanitizer reports as a race.
 
 ## [0.2.1] - 2026-10-12

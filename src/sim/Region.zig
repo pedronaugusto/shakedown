@@ -36,8 +36,10 @@ const classes = max_shift - min_shift + 1;
 const commit_step = 1 << 20;
 
 /// Where the region is asked for: high in the address space of 64-bit
-/// systems, far from heaps and from where the system places mappings.
-const hint: usize = if (@sizeOf(usize) == 8) 0x2000_0000_0000 else 0;
+/// systems, far from heaps and from where the system places mappings. Under
+/// ThreadSanitizer that range is its shadow memory, so the region asks in
+/// the low range its x86_64 Linux layout leaves to the program.
+const hint: usize = if (@sizeOf(usize) != 8) 0 else if (builtin.sanitize_thread) 0x0100_0000_0000 else 0x2000_0000_0000;
 
 /// Address space reserved: only what is touched is ever committed.
 const reserve: usize = if (@sizeOf(usize) == 8) 64 << 30 else 256 << 20;
