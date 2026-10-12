@@ -266,7 +266,9 @@ test "auto: a timed futex wait and a batch wait time out at once, on the clock" 
 
 test "no timed wait hangs or times out early while the clock moves from another thread" {
     var clock: Clock = .init(testing.io, .{});
-    const threads = build_options.stress_threads;
+    // ThreadSanitizer finds a race in a few threads interleaving, and makes
+    // each thread many times dearer: a thousand outlast any watchdog there.
+    const threads = if (builtin.sanitize_thread) @min(build_options.stress_threads, 32) else build_options.stress_threads;
     var stop: std.atomic.Value(bool) = .init(false);
     var finished: std.atomic.Value(u32) = .init(0);
     var early: std.atomic.Value(u32) = .init(0);

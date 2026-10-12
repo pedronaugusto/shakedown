@@ -53,6 +53,18 @@ const Fiber = struct {
     regs: std.Io.fiber.Context = undefined,
     /// The mapping: a guard page, then the stack. Empty for the driver.
     stack: []align(std.heap.page_size_min) u8 = &.{},
+    /// ThreadSanitizer's record of the fiber, in a build it instruments.
+    tsan: if (builtin.sanitize_thread) ?*anyopaque else void = if (builtin.sanitize_thread) null else {},
+};
+
+/// ThreadSanitizer follows a thread by its stack: a switch it is not told of
+/// leaves it reading one fiber's stack as another's, and it crashes. Each
+/// fiber is made known to it, and each switch announced, synchronizing.
+const tsan = struct {
+    extern fn __tsan_get_current_fiber() *anyopaque;
+    extern fn __tsan_create_fiber(flags: c_uint) *anyopaque;
+    extern fn __tsan_destroy_fiber(fiber: *anyopaque) void;
+    extern fn __tsan_switch_to_fiber(fiber: *anyopaque, flags: c_uint) void;
 };
 
 const Baton = struct {
@@ -116,6 +128,7 @@ pub fn start(c: *Context, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
 pub fn destroy(c: *Context) void {
     switch (c.kind) {
         .fibers => if (fibers_supported) {
+            if (builtin.sanitize_thread) if (c.fiber.tsan) |fiber| tsan.__tsan_destroy_fiber(fiber);
             if (c.fiber.stack.len > 0) std.heap.PageAllocator.unmap(c.fiber.stack);
         },
         .win32 => if (win32_supported) {
@@ -136,6 +149,7 @@ pub fn destroy(c: *Context) void {
 /// Makes the calling thread a driver context. `finishDriver` undoes it.
 pub fn initDriver(kind: Kind) CreateError!Context {
     var c: Context = .{ .kind = kind };
+    if (kind == .fibers and fibers_supported and builtin.sanitize_thread) c.fiber.tsan = tsan.__tsan_get_current_fiber();
     if (kind == .win32) if (win32_supported) {
         if (win32.IsThreadAFiber().toBool()) {
             c.win32 = windows.teb().NtTib.DUMMYUNIONNAME.FiberData;
@@ -158,6 +172,7 @@ pub fn finishDriver(c: *Context) void {
 pub inline fn switchTo(from: *Context, to: *Context) void {
     switch (from.kind) {
         .fibers => if (fibers_supported) {
+            if (builtin.sanitize_thread) tsan.__tsan_switch_to_fiber(to.fiber.tsan.?, 0);
             _ = std.Io.fiber.contextSwitch(&.{ .old = &from.fiber.regs, .new = &to.fiber.regs });
         } else unreachable, // unreachable: Sim.init refuses an executor the target lacks
         .win32 => if (win32_supported) win32.SwitchToFiber(to.win32.?) else unreachable, // unreachable: Sim.init refuses an executor the target lacks
@@ -183,6 +198,7 @@ fn createFiber(f: *Fiber, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
     }
     const top = @intFromPtr(stack.ptr) + len; // safe: an address, kept as a number to lay out the first frame
     f.stack = stack;
+    if (builtin.sanitize_thread) f.tsan = tsan.__tsan_create_fiber(0);
     // The first frame: what the trampoline reads, at the top of the stack, which
     // is page-aligned. A function entered by `call` on x86_64 finds its stack
     // 8 mod 16, the return address just pushed; aarch64 keeps it 16-aligned.
