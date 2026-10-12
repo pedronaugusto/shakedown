@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-12
+
 ### Fixed
 
 - A fiber on x86_64 starts its function with the stack a call leaves it, 8 mod 16. It started 8 bytes off, and code built optimized, which moves 16 bytes at a time to and from the stack on that promise, faulted: every simulation on fibers crashed in ReleaseSafe and ReleaseFast on x86_64 (Linux and macOS).
