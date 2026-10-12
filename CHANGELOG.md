@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Simulations on fibers run right in optimized builds on aarch64. The context switch declared the link register clobbered by the name std gives it, `x30`, which the compiler does not take for the link register, so optimized code kept a pointer in it across a switch, and read through a code address once back: a crash or a corrupt value in ReleaseSafe and ReleaseFast on aarch64 (macOS and Linux). The executor's switch declares it as `lr`.
+- A task blocked on a fiber records where it waits by walking its frames inside its own stack. std's unwinder, on aarch64 Darwin, restores a frame's saved registers reading up from its frame pointer, which past the fiber's first frame reads beyond the stack and faults; the crash handler then hung on the unwinder's own lock.
+
 ## [0.2.2] - 2026-10-12
 
 ### Added
