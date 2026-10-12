@@ -183,15 +183,24 @@ fn createFiber(f: *Fiber, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
     }
     const top = @intFromPtr(stack.ptr) + len; // safe: an address, kept as a number to lay out the first frame
     f.stack = stack;
-    // The first frame: what the trampoline reads, at the top of the stack.
-    const slots: [*]usize = @ptrFromInt(top - 4 * @sizeOf(usize));
+    // The first frame: what the trampoline reads, at the top of the stack, which
+    // is page-aligned. A function entered by `call` on x86_64 finds its stack
+    // 8 mod 16, the return address just pushed; aarch64 keeps it 16-aligned.
+    // Code built optimized moves 16 bytes at a time to and from the stack on
+    // that promise, so a stack off by 8 faults there.
+    const frame = switch (builtin.cpu.arch) {
+        .x86_64 => top - 5 * @sizeOf(usize),
+        .aarch64 => top - 4 * @sizeOf(usize),
+        else => unreachable, // unreachable: fibers_supported admits only these
+    };
+    const slots: [*]usize = @ptrFromInt(frame);
     slots[0] = 0; // x86_64: the return address slot of a function entered by a jump
     slots[1] = @intFromPtr(arg); // safe: the argument, read back as a pointer by the trampoline
     slots[2] = @intFromPtr(entry); // safe: the function, called by the trampoline
     slots[3] = 0;
     f.regs = switch (builtin.cpu.arch) {
-        .x86_64 => .{ .rsp = top - 4 * @sizeOf(usize), .rbp = 0, .rip = @intFromPtr(&trampoline) }, // safe: the address of the naked entry
-        .aarch64 => .{ .sp = top - 4 * @sizeOf(usize), .fp = 0, .pc = @intFromPtr(&trampoline) }, // safe: the address of the naked entry
+        .x86_64 => .{ .rsp = frame, .rbp = 0, .rip = @intFromPtr(&trampoline) }, // safe: the address of the naked entry
+        .aarch64 => .{ .sp = frame, .fp = 0, .pc = @intFromPtr(&trampoline) }, // safe: the address of the naked entry
         else => unreachable, // unreachable: fibers_supported admits only these
     };
 }
@@ -273,4 +282,27 @@ fn exitThread() noreturn {
     if (builtin.link_libc) std.c.pthread_exit(null);
     if (builtin.os.tag == .linux) std.os.linux.exit(0);
     @panic("a simulation thread cannot exit on this target");
+}
+
+test "a fiber enters its function with the stack a call leaves, so a local aligned to the stack's alignment is aligned" {
+    if (!fibers_supported) return error.SkipZigTest;
+    const Probe = struct {
+        var driver: Context = undefined;
+        var task: Context = undefined;
+        var address: usize = 0;
+        fn run(arg: *anyopaque) callconv(.c) noreturn {
+            _ = arg;
+            var local: u128 align(16) = 0;
+            std.mem.doNotOptimizeAway(&local);
+            address = @intFromPtr(&local); // safe: an address, kept as a number to test its alignment
+            switchTo(&task, &driver);
+            unreachable; // unreachable: the test destroys the fiber without switching back to it
+        }
+    };
+    Probe.driver = try initDriver(.fibers);
+    defer finishDriver(&Probe.driver);
+    Probe.task = try create(.fibers, Probe.run, &Probe.address, 64 * 1024);
+    defer destroy(&Probe.task);
+    switchTo(&Probe.driver, &Probe.task);
+    try std.testing.expectEqual(@as(usize, 0), Probe.address % 16);
 }
