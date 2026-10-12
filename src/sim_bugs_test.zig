@@ -17,7 +17,7 @@ const Condition016 = @import("testing/Condition016.zig");
 /// frees, or null when every case passed.
 fn failure(comptime property: anytype, cases: u32) !?shakedown.CheckReport {
     var report: shakedown.CheckReport = undefined;
-    shakedown.check(testing.allocator, {}, property, .{ .seed = 2026, .cases = cases, .diagnostics = &report }) catch |err| switch (err) {
+    shakedown.check(testing.allocator, {}, property, .{ .seed = 2026, .cases = cases, .diagnostics = &report, .fuzz = false }) catch |err| switch (err) {
         error.PropertyFailed => return report,
         else => return err,
     };

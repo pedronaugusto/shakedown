@@ -18,7 +18,7 @@ fn minimal(comptime T: type, comptime body: fn (void, *Case) anyerror!void, comp
     var out: [seeds.len]T = undefined;
     for (&out, seeds) |*o, seed| {
         var report: shakedown.CheckReport = undefined;
-        try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, body, .{ .seed = seed, .cases = 2000, .diagnostics = &report }));
+        try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, body, .{ .seed = seed, .cases = 2000, .diagnostics = &report, .fuzz = false }));
         defer report.deinit();
         var s: Source = try .init(arena, .{ .replay = report.tape });
         o.* = try decode(arena, &s);

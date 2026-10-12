@@ -21,7 +21,7 @@ const Commutes = struct {
 
 test "a property that holds runs every case and passes" {
     var ctx: Commutes = .{};
-    try shakedown.check(testing.allocator, &ctx, Commutes.body, .{ .cases = 100, .seed = 1 });
+    try shakedown.check(testing.allocator, &ctx, Commutes.body, .{ .cases = 100, .seed = 1, .fuzz = false });
     try testing.expectEqual(@as(u32, 100), ctx.cases);
 }
 
@@ -41,7 +41,7 @@ fn sumBelow300(_: void, c: *Case) !void {
 
 test "a failing property shrinks to its minimal case, with notes, and returns PropertyFailed" {
     var report: shakedown.CheckReport = undefined;
-    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, sumBelow300, .{ .seed = 7, .diagnostics = &report }));
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, sumBelow300, .{ .seed = 7, .diagnostics = &report, .fuzz = false }));
     defer report.deinit();
     try testing.expectEqual(error.SumTooLarge, report.err);
     // Replayed, the minimal tape draws the minimal list.
@@ -57,19 +57,19 @@ test "a failing property shrinks to its minimal case, with notes, and returns Pr
 
 test "a regression runs first and fails at once, and a fixed one passes" {
     var report: shakedown.CheckReport = undefined;
-    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, sumBelow300, .{ .seed = 7, .diagnostics = &report }));
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, sumBelow300, .{ .seed = 7, .diagnostics = &report, .fuzz = false }));
     defer report.deinit();
     var text: std.Io.Writer.Allocating = .init(testing.allocator);
     defer text.deinit();
     try text.writer.print("{f}", .{shakedown.Tape{ .choices = report.tape }});
 
     var again: shakedown.CheckReport = undefined;
-    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, sumBelow300, .{ .regressions = &.{text.written()}, .cases = 0, .diagnostics = &again }));
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, sumBelow300, .{ .regressions = &.{text.written()}, .cases = 0, .diagnostics = &again, .fuzz = false }));
     defer again.deinit();
     try testing.expectEqualSlices(u64, report.tape, again.tape);
     try testing.expect(std.mem.find(u8, again.text, "regression 0") != null);
 
-    try testing.expectError(error.InvalidTape, shakedown.check(testing.allocator, {}, sumBelow300, .{ .regressions = &.{"not a tape"} }));
+    try testing.expectError(error.InvalidTape, shakedown.check(testing.allocator, {}, sumBelow300, .{ .regressions = &.{"not a tape"}, .fuzz = false }));
 }
 
 fn neverEven(s: *Source) u8 {
@@ -85,7 +85,7 @@ fn wantsEven(_: void, c: *Case) !void {
 }
 
 test "a filter nothing passes makes the property unsatisfiable" {
-    try testing.expectError(error.Unsatisfiable, shakedown.check(testing.allocator, {}, wantsEven, .{ .cases = 10 }));
+    try testing.expectError(error.Unsatisfiable, shakedown.check(testing.allocator, {}, wantsEven, .{ .cases = 10, .fuzz = false }));
 }
 
 test "a tape as fuzz input draws the same choices under Smith" {
@@ -129,9 +129,9 @@ test "integers lean on their edges, and every width shows up" {
 
 test "a seed draws the same cases every time" {
     var first: Commutes = .{};
-    try shakedown.check(testing.allocator, &first, Commutes.body, .{ .cases = 5, .seed = 99 });
+    try shakedown.check(testing.allocator, &first, Commutes.body, .{ .cases = 5, .seed = 99, .fuzz = false });
     var second: Commutes = .{};
-    try shakedown.check(testing.allocator, &second, Commutes.body, .{ .cases = 5, .seed = 99 });
+    try shakedown.check(testing.allocator, &second, Commutes.body, .{ .cases = 5, .seed = 99, .fuzz = false });
     try testing.expectEqual(first.cases, second.cases);
 }
 
@@ -152,6 +152,6 @@ const SimCases = struct {
 
 test "every case's simulation shares the run's one watchdog" {
     var ctx: SimCases = .{};
-    try shakedown.check(testing.allocator, &ctx, SimCases.body, .{ .cases = 20, .seed = 3 });
+    try shakedown.check(testing.allocator, &ctx, SimCases.body, .{ .cases = 20, .seed = 3, .fuzz = false });
     try testing.expectEqual(@as(u32, 20), ctx.cases);
 }

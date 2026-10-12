@@ -56,6 +56,10 @@ pub fn main(init: std.process.Init) !u8 {
         try argv.appendSlice(a, &.{ options.step, try a.print("--fuzz={s}", .{options.limit}), "--cache-dir", cache });
         if (options.filter) |f| try argv.append(a, try a.print("-Dtest-filter={s}", .{f}));
         try say(io, "shakedown-fuzz: {s}, session {d} of {d}\n", .{ name, session + 1, options.sessions });
+        try Io.Dir.cwd().createDirPath(io, cache);
+        var cache_dir = try Io.Dir.cwd().openDir(io, cache, .{});
+        defer cache_dir.close(io);
+        const before = try findings.Cache.read(io, cache_dir);
         const result = try std.process.run(a, io, .{ .argv = argv.items, .cwd = .{ .path = package } });
         const output = try std.mem.concat(a, u8, &.{ result.stdout, result.stderr });
         const failures = try findings.parse(a, output);
@@ -65,8 +69,14 @@ pub fn main(init: std.process.Init) !u8 {
             try say(io, "shakedown-fuzz: {s} found error.{s}; minimal tape {s}\n", .{ f.filter, f.err, minimal });
             total += 1;
         }
-        if (failures.len == 0 and !result.term.success()) {
+        // Zig exits 0 from a bounded session whose fuzzer crashed or never started.
+        const ran = findings.judge(before, try findings.Cache.read(io, cache_dir));
+        if (failures.len == 0 and (!result.term.success() or ran == .crashed)) {
             try say(io, "shakedown-fuzz: the session failed with nothing check reported:\n{s}\n", .{tail(output)});
+            return 1;
+        }
+        if (ran == .idle) {
+            try say(io, "shakedown-fuzz: the session ran no input:\n{s}\n", .{tail(output)});
             return 1;
         }
     }

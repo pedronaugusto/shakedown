@@ -274,7 +274,9 @@ that replays it: `SHAKEDOWN_TAPE=<tape>`, or the tape added to
 `options.regressions`. `SHAKEDOWN_SEED` and `SHAKEDOWN_CASES` override the seed
 and the count. Under `zig build test --fuzz` the same property runs on the
 fuzzer's input instead, with the regressions as its corpus, and a failure it
-finds prints as a tape. `corpus.fromTape` turns any tape into such an input.
+finds prints as a tape. A test that asserts how `check` ran (its cases, its
+seed, the error it returned) sets `.fuzz = false`, and the fuzzer leaves it
+alone. `corpus.fromTape` turns any tape into such an input.
 `SHAKEDOWN_TAPE` shrinks the tape it replays when the property fails, so a
 long tape the fuzzer found comes back minimal.
 
@@ -291,7 +293,9 @@ in the package with
 the package and grow from session to session. Each property the fuzzer fails
 is replayed on its tape (`SHAKEDOWN_TAPE`, which `check` shrinks) and written to
 `<store>/<package>/findings/<test>.txt` with the minimal tape, for the
-property's `.regressions`. It exits 1 when it found something.
+property's `.regressions`. It exits 1 when it found something, and when a
+session crashed outside a property or ran no input, which it reads from the
+cache, as Zig exits 0 from a bounded session either way.
 
 ### Exhaustive search
 

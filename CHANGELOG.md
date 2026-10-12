@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `CheckOptions.fuzz`: false keeps a check from the fuzzer, for a test that asserts how `check` ran (its cases, its seed, the error it returned, its report). Under the fuzzer `check` runs the fuzzer's inputs instead, and such a test failed there on every input.
+
 ### Fixed
 
 - Simulations on fibers run under ThreadSanitizer: each fiber is made known to it and each switch announced. It followed the thread by its stack, read one fiber's stack as another's, and crashed or hung.

@@ -116,6 +116,7 @@ test "B6 Machine shrinking preserves prerequisite commands and same failure" {
         .regressions = &.{"f423f:0:f423f:1:0"},
         .cases = 0,
         .diagnostics = &report,
+        .fuzz = false,
     }));
     defer report.deinit();
     try t.expectEqual(error.PostconditionFailed, report.err);
