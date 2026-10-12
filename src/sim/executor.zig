@@ -1,8 +1,9 @@
 //! How a simulation runs its tasks, one at a time: each task is a context
 //! that runs until it hands control to another.
 //!
-//! - **fibers**: std's `Io.fiber.contextSwitch` on stacks of our own, with
-//!   our own entry trampoline. x86_64 and aarch64 outside Windows.
+//! - **fibers**: a context switch of our own (std's, keeping the link
+//!   register on aarch64) on stacks of our own, with our own entry
+//!   trampoline. x86_64 and aarch64 outside Windows.
 //! - **win32**: Win32 fibers, which keep the thread's stack bounds right
 //!   for stack probes and unwinding.
 //! - **threads**: an OS thread per task, and a baton passed over a futex,
@@ -173,7 +174,7 @@ pub inline fn switchTo(from: *Context, to: *Context) void {
     switch (from.kind) {
         .fibers => if (fibers_supported) {
             if (builtin.sanitize_thread) tsan.__tsan_switch_to_fiber(to.fiber.tsan.?, 0);
-            _ = std.Io.fiber.contextSwitch(&.{ .old = &from.fiber.regs, .new = &to.fiber.regs });
+            contextSwitch(&.{ .old = &from.fiber.regs, .new = &to.fiber.regs });
         } else unreachable, // unreachable: Sim.init refuses an executor the target lacks
         .win32 => if (win32_supported) win32.SwitchToFiber(to.win32.?) else unreachable, // unreachable: Sim.init refuses an executor the target lacks
         .threads => {
@@ -184,6 +185,115 @@ pub inline fn switchTo(from: *Context, to: *Context) void {
 }
 
 // Fibers.
+
+/// std's `Io.fiber.contextSwitch`, with the link register declared clobbered
+/// on aarch64. std names it `x30`, which the compiler does not take for the
+/// link register, and an optimized build kept a pointer in it across the
+/// switch: the fiber's calls overwrote it, and the code that switched read
+/// through a code address once it was back. reactor's switch keeps the link
+/// register the same way.
+inline fn contextSwitch(s: *const std.Io.fiber.Switch) void {
+    switch (builtin.cpu.arch) {
+        .aarch64 => _ = asm volatile (
+            \\ ldp x0, x2, [x1]
+            \\ ldr x3, [x2, #16]
+            \\ mov x4, sp
+            \\ stp x4, fp, [x0]
+            \\ adr x5, 0f
+            \\ ldp x4, fp, [x2]
+            \\ str x5, [x0, #16]
+            \\ mov sp, x4
+            \\ br x3
+            \\0:
+            : [received_message] "={x1}" (-> *const std.Io.fiber.Switch),
+            : [message_to_send] "{x1}" (s),
+            : .{
+              .x0 = true,
+              .x1 = true,
+              .x2 = true,
+              .x3 = true,
+              .x4 = true,
+              .x5 = true,
+              .x6 = true,
+              .x7 = true,
+              .x8 = true,
+              .x9 = true,
+              .x10 = true,
+              .x11 = true,
+              .x12 = true,
+              .x13 = true,
+              .x14 = true,
+              .x15 = true,
+              .x16 = true,
+              .x17 = true,
+              .x19 = true,
+              .x20 = true,
+              .x21 = true,
+              .x22 = true,
+              .x23 = true,
+              .x24 = true,
+              .x25 = true,
+              .x26 = true,
+              .x27 = true,
+              .x28 = true,
+              .x30 = true,
+              .lr = true,
+              .z0 = true,
+              .z1 = true,
+              .z2 = true,
+              .z3 = true,
+              .z4 = true,
+              .z5 = true,
+              .z6 = true,
+              .z7 = true,
+              .z8 = true,
+              .z9 = true,
+              .z10 = true,
+              .z11 = true,
+              .z12 = true,
+              .z13 = true,
+              .z14 = true,
+              .z15 = true,
+              .z16 = true,
+              .z17 = true,
+              .z18 = true,
+              .z19 = true,
+              .z20 = true,
+              .z21 = true,
+              .z22 = true,
+              .z23 = true,
+              .z24 = true,
+              .z25 = true,
+              .z26 = true,
+              .z27 = true,
+              .z28 = true,
+              .z29 = true,
+              .z30 = true,
+              .z31 = true,
+              .p0 = true,
+              .p1 = true,
+              .p2 = true,
+              .p3 = true,
+              .p4 = true,
+              .p5 = true,
+              .p6 = true,
+              .p7 = true,
+              .p8 = true,
+              .p9 = true,
+              .p10 = true,
+              .p11 = true,
+              .p12 = true,
+              .p13 = true,
+              .p14 = true,
+              .p15 = true,
+              .fpcr = true,
+              .fpsr = true,
+              .ffr = true,
+              .memory = true,
+            }),
+        else => _ = std.Io.fiber.contextSwitch(s),
+    }
+}
 
 fn createFiber(f: *Fiber, entry: Entry, arg: *anyopaque, stack_size: usize) CreateError!void {
     const page = std.heap.pageSize();
@@ -219,6 +329,39 @@ fn createFiber(f: *Fiber, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
         .aarch64 => .{ .sp = frame, .fp = 0, .pc = @intFromPtr(&trampoline) }, // safe: the address of the naked entry
         else => unreachable, // unreachable: fibers_supported admits only these
     };
+}
+
+/// The return addresses of the fiber `c`, which is running, innermost first
+/// into `out`, from `first_address` when it is one of them: each frame's
+/// pointer to its caller's, while it stays inside the fiber's own stack and
+/// up to the zero frame pointer the fiber starts with. std's unwinder is not
+/// used on a fiber: on aarch64 Darwin it restores a frame's saved registers
+/// reading up from its frame pointer, and past the fiber's first frame that
+/// reads beyond the top of the stack and faults. Empty where frame pointers
+/// are omitted.
+pub noinline fn fiberTrace(c: *const Context, first_address: ?usize, out: []usize) []usize {
+    if (!fibers_supported or builtin.omit_frame_pointer) return out[0..0];
+    const low = @intFromPtr(c.fiber.stack.ptr); // safe: an address, kept as a number to bound the walk
+    const high = low + c.fiber.stack.len;
+    var fp = @frameAddress();
+    var n: usize = 0;
+    var skipping = first_address != null;
+    // [fp] is the caller's frame pointer and [fp + 8] the return address, on both.
+    while (n < out.len and fp >= low and fp % @alignOf(usize) == 0 and fp + 2 * @sizeOf(usize) <= high) {
+        const frame: *const [2]usize = @ptrFromInt(fp);
+        const caller = frame[0];
+        const ra = frame[1];
+        if (ra <= 1) break;
+        if (skipping and ra == first_address.?) skipping = false;
+        if (!skipping) {
+            out[n] = ra;
+            n += 1;
+        }
+        // The stack grows down: a caller's frame is above.
+        if (caller <= fp) break;
+        fp = caller;
+    }
+    return out[0..n];
 }
 
 /// The first instructions of a fiber: the argument and the function from
@@ -321,4 +464,27 @@ test "a fiber enters its function with the stack a call leaves, so a local align
     defer destroy(&Probe.task);
     switchTo(&Probe.driver, &Probe.task);
     try std.testing.expectEqual(@as(usize, 0), Probe.address % 16);
+}
+
+test "a fiber's own stack trace ends at its first frame, inside its stack" {
+    if (!fibers_supported or builtin.omit_frame_pointer) return error.SkipZigTest;
+    const Probe = struct {
+        var driver: Context = undefined;
+        var task: Context = undefined;
+        var addresses: [64]usize = undefined;
+        var len: usize = 0;
+        fn run(arg: *anyopaque) callconv(.c) noreturn {
+            _ = arg;
+            len = fiberTrace(&task, null, &addresses).len;
+            switchTo(&task, &driver);
+            unreachable; // unreachable: the test destroys the fiber without switching back to it
+        }
+    };
+    Probe.driver = try initDriver(.fibers);
+    defer finishDriver(&Probe.driver);
+    Probe.task = try create(.fibers, Probe.run, &Probe.len, 64 * 1024);
+    defer destroy(&Probe.task);
+    switchTo(&Probe.driver, &Probe.task);
+    // The run's frame, and the walk stopped there, short of the room it had.
+    try std.testing.expect(Probe.len >= 1 and Probe.len < Probe.addresses.len);
 }

@@ -987,8 +987,13 @@ pub fn capture(c: *Core, t: *Task) void {
         .group => .group,
         .process => |pid| .{ .process = pid },
     } };
-    const trace = std.debug.captureCurrentStackTrace(.{ .first_address = if (t.call_site != 0) t.call_site else null }, &t.report.stack);
-    t.report.len = @intCast(trace.return_addresses.len);
+    const first: ?usize = if (t.call_site != 0) t.call_site else null;
+    // A fiber's stack is walked inside its own bounds; a thread's is the system's to unwind.
+    const len = if (t.ctx.kind == .fibers)
+        executor.fiberTrace(&t.ctx, first, &t.report.stack).len
+    else
+        std.debug.captureCurrentStackTrace(.{ .first_address = first }, &t.report.stack).return_addresses.len;
+    t.report.len = @intCast(len);
 }
 
 // Time.
