@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Simulations on fibers on x86_64 keep what the switching code holds in vector registers. The context switch declared them clobbered only by their AVX-512 names, `zmm`, which the compiler does not take on a CPU without AVX-512, so optimized code kept values in `xmm` registers across a switch for the next task to overwrite. The switch declares them as `xmm` and `ymm` too.
+
 ## [0.2.3] - 2026-10-12
 
 ### Fixed

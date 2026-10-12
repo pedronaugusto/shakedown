@@ -186,12 +186,14 @@ pub inline fn switchTo(from: *Context, to: *Context) void {
 
 // Fibers.
 
-/// std's `Io.fiber.contextSwitch`, with the link register declared clobbered
-/// on aarch64. std names it `x30`, which the compiler does not take for the
-/// link register, and an optimized build kept a pointer in it across the
-/// switch: the fiber's calls overwrote it, and the code that switched read
-/// through a code address once it was back. reactor's switch keeps the link
-/// register the same way.
+/// std's `Io.fiber.contextSwitch`, with two registers declared clobbered by
+/// the names the compiler takes. On aarch64 the link register as `lr`: std
+/// names it `x30`, which the compiler does not take for it, and an optimized
+/// build kept a pointer in it across the switch, the fiber's calls overwrote
+/// it, and the code that switched read through a code address once back. On
+/// x86_64 the vector registers as `xmm` and `ymm`: std names them `zmm`,
+/// which a CPU without AVX-512 does not have, so the compiler kept values in
+/// `xmm` registers across the switch for the fiber to overwrite.
 inline fn contextSwitch(s: *const std.Io.fiber.Switch) void {
     switch (builtin.cpu.arch) {
         .aarch64 => _ = asm volatile (
@@ -291,7 +293,114 @@ inline fn contextSwitch(s: *const std.Io.fiber.Switch) void {
               .ffr = true,
               .memory = true,
             }),
-        else => _ = std.Io.fiber.contextSwitch(s),
+        .x86_64 => _ = asm volatile (
+            \\ movq 0(%%rsi), %%rax
+            \\ movq 8(%%rsi), %%rcx
+            \\ leaq 0f(%%rip), %%rdx
+            \\ movq %%rsp, 0(%%rax)
+            \\ movq %%rbp, 8(%%rax)
+            \\ movq %%rdx, 16(%%rax)
+            \\ movq 0(%%rcx), %%rsp
+            \\ movq 8(%%rcx), %%rbp
+            \\ jmpq *16(%%rcx)
+            \\0:
+            : [received_message] "={rsi}" (-> *const std.Io.fiber.Switch),
+            : [message_to_send] "{rsi}" (s),
+            : .{
+              .rax = true,
+              .rcx = true,
+              .rdx = true,
+              .rbx = true,
+              .rsi = true,
+              .rdi = true,
+              .r8 = true,
+              .r9 = true,
+              .r10 = true,
+              .r11 = true,
+              .r12 = true,
+              .r13 = true,
+              .r14 = true,
+              .r15 = true,
+              .mm0 = true,
+              .mm1 = true,
+              .mm2 = true,
+              .mm3 = true,
+              .mm4 = true,
+              .mm5 = true,
+              .mm6 = true,
+              .mm7 = true,
+              .xmm0 = true,
+              .xmm1 = true,
+              .xmm2 = true,
+              .xmm3 = true,
+              .xmm4 = true,
+              .xmm5 = true,
+              .xmm6 = true,
+              .xmm7 = true,
+              .xmm8 = true,
+              .xmm9 = true,
+              .xmm10 = true,
+              .xmm11 = true,
+              .xmm12 = true,
+              .xmm13 = true,
+              .xmm14 = true,
+              .xmm15 = true,
+              .ymm0 = true,
+              .ymm1 = true,
+              .ymm2 = true,
+              .ymm3 = true,
+              .ymm4 = true,
+              .ymm5 = true,
+              .ymm6 = true,
+              .ymm7 = true,
+              .ymm8 = true,
+              .ymm9 = true,
+              .ymm10 = true,
+              .ymm11 = true,
+              .ymm12 = true,
+              .ymm13 = true,
+              .ymm14 = true,
+              .ymm15 = true,
+              .zmm0 = true,
+              .zmm1 = true,
+              .zmm2 = true,
+              .zmm3 = true,
+              .zmm4 = true,
+              .zmm5 = true,
+              .zmm6 = true,
+              .zmm7 = true,
+              .zmm8 = true,
+              .zmm9 = true,
+              .zmm10 = true,
+              .zmm11 = true,
+              .zmm12 = true,
+              .zmm13 = true,
+              .zmm14 = true,
+              .zmm15 = true,
+              .zmm16 = true,
+              .zmm17 = true,
+              .zmm18 = true,
+              .zmm19 = true,
+              .zmm20 = true,
+              .zmm21 = true,
+              .zmm22 = true,
+              .zmm23 = true,
+              .zmm24 = true,
+              .zmm25 = true,
+              .zmm26 = true,
+              .zmm27 = true,
+              .zmm28 = true,
+              .zmm29 = true,
+              .zmm30 = true,
+              .zmm31 = true,
+              .fpsr = true,
+              .fpcr = true,
+              .mxcsr = true,
+              .rflags = true,
+              .dirflag = true,
+              .memory = true,
+            }),
+        else => unreachable, // unreachable: fibers_supported admits only these
     }
 }
 
@@ -487,4 +596,78 @@ test "a fiber's own stack trace ends at its first frame, inside its stack" {
     switchTo(&Probe.driver, &Probe.task);
     // The run's frame, and the walk stopped there, short of the room it had.
     try std.testing.expect(Probe.len >= 1 and Probe.len < Probe.addresses.len);
+}
+
+test "values the switching code keeps in vector registers survive a fiber that overwrites them" {
+    if (!fibers_supported) return error.SkipZigTest;
+    const V = @Vector(4, f32);
+    const Probe = struct {
+        var driver: Context = undefined;
+        var task: Context = undefined;
+        fn run(arg: *anyopaque) callconv(.c) noreturn {
+            _ = arg;
+            overwrite();
+            switchTo(&task, &driver);
+            unreachable; // unreachable: the test destroys the fiber without switching back to it
+        }
+        /// What any fiber's code may do with the vector registers: here,
+        /// every one of them set, and nothing told.
+        noinline fn overwrite() void {
+            switch (builtin.cpu.arch) {
+                .x86_64 => asm volatile (
+                    \\ pcmpeqd %%xmm0, %%xmm0
+                    \\ pcmpeqd %%xmm1, %%xmm1
+                    \\ pcmpeqd %%xmm2, %%xmm2
+                    \\ pcmpeqd %%xmm3, %%xmm3
+                    \\ pcmpeqd %%xmm4, %%xmm4
+                    \\ pcmpeqd %%xmm5, %%xmm5
+                    \\ pcmpeqd %%xmm6, %%xmm6
+                    \\ pcmpeqd %%xmm7, %%xmm7
+                    \\ pcmpeqd %%xmm8, %%xmm8
+                    \\ pcmpeqd %%xmm9, %%xmm9
+                    \\ pcmpeqd %%xmm10, %%xmm10
+                    \\ pcmpeqd %%xmm11, %%xmm11
+                    \\ pcmpeqd %%xmm12, %%xmm12
+                    \\ pcmpeqd %%xmm13, %%xmm13
+                    \\ pcmpeqd %%xmm14, %%xmm14
+                    \\ pcmpeqd %%xmm15, %%xmm15
+                ),
+                .aarch64 => asm volatile (
+                    \\ movi v0.16b, #0xff
+                    \\ movi v1.16b, #0xff
+                    \\ movi v2.16b, #0xff
+                    \\ movi v3.16b, #0xff
+                    \\ movi v4.16b, #0xff
+                    \\ movi v5.16b, #0xff
+                    \\ movi v6.16b, #0xff
+                    \\ movi v7.16b, #0xff
+                    \\ movi v16.16b, #0xff
+                    \\ movi v17.16b, #0xff
+                    \\ movi v18.16b, #0xff
+                    \\ movi v19.16b, #0xff
+                    \\ movi v20.16b, #0xff
+                    \\ movi v21.16b, #0xff
+                    \\ movi v22.16b, #0xff
+                    \\ movi v23.16b, #0xff
+                ),
+                else => unreachable, // unreachable: fibers_supported admits only these
+            }
+        }
+    };
+    var input: [12]V = undefined;
+    for (&input, 0..) |*v, i| v.* = @splat(@floatFromInt(i + 1));
+    std.mem.doNotOptimizeAway(&input);
+    Probe.driver = try initDriver(.fibers);
+    defer finishDriver(&Probe.driver);
+    Probe.task = try create(.fibers, Probe.run, &Probe.driver, 64 * 1024);
+    defer destroy(&Probe.task);
+    // Nothing but the switch between computing them and reading them: no
+    // call for the compiler to spill around.
+    var kept: [12]V = undefined;
+    inline for (0..12) |i| kept[i] = input[i] * input[i];
+    switchTo(&Probe.driver, &Probe.task);
+    inline for (0..12) |i| {
+        const square: f32 = @floatFromInt((i + 1) * (i + 1));
+        try std.testing.expectEqual(@as(V, @splat(square)), kept[i]);
+    }
 }
