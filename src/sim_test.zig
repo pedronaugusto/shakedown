@@ -454,3 +454,26 @@ test "expectDeterministic passes one seed's runs, and names where two differ" {
     try testing.expectEqual(@as(u64, 1), report.index);
     try testing.expect(std.mem.find(u8, report.text, "different calls at record 1") != null);
 }
+
+const Reuse = struct {
+    fn job(n: *u32) void {
+        n.* += 1;
+    }
+
+    fn main(io: Io, n: *u32) !void {
+        // Each job ends before the next starts, so the next reuses its task while
+        // that task's thread waits for its turn.
+        for (0..8) |_| {
+            var task = try io.concurrent(job, .{n});
+            task.await(io);
+        }
+    }
+};
+
+test "a task reused for another job leaves alone the turn its thread waits on" {
+    const sim = try Sim.init(testing.allocator, .{ .executor = .threads, .seed = 5 });
+    defer sim.deinit();
+    var n: u32 = 0;
+    try testing.expectEqual(Sim.Outcome.finished, sim.run(Reuse.main, .{ sim.io(), &n }));
+    try testing.expectEqual(@as(u32, 8), n);
+}
