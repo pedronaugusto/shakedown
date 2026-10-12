@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The context switch is a function per architecture; 0.2.4's own source checks refused the one that held both for its length. Nothing a user sees changes.
+
 ## [0.2.4] - 2026-10-12
 
 ### Fixed
