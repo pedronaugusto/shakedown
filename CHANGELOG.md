@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-12
+
 ### Added
 
 - `CheckOptions.fuzz`: false keeps a check from the fuzzer, for a test that asserts how `check` ran (its cases, its seed, the error it returned, its report). Under the fuzzer `check` runs the fuzzer's inputs instead, and such a test failed there on every input.
