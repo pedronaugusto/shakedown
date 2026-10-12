@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The benchmarks take shakedown from preflight, which adds the one the package declares, where their imports gave it a second time.
+- The README says what a build without bay must do for one aegis: pin the aegis release shakedown pins, and ask for both with the same target and mode.
+
 ## [0.3.0] - 2026-10-12
 
 ### Breaking

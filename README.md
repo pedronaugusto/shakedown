@@ -27,7 +27,8 @@ and add the module only to your test modules' imports.
 shakedown's API carries aegis's types (task ids, byte counts, limits), so a build
 links one aegis. bay gives a graph one version of each package, so a project
 with aegis in its own graph and shakedown share it. Without bay, pin the aegis
-release shakedown pins, and Zig fetches it once.
+release shakedown pins, so Zig fetches it once, and ask for shakedown and aegis
+with the same target and mode: Zig keys a package instance by its options too.
 
 ## Usage
 

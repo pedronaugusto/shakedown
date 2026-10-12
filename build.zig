@@ -247,14 +247,14 @@ pub fn dev(b: *std.Build, tools: type) void {
     tools.preflight.addConsumerCheck(b, p, .{ .package = "shakedown", .program = p.path("ci/consumer.zig"), .packages = &.{aegis_dependency} });
 }
 
-/// shakedown in the mode a benchmark builds in: an imported module keeps
-/// its own mode, so a ReleaseFast benchmark over the Debug module would time
-/// the Debug module. `b` is the development build.
+/// The benchmarks' own modules in the mode a benchmark builds in: an imported
+/// module keeps its own mode, so a ReleaseFast benchmark over a Debug module
+/// would time the Debug module. preflight adds shakedown itself. `b` is the
+/// development build.
 fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.lang.Optimize) []const std.Build.Module.Import {
     const package = b.dependency("shakedown", .{ .target = target, .optimize = optimize });
     const p = package.builder;
     const aegis = p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis");
-    const module = package.module("shakedown");
     // Git state is a build input, not a cached configuration-time observation.
     const revision = b.addSystemCommand(&.{ "git", "rev-parse", "HEAD" });
     revision.setCwd(p.path("."));
@@ -274,7 +274,6 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const provenance_module = b.createModule(.{ .root_source_file = options, .target = target, .optimize = optimize });
     const compare_driver = b.createModule(.{ .root_source_file = p.path("src/bench/compare.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "measuring", .module = b.createModule(.{ .root_source_file = p.path("src/bench.zig"), .target = target, .optimize = optimize }) }} });
     return b.allocator.dupe(std.Build.Module.Import, &.{
-        .{ .name = "shakedown", .module = module },
         .{ .name = "bench_options", .module = provenance_module },
         .{ .name = "network_model", .module = b.createModule(.{ .root_source_file = p.path("src/sim/net/Model.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "aegis", .module = aegis }} }) },
         .{ .name = "measuring", .module = b.createModule(.{ .root_source_file = p.path("src/bench.zig"), .target = target, .optimize = optimize }) },
