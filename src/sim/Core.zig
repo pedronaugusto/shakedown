@@ -224,6 +224,16 @@ pub const Task = struct {
     call_site: usize = 0,
     report: TaskReport = .{ .id = ids.outside, .spawned_at = 0, .waiting = .none },
 
+    /// Every field from `fresh` but the context and the frame, which outlive a
+    /// job: a reused task's thread waits on its context's turn while the next
+    /// job is laid out, so the context is never written here.
+    fn reset(t: *Task, fresh: Task) void {
+        inline for (@typeInfo(Task).@"struct".field_names) |name| {
+            if (comptime std.mem.eql(u8, name, "ctx") or std.mem.eql(u8, name, "frame")) continue;
+            @field(t, name) = @field(fresh, name);
+        }
+    }
+
     fn contextPointer(t: *Task) *const anyopaque {
         return @ptrCast(t.frame.ptr + t.context_offset); // safe: the frame holds the copied context at this offset
     }
@@ -471,10 +481,9 @@ pub fn spawn(
     // Issued last, so a spawn that fails leaves the issuer where it was.
     const id = c.next_id.next() catch return error.SystemResources;
     @memcpy((t.frame.ptr + t.context_offset)[0..context.len], context);
-    t.* = .{
+    t.reset(.{
         .core = c,
-        .ctx = t.ctx,
-        .frame = t.frame,
+        .ctx = undefined,
         .context_offset = t.context_offset,
         .result_offset = t.result_offset,
         .result_len = result_len,
@@ -483,7 +492,7 @@ pub fn spawn(
         .process = c.processOf(),
         .io_context = c.currentContext(),
         .job = job,
-    };
+    });
     c.live += 1;
     switch (c.options.schedule) {
         .pct => |pct| t.priority = pct.depth + c.draw(1 << 20),

@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- A task reused for another job is reset field by field, leaving its context alone: on the threads executor its thread waits on the context's turn while the next job is laid out, and the whole task was copied over it, the turn included, which ThreadSanitizer reports as a race.
+
 ## [0.2.1] - 2026-10-12
 
 ### Fixed
