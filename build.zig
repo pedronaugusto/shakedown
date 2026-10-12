@@ -238,6 +238,11 @@ pub fn dev(b: *std.Build, tools: type) void {
     tools.preflight.addCi(b, p, .{
         .tests = test_step,
         .portable_tests = true,
+        // The release tier runs the suite with safety on, fuzzes its
+        // properties (the suite alone, as every binary of it has them) and
+        // runs it under ThreadSanitizer, where a race in the threads
+        // executor shows.
+        .hardened = .{ .fuzz_step = "unit" },
         // `bay bench` runs them in ReleaseFast, by hand; never timed in CI,
         // where `bay test` runs each once.
         .bench = .{

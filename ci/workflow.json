@@ -13,12 +13,5 @@
     "aarch64-macos"
   ],
   "compile_once": true,
-  "jobs": [
-    {
-      "name": "ThreadSanitizer (Linux)",
-      "step": "test",
-      "args": ["-Dci-hardened=true", "-Dci-tsan=true", "-Dci-lint=false"],
-      "tiers": ["release"]
-    }
-  ]
+  "hardened": true
 }
