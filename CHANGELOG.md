@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-12
+
 ### Changed
 
 - The benchmarks take shakedown from preflight, which adds the one the package declares, where their imports gave it a second time.
