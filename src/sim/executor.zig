@@ -44,6 +44,8 @@ pub const Context = struct {
     kind: Kind,
     /// The fiber, once `start` made it; the driver's is the thread's own.
     fiber: if (fibers_supported) ?shuttle.Context else void = if (fibers_supported) null else {},
+    /// The fiber's stack, once `start` made it.
+    stack: if (fibers_supported) shuttle.Stack else void = undefined,
     thread: Baton = .{},
 };
 
@@ -79,12 +81,12 @@ pub fn start(c: *Context, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
     switch (c.kind) {
         .fibers => {
             if (!fibers_supported) unreachable; // unreachable: Sim.init refuses an executor the target lacks
-            var stack = shuttle.Stack.init(.{ .size = .fromRaw(@max(stack_size, 16 * 1024)) }) catch |err| return switch (err) {
+            c.stack = shuttle.Stack.init(.{ .size = .fromRaw(@max(stack_size, 16 * 1024)) }) catch |err| return switch (err) {
                 error.SystemResources => error.SystemResources,
                 error.Overflow => error.OutOfMemory,
             };
-            errdefer stack.deinit();
-            c.fiber = shuttle.Context.init(stack, fiberStart, &c.thread) catch return error.SystemResources;
+            errdefer c.stack.deinit();
+            c.fiber = shuttle.Context.init(&c.stack, fiberStart, &c.thread) catch return error.SystemResources;
         },
         .threads => {
             if (!threads_supported) unreachable; // unreachable: Sim.init refuses an executor the target lacks
@@ -105,8 +107,8 @@ pub fn start(c: *Context, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
 pub fn destroy(c: *Context) void {
     switch (c.kind) {
         .fibers => if (fibers_supported) if (c.fiber) |*f| {
-            var stack = f.deinit();
-            stack.deinit();
+            f.deinit(&c.stack);
+            c.stack.deinit();
         },
         .threads => if (c.thread.handle) |handle| {
             c.thread.exit = true;
@@ -148,7 +150,7 @@ pub inline fn switchTo(from: *Context, to: *Context) void {
 /// them, to the fiber's first frame.
 pub fn fiberTrace(c: *const Context, first_address: usize, out: []usize) []usize {
     if (!fibers_supported) return out[0..0];
-    return c.fiber.?.traceFrom(first_address, out);
+    return c.fiber.?.traceFrom(&c.stack, first_address, out);
 }
 
 fn fiberStart(arg: ?*anyopaque, _: ?*anyopaque) callconv(.c) noreturn {
