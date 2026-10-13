@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
 ### Breaking
 
 - shakedown depends on [shuttle](https://github.com/pedronaugusto/shuttle) at run time: a simulation's fibers are shuttle's contexts, on shuttle's stacks. A project that depends on shakedown fetches shuttle with it, and one that pins shuttle itself shares the one revision bay selects.
