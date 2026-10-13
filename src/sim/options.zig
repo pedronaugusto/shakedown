@@ -15,8 +15,8 @@ const Watchdog = @import("Watchdog.zig");
 const Processes = @import("programs/Model.zig");
 
 pub const Executor = enum {
-    /// The fastest this target has: Win32 fibers on Windows, fibers on
-    /// x86_64 and aarch64 elsewhere, threads otherwise.
+    /// The fastest this target has: fibers on x86_64, aarch64 and
+    /// riscv64, Windows included; threads otherwise.
     auto,
     fibers,
     threads,

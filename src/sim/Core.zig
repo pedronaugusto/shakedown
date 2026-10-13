@@ -259,7 +259,7 @@ pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
     }
     const kind: executor.Kind = switch (options.executor) {
         .auto => executor.best orelse return error.ExecutorUnavailable,
-        .fibers => if (executor.available(.win32)) .win32 else if (executor.available(.fibers)) .fibers else return error.ExecutorUnavailable,
+        .fibers => if (executor.available(.fibers)) .fibers else return error.ExecutorUnavailable,
         .threads => if (executor.available(.threads)) .threads else return error.ExecutorUnavailable,
     };
     const monotonic = nanoseconds(options.clock.monotonic.nanoseconds);
@@ -520,7 +520,7 @@ fn newTask(c: *Core) SpawnError!*Task {
     const t = try c.gpa.create(Task);
     errdefer c.gpa.destroy(t);
     const stack_size = c.options.stack_size.raw();
-    t.* = .{ .core = c, .ctx = try executor.create(c.kind, taskMain, t, stack_size) };
+    t.* = .{ .core = c, .ctx = executor.create(c.kind) };
     errdefer executor.destroy(&t.ctx);
     try executor.start(&t.ctx, taskMain, t, stack_size);
     c.tasks.appendAssumeCapacity(t);
@@ -555,7 +555,7 @@ pub fn release(c: *Core, t: *Task) void {
 
 /// What every task context runs: a job, then the switch away; a task
 /// reused for another job comes back here.
-fn taskMain(arg: *anyopaque) callconv(.c) noreturn {
+fn taskMain(arg: *anyopaque) noreturn {
     const t: *Task = @ptrCast(@alignCast(arg)); // safe: every context is made with its task as the argument
     if (t.core.kind == .threads) running_core = t.core;
     while (true) {
@@ -941,8 +941,7 @@ pub fn drive(c: *Core, mode: Mode, until: i64) executor.CreateError!?Outcome {
     c.mode = mode;
     c.until = until;
     c.step_taken = false;
-    c.driver = try executor.initDriver(c.kind);
-    defer executor.finishDriver(&c.driver);
+    c.driver = executor.initDriver(c.kind);
     const previous = running_core;
     running_core = c;
     defer running_core = previous;
@@ -990,7 +989,7 @@ pub fn capture(c: *Core, t: *Task) void {
     const first: ?usize = if (t.call_site != 0) t.call_site else null;
     // A fiber's stack is walked inside its own bounds; a thread's is the system's to unwind.
     const len = if (t.ctx.kind == .fibers)
-        executor.fiberTrace(&t.ctx, first, &t.report.stack).len
+        executor.fiberTrace(&t.ctx, first orelse @returnAddress(), &t.report.stack).len
     else
         std.debug.captureCurrentStackTrace(.{ .first_address = first }, &t.report.stack).return_addresses.len;
     t.report.len = @intCast(len);

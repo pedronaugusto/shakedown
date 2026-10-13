@@ -137,9 +137,8 @@ The raw sites that remain, each with the reason it is allowed:
   key, and `net/Model.followerIndex` maps a node id to its place in `Core.contexts`,
   which holds the nodes after the first in the order their ids were issued. Each is
   the one function that knows the representation, in the model that issues the ids.
-- A C or OS boundary. `Quarantine` and `executor` do page arithmetic on `usize`
-  for `mmap`, `mprotect` and `madvise`, and the fiber layout does stack arithmetic
-  for the first frame.
+- A C or OS boundary. `Quarantine` does page arithmetic on `usize` for `mmap`,
+  `mprotect` and `madvise`.
 
 The package's glint configuration (`ci/preflight.json`) gates A004 (ids, byte counts and
 limits) and Z026 over `src` and `bench`, tests and benchmarks included. A001 to A003,

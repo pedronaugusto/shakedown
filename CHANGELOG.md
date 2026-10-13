@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- shakedown depends on [shuttle](https://github.com/pedronaugusto/shuttle) at run time: a simulation's fibers are shuttle's contexts, on shuttle's stacks. A project that depends on shakedown fetches shuttle with it, and one that pins shuttle itself shares the one revision bay selects.
+
+### Changed
+
+- Fibers run on Windows too, and `.fibers` and `.auto` take them there: Win32 fibers retire, as shuttle's switch keeps the thread information block's stack bounds on the running stack, so the system grows a task's stack, raises its stack overflow and walks it as on a thread's own.
+- Fibers run on riscv64.
+- The context switch, the first frame, the ThreadSanitizer annotations and the bounded frame walk are shuttle's; the executor keeps the threads kind.
+- Pins preflight 0.4.3.
+
 ## [0.3.2] - 2026-10-13
 
 ### Fixed

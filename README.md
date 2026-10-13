@@ -330,8 +330,8 @@ contending a mutex on an M3.
 ### Simulation
 
 `Sim` is one simulated `Io`. Its tasks run one at a time, on fibers of their own
-(std's context switch on x86_64 and aarch64, Win32 fibers on Windows) or on
-threads that pass a baton, and switch only at `Io` calls. When the running task
+([shuttle](https://github.com/pedronaugusto/shuttle)'s contexts on x86_64,
+aarch64 and riscv64, Windows included) or on threads that pass a baton, and switch only at `Io` calls. When the running task
 blocks, the schedule picks the next ready one: the first ready (`fifo`), any
 (`random`), or by probabilistic concurrency testing (`pct`). When none is
 ready, time moves to the earliest timer. Every futex-based primitive in std
@@ -585,10 +585,10 @@ with no timing thresholds.
 ## Platforms
 
 `Clock`, `Layer`, `FaultIo`, `everyFault`, `everyCrash`, `check`, `Counting`, `NoResize` and
-`corpus` are portable Zig. A `Sim` runs its tasks on fibers on x86_64 and aarch64
-outside Windows, on Win32 fibers on Windows, and on threads elsewhere; the
-threads executor runs wherever threads do, and gives the same run of a seed.
-Each fiber's stack has an inaccessible guard page below it. The simulation's
+`corpus` are portable Zig. A `Sim` runs its tasks on fibers on x86_64, aarch64
+and riscv64, Windows included, and on threads elsewhere; the threads executor
+runs wherever threads do, and gives the same run of a seed. Each fiber's stack
+has an inaccessible guard below it. The simulation's
 fixed-address allocator reserves its region with `mmap` or `NtAllocateVirtualMemory`.
 `Quarantine` closes memory with `madvise` and `mprotect` on Linux, macOS and the
 BSDs, and with a decommit on Windows. Elsewhere it hands out plain pages and
@@ -597,7 +597,9 @@ quarantines nothing; `Quarantine.supported` says which.
 ## Built with
 
 - [Zig](https://ziglang.org) 0.17.0 and its standard library; nothing else is
-  linked into the module but aegis.
+  linked into the module but aegis and shuttle.
+- [shuttle](https://github.com/pedronaugusto/shuttle): the fibers a simulation
+  runs its tasks on, their stacks and switch. A consumer fetches it with shakedown.
 - [aegis](https://github.com/pedronaugusto/aegis), whose runtime is `std` only:
   the id, byte-count, limit and lock types the simulation and the quarantine are
   built on. A consumer fetches it with shakedown.

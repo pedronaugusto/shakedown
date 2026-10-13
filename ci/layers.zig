@@ -85,6 +85,7 @@ pub const references: []const gantry.rules.ReferenceRule = &.{
         "build_options",
         "builtin",
         "shakedown",
+        "shuttle",
         "std",
     } },
     .{ .name = "source siblings", .suffix = ".zig", .relative = true, .except_targets = &.{"src/**"} },

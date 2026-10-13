@@ -18,11 +18,13 @@ pub fn build(b: *std.Build) void {
     // so a build links one aegis: bay gives a graph one version of each
     // package, the consumer's aegis and shakedown's being the same.
     const aegis = b.dependency("aegis", .{ .target = target, .optimize = optimize });
+    // A simulation's fibers are shuttle's contexts.
+    const shuttle = b.dependency("shuttle", .{ .target = target, .optimize = optimize });
     _ = b.addModule("shakedown", .{
         .root_source_file = b.path("src/shakedown.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "aegis", .module = aegis.module("aegis") }},
+        .imports = &.{ .{ .name = "aegis", .module = aegis.module("aegis") }, .{ .name = "shuttle", .module = shuttle.module("shuttle") } },
     });
 
     // Available to build tools without building tests.
@@ -65,6 +67,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     const p = package.builder;
     const module = package.module("shakedown");
     const aegis_dependency = p.dependency("aegis", .{ .target = target, .optimize = optimize });
+    const shuttle_dependency = p.dependency("shuttle", .{ .target = target, .optimize = optimize });
 
     //=====================================================================
     // Tests
@@ -84,6 +87,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     });
     tests.root_module.addOptions("build_options", test_options);
     tests.root_module.addImport("aegis", aegis_dependency.module("aegis"));
+    tests.root_module.addImport("shuttle", shuttle_dependency.module("shuttle"));
 
     const test_step = b.step("test", "Run the tests, the fault programs and the example");
     const unit_run = b.addRunArtifact(tests);
@@ -97,6 +101,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     const empty_packages = b.addWriteFiles();
     _ = empty_packages.add("README", "No packages.\n");
     _ = empty_packages.addCopyDirectory(aegis_dependency.path(""), aegis_dependency.builder.pkg_hash, .{});
+    _ = empty_packages.addCopyDirectory(shuttle_dependency.path(""), shuttle_dependency.builder.pkg_hash, .{});
     const comparison_consumer = b.addSystemCommand(&.{ b.graph.zig_exe, "build", "--build-file", "ci/bench-consumer/build.zig", "--system" });
     comparison_consumer.addDirectoryArg2(empty_packages.getDirectory(), .{});
     comparison_consumer.setEnvironmentVariable("ZIG_GLOBAL_CACHE_DIR", ".zig-cache/bench-consumer-global");
@@ -244,7 +249,7 @@ pub fn dev(b: *std.Build, tools: type) void {
     });
     // A project that depends on shakedown by path, with only the packages
     // shakedown needs: the build a consumer gets.
-    tools.preflight.addConsumerCheck(b, p, .{ .package = "shakedown", .program = p.path("ci/consumer.zig"), .packages = &.{aegis_dependency} });
+    tools.preflight.addConsumerCheck(b, p, .{ .package = "shakedown", .program = p.path("ci/consumer.zig"), .packages = &.{ aegis_dependency, shuttle_dependency } });
 }
 
 /// The benchmarks' own modules in the mode a benchmark builds in: an imported

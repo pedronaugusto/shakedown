@@ -17,11 +17,15 @@
             .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.1.3#4e37678e9ff0d78ada850ed4dc00f714bbc8441c",
             .hash = "aegis-0.1.3-rsxouhQiBwCaQ9NGzUiaQ1xdrFSNYoi3u0Z6sLjI5lrv",
         },
+        .shuttle = .{
+            .url = "git+https://github.com/pedronaugusto/shuttle?ref=v0.1.1#94b72355521cca001d1ce9e56e90e3762e285713",
+            .hash = "shuttle-0.1.1-0xOo5tboAgDCcWAl48Jrzgc1EaJiHWUs_Cy0mbQhlv0m",
+        },
     },
     .dev_dependencies = .{
         .preflight = .{
-            .url = "git+https://github.com/pedronaugusto/preflight?ref=v0.4.0#13df25e5211b029720e3471d1c52181c5ed094ad",
-            .hash = "preflight-0.4.0-LX1Zwh5nDgAstrc7m8rQf0ewFei3fWQIQnkmCHro2z1x",
+            .url = "git+https://github.com/pedronaugusto/preflight?ref=v0.4.3#91c42412fed03aa24dfafb5061aee53875f47e02",
+            .hash = "preflight-0.4.3-LX1ZwtOTDgBp4LvGwzUJcRAhouDcVk6XkNMuN3cR4qxr",
         },
     },
 }
