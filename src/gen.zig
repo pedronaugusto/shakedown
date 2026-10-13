@@ -129,6 +129,51 @@ pub fn weighted(s: *Source, weights: []const u32) usize {
     unreachable; // unreachable: `at` is below the total of the weights
 }
 
+/// A prefix of `out`, of any length, filled with any bytes: a parser's
+/// input with no allocator, the shortest simplest.
+pub fn bytesInto(s: *Source, out: []u8) []u8 {
+    const mark = s.begin();
+    defer s.end(mark);
+    const len = intRange(s, usize, 0, out.len);
+    s.bytes(out[0..len]);
+    return out[0..len];
+}
+
+/// A parser's input that reaches past what random bytes do: a parser that
+/// wants `ESC [ ? 6 2 c` accepts nothing a run of random bytes is, so a
+/// property that only runs on accepted input would check nothing. Three
+/// times in four, when there are examples, it is one of them (cut to
+/// `out.len`) with up to three edits: a byte changed, the tail cut off, or up
+/// to eight bytes added; else `bytesInto`. The simplest is the first example
+/// whole, so a failure shrinks toward input the parser accepts. Everything
+/// it returns is a prefix of `out`.
+pub fn mutated(s: *Source, out: []u8, examples: []const []const u8) []u8 {
+    const mark = s.begin();
+    defer s.end(mark);
+    if (examples.len == 0 or weighted(s, &.{ 3, 1 }) == 1) return bytesInto(s, out);
+    const example = oneOf(s, []const u8, examples);
+    const len = @min(example.len, out.len);
+    @memcpy(out[0..len], example[0..len]);
+    var end = len;
+    var edits = intRange(s, u8, 0, 3);
+    while (edits > 0) : (edits -= 1) {
+        const edit = s.begin();
+        defer s.end(edit);
+        switch (weighted(s, &.{ 4, 1, 1 })) {
+            0 => if (end > 0) {
+                out[intRange(s, usize, 0, end - 1)] = int(s, u8);
+            },
+            1 => end = intRange(s, usize, 0, end),
+            else => {
+                const add = intRange(s, usize, 0, @min(8, out.len - end));
+                s.bytes(out[end..][0..add]);
+                end += add;
+            },
+        }
+    }
+    return out[0..end];
+}
+
 pub const SliceOptions = struct {
     min_len: usize = 0,
     max_len: usize = std.math.maxInt(usize),
@@ -383,3 +428,24 @@ test "a 128-bit integer is two choices and covers its range" {
 }
 
 const Color = enum { red, green, blue };
+
+test "bytes into a buffer and mutated examples are prefixes of it, the simplest empty and the first example" {
+    var buffer: [16]u8 = undefined;
+    const examples: []const []const u8 = &.{ "\x1b[?62c", "\x1b[0n" };
+    var zero: Source = try .init(std.testing.allocator, .{ .replay = &.{} });
+    defer zero.deinit();
+    try std.testing.expectEqual(@as(usize, 0), bytesInto(&zero, &buffer).len);
+    try std.testing.expectEqualStrings(examples[0], mutated(&zero, &buffer, examples));
+    var short: [3]u8 = undefined;
+    try std.testing.expectEqualStrings(examples[0][0..3], mutated(&zero, &short, examples));
+    var seeded: Source = try .init(std.testing.allocator, .{ .prng = 7 });
+    defer seeded.deinit();
+    var changed = false;
+    for (0..512) |_| {
+        const got = mutated(&seeded, &buffer, examples);
+        try std.testing.expect(got.ptr == &buffer and got.len <= buffer.len);
+        if (!std.mem.eql(u8, got, examples[0]) and !std.mem.eql(u8, got, examples[1])) changed = true;
+        try std.testing.expect(bytesInto(&seeded, &short).len <= short.len);
+    }
+    try std.testing.expect(changed);
+}

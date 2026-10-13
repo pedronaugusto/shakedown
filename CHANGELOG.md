@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `gen.bytesInto`, a prefix of a buffer of any length filled with any bytes, and `gen.mutated`, a parser's input made from its examples with a few edits (a byte changed, the tail cut, bytes added), or else any bytes: the simplest is the first example whole, so a failure shrinks toward input the parser accepts. Four packages kept a copy of one or the other.
+
 ## [0.4.1] - 2026-10-13
 
 ### Changed
