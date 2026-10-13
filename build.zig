@@ -88,6 +88,8 @@ pub fn dev(b: *std.Build, tools: type) void {
     tests.root_module.addOptions("build_options", test_options);
     tests.root_module.addImport("aegis", aegis_dependency.module("aegis"));
     tests.root_module.addImport("shuttle", shuttle_dependency.module("shuttle"));
+    // The suite is shakedown, so it is the shakedown the test runner finds.
+    tests.root_module.addImport("shakedown", tests.root_module);
 
     const test_step = b.step("test", "Run the tests, the fault programs and the example");
     const unit_run = b.addRunArtifact(tests);

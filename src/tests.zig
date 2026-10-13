@@ -1,5 +1,11 @@
 //! The test root: every unit test, and the tests that drive the package
 //! from outside.
+
+/// preflight's test runner backs `std.testing.allocator` with shakedown's
+/// quarantine in the hardened run, and finds it as `@import("shakedown")`: in
+/// shakedown's own tests, this module, which is shakedown's sources.
+pub const alloc = @import("alloc.zig");
+
 test {
     _ = @import("b6_test.zig");
     _ = @import("fs_test.zig");
