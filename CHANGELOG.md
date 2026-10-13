@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-13
+
 ### Changed
 
 - The fiber executor runs on shuttle 0.2: a fiber keeps its stack beside its context, which no longer carries it. Pins shuttle 0.2.0.
