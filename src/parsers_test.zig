@@ -19,7 +19,7 @@ test "a tape written as text parses back to its choices, and any other text pars
                     return gen.int(s, u64);
                 }
             }.one, c.gpa, .{ .max_len = 32 });
-            const text = try std.fmt.allocPrint(c.gpa, "{f}", .{Source.Tape{ .choices = choices }});
+            const text = try c.gpa.print("{f}", .{Source.Tape{ .choices = choices }});
             const back = try Source.Tape.parse(c.gpa, text);
             try std.testing.expectEqualSlices(u64, choices, back);
             var buffer: [96]u8 = undefined;
@@ -29,7 +29,7 @@ test "a tape written as text parses back to its choices, and any other text pars
                 error.OutOfMemory => return err,
             };
             // What parses is the tape that formats to the same text, spaces aside.
-            const again = try std.fmt.allocPrint(c.gpa, "{f}", .{Source.Tape{ .choices = parsed }});
+            const again = try c.gpa.print("{f}", .{Source.Tape{ .choices = parsed }});
             const reparsed = try Source.Tape.parse(c.gpa, again);
             try std.testing.expectEqualSlices(u64, parsed, reparsed);
         }
