@@ -54,6 +54,7 @@ test {
     _ = @import("every_fault_test.zig");
     _ = @import("check_test.zig");
     _ = @import("fuzz.zig");
+    _ = @import("parsers_test.zig");
     _ = @import("explore_test.zig");
     _ = @import("shrink_challenge_test.zig");
     _ = @import("sim_test.zig");
