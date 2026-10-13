@@ -6,9 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-13
+
 ### Fixed
 
 - `Sim.Options.stack_size` defaults to a megabyte on Windows (256 KiB elsewhere): std's NT path conversion needs more than 256 KiB in a Debug build, so code under test that opens a file overflowed its task's stack.
+
+### Changed
+
+- Pins aegis 0.1.3 and preflight 0.4.0.
 
 ## [0.3.1] - 2026-10-12
 

@@ -1,6 +1,6 @@
 .{
     .name = .shakedown,
-    .version = "0.3.1",
+    .version = "0.3.2",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0xfb25f62e3141f05,
     .paths = .{
@@ -20,8 +20,8 @@
     },
     .dev_dependencies = .{
         .preflight = .{
-            .url = "git+https://github.com/pedronaugusto/preflight?ref=v0.3.4#a0efa97ac6fb5656d5e2b1a19657926b66a55d11",
-            .hash = "preflight-0.3.4-LX1ZwoE8DgCcci81Z_m2wf0UmKlkxeLCGV74OcKQC8nV",
+            .url = "git+https://github.com/pedronaugusto/preflight?ref=v0.4.0#13df25e5211b029720e3471d1c52181c5ed094ad",
+            .hash = "preflight-0.4.0-LX1Zwh5nDgAstrc7m8rQf0ewFei3fWQIQnkmCHro2z1x",
         },
     },
 }
