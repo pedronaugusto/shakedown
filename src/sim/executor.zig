@@ -94,13 +94,19 @@ pub fn start(c: *Context, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
                 c.thread.handle = win32.CreateThread(null, stack_size, win32ThreadStart, &c.thread, win32.stack_size_param_is_a_reservation, null) orelse return error.SystemResources;
                 return;
             }
-            c.thread.handle = std.Thread.spawn(.{ .stack_size = stack_size }, threadMain, .{&c.thread}) catch |err| return switch (err) {
+            c.thread.handle = std.Thread.spawn(.{ .stack_size = @max(stack_size, thread_stack_floor) }, threadMain, .{&c.thread}) catch |err| return switch (err) {
                 error.OutOfMemory => error.OutOfMemory,
                 else => error.SystemResources,
             };
         },
     }
 }
+
+/// The least stack a task's thread is given, whatever the simulation asks: a
+/// thread's stack is reserved and touched only as used, and libc refuses one
+/// below its minimum (glibc's is 128 KiB on aarch64, where std asserts on the
+/// refusal), which any build linking libc meets, a ThreadSanitizer one among them.
+pub const thread_stack_floor = 256 * 1024;
 
 /// Releases a task context that is not running: its fiber and stack, or
 /// its thread, which exits without unwinding whatever it was doing.

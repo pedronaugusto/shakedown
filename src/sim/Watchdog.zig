@@ -68,7 +68,7 @@ pub fn add(w: *Watchdog, watched: *Watched) bool {
     w.mutex.lockUncancelable(real());
     defer w.mutex.unlock(real());
     if (w.thread == null) {
-        w.thread = std.Thread.spawn(.{ .stack_size = 64 * 1024 }, run, .{w}) catch return false;
+        w.thread = std.Thread.spawn(spawn, run, .{w}) catch return false;
     }
     watched.next = w.first;
     watched.previous = null;
@@ -77,6 +77,13 @@ pub fn add(w: *Watchdog, watched: *Watched) bool {
     w.wake();
     return true;
 }
+
+/// How the thread is started: with the stack std gives a thread, reserved and
+/// touched only as used. A small stack saves nothing and is refused or
+/// overrun where the system or a sanitizer needs more: glibc takes no stack
+/// under 128 KiB on aarch64, and ThreadSanitizer's runtime runs on the
+/// thread's own stack (64 KiB crashed aegis's tests under it there).
+pub const spawn: std.Thread.SpawnConfig = .{};
 
 /// Stops watching `watched`.
 pub fn remove(w: *Watchdog, watched: *Watched) void {

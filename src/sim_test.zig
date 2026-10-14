@@ -477,3 +477,16 @@ test "a task reused for another job leaves alone the turn its thread waits on" {
     try testing.expectEqual(Sim.Outcome.finished, sim.run(Reuse.main, .{ sim.io(), &n }));
     try testing.expectEqual(@as(u32, 8), n);
 }
+
+test "a task's thread starts whatever small a stack the simulation asks for" {
+    // Below libc's least stack (glibc's on aarch64), which a thread is raised to.
+    const sim = try Sim.init(testing.allocator, .{ .executor = .threads, .seed = 6, .stack_size = .fromRaw(64 * 1024) });
+    defer sim.deinit();
+    var n: u32 = 0;
+    try testing.expectEqual(Sim.Outcome.finished, sim.run(Reuse.main, .{ sim.io(), &n }));
+    try testing.expectEqual(@as(u32, 8), n);
+}
+
+test "the watchdog's thread asks for no less stack than libc or a sanitizer takes" {
+    try testing.expect(Sim.Watchdog.spawn.stack_size >= 1024 * 1024);
+}

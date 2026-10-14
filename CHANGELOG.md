@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The simulation's watchdog starts its thread with the stack std gives a thread, where it asked for 64 KiB, and a `.threads` simulation gives each task's thread at least 256 KiB whatever `stack_size` asks: libc refuses a stack below its minimum (glibc's is 128 KiB on aarch64, where std asserts on the refusal), so a test linking libc there, a ThreadSanitizer run among them, crashed at the first watched simulation (eleven of aegis's tests).
+
 ## [0.4.2] - 2026-10-14
 
 ### Added
