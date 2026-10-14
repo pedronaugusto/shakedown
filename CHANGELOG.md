@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-14
+
 ### Added
 
 - Properties for the three parsers of what reaches shakedown from outside: a tape written as text parses back to its choices (`SHAKEDOWN_TAPE`), benchmark rows parse or are refused whatever the bytes, and the fuzz runner's findings borrow from the output they are read from.
