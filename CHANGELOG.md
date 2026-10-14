@@ -13,6 +13,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- A simulation reserves its regions on riscv64 and loongarch, where std's Linux map flags name no NORESERVE and the build failed; a reservation with no access is charged no commit there either.
 - shakedown's own suite names itself `shakedown`, so preflight's runner finds the quarantine it backs `std.testing.allocator` with in the hardened run.
 
 ## [0.4.1] - 2026-10-13

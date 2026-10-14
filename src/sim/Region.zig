@@ -155,7 +155,10 @@ fn reserveAt(at: usize) ?usize {
         if (status != .SUCCESS) return null;
         return @intFromPtr(address.?); // safe: the reserved base, kept as a number for offsets
     }
-    const flags: std.posix.MAP = .{ .TYPE = .PRIVATE, .ANONYMOUS = true, .NORESERVE = @hasField(std.posix.MAP, "NORESERVE") };
+    var flags: std.posix.MAP = .{ .TYPE = .PRIVATE, .ANONYMOUS = true };
+    // std names no NORESERVE for every architecture (riscv64's, loongarch's); a mapping with
+    // no access is charged no commit there either.
+    if (comptime @hasField(std.posix.MAP, "NORESERVE")) flags.NORESERVE = true;
     const mapped = std.posix.mmap(if (at == 0) null else @ptrFromInt(at), reserve, .{}, flags, -1, 0) catch return null;
     return @intFromPtr(mapped.ptr); // safe: the reserved base, kept as a number for offsets
 }
