@@ -33,8 +33,11 @@ pub fn Plan(comptime Call: type, comptime Fault: type) type {
 
         pub const At = union(enum) {
             /// The n-th call (from 1) matching `call` (null = any call) and
-            /// `path`, and as many after it as `times` allows.
-            nth: struct { call: ?Call = null, n: u32, path: Match = .any },
+            /// `path`, and as many after it as `times` allows. With `after`,
+            /// the index of another entry, calls count only once that entry
+            /// has fired: a fault sequenced after another, whatever calls a
+            /// concurrent task makes before it.
+            nth: struct { call: ?Call = null, n: u32, path: Match = .any, after: ?u32 = null },
             /// The call that takes this step: what `everyFault` uses.
             step: u64,
             /// Each matching call fires with this probability, drawn from
@@ -61,6 +64,7 @@ pub fn Plan(comptime Call: type, comptime Fault: type) type {
             for (entries) |entry| {
                 if (entry.at == .chance) std.debug.assert(options.source != null);
                 if (entry.at == .nth) std.debug.assert(entry.at.nth.n >= 1);
+                if (entry.at == .nth) if (entry.at.nth.after) |after| std.debug.assert(after < entries.len);
             }
             var p: Self = .{ .entries = entries, .options = options };
             p.reset();
@@ -79,9 +83,14 @@ pub fn Plan(comptime Call: type, comptime Fault: type) type {
             var chosen: ?Fault = null;
             for (p.entries, p.options.counters[0..p.entries.len], 0..) |entry, *counter, i| {
                 const fires = switch (entry.at) {
-                    .step => |s| s == step,
+                    .step => |s| fires: {
+                        if (s != step) break :fires false;
+                        counter.* = 1;
+                        break :fires true;
+                    },
                     .nth => |nth| fires: {
                         if (!callMatches(nth.call, call) or !nth.path.matches(subject)) break :fires false;
+                        if (nth.after) |after| if (!p.hasFired(after)) break :fires false;
                         counter.* +|= 1;
                         break :fires counter.* >= nth.n and (entry.times == 0 or counter.* - nth.n < entry.times);
                     },
@@ -101,6 +110,15 @@ pub fn Plan(comptime Call: type, comptime Fault: type) type {
                 p.fired_count += 1;
             }
             return chosen;
+        }
+
+        /// Whether entry `index` has fired at least once.
+        fn hasFired(p: *const Self, index: u32) bool {
+            const count = p.options.counters[index];
+            return switch (p.entries[index].at) {
+                .nth => |nth| count >= nth.n,
+                .step, .chance => count > 0,
+            };
         }
 
         /// The entries that fired, in order, as far as `Options.fired` holds them.
@@ -152,6 +170,24 @@ test "nth fires on the n-th matching call, and as many after it as times says" {
     plan.reset();
     try std.testing.expectEqual(@as(usize, 0), plan.fired().len);
     try std.testing.expectEqual(@as(?u8, null), plan.decide(.read, "a"));
+}
+
+test "an entry after another counts its calls only once that one has fired" {
+    var steps: Steps = .init();
+    var counters: [2]u32 = undefined;
+    var fired: [4]TestPlan.Fired = undefined;
+    const entries = [_]TestPlan.Entry{
+        .{ .at = .{ .nth = .{ .call = .read, .n = 2 } }, .fault = 1 },
+        .{ .at = .{ .nth = .{ .call = .sync, .n = 1, .after = 0 } }, .fault = 2 },
+    };
+    var plan: TestPlan = .init(&entries, .{ .steps = &steps, .counters = &counters, .fired = &fired });
+    // A sync before the second read is not the one the plan means.
+    try std.testing.expectEqual(@as(?u8, null), plan.decide(.sync, null));
+    try std.testing.expectEqual(@as(?u8, null), plan.decide(.read, null));
+    try std.testing.expectEqual(@as(?u8, null), plan.decide(.sync, null));
+    try std.testing.expectEqual(@as(?u8, 1), plan.decide(.read, null));
+    try std.testing.expectEqual(@as(?u8, 2), plan.decide(.sync, null));
+    try std.testing.expectEqualSlices(TestPlan.Fired, &.{ .{ .entry = 0, .step = 3 }, .{ .entry = 1, .step = 4 } }, plan.fired());
 }
 
 test "a step entry fires at exactly its step, and the first firing entry wins" {

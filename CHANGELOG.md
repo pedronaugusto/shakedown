@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- A fault plan's `.nth` trigger takes `after`, another entry's index: its calls count only once that entry has fired. A fault meant to follow another (a cancel found by the look after a write that made no progress) is placed by the plan, whatever calls a concurrent task makes before it (conduit's InputWriter test took a cancel check from the writer's own wait as the one it meant, on a riscv64 kernel's timing).
+
 ## [0.4.3] - 2026-10-14
 
 ### Fixed
