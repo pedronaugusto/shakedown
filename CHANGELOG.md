@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-15
+
 ### Fixed
 
 - `Clock` reports a cancel to a timed wait whose deadline has already passed: `futexWait` returned at once, as a timeout, and a canceled task waiting in a loop of such waits never saw its cancel (a test bounded by real time looped 10 s). It returns `error.Canceled` when one is pending, as its `sleep` did and the base's own wait does. A read blocked in the kernel is the base's, untouched by the clock.
