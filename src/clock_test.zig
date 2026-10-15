@@ -50,6 +50,29 @@ test "a sleep already due returns at once and arms nothing" {
     try testing.expectEqual(@as(usize, 0), clock.armed());
 }
 
+test "a canceled task whose timed waits are already due is told it is canceled" {
+    var clock: Clock = .init(testing.io, .{});
+    const io = clock.io();
+    var started: std.atomic.Value(u32) = .init(0);
+    var task = try io.concurrent(waitDueUntilCanceled, .{ io, &started });
+    while (started.load(.acquire) == 0) std.Thread.yield() catch std.atomic.spinLoopHint();
+    try testing.expectError(error.Canceled, task.cancel(io));
+}
+
+/// Waits on a word nobody wakes with a deadline already past, over and over:
+/// only a cancel ends it, or the real-time bound, which says the cancel was lost.
+fn waitDueUntilCanceled(io: Io, started: *std.atomic.Value(u32)) error{ Canceled, LostCancel }!void {
+    const base = testing.io;
+    const bound = Io.Clock.Timestamp.fromNow(base, .{ .raw = .fromSeconds(10), .clock = .awake });
+    var word: std.atomic.Value(u32) = .init(0);
+    const due: Io.Clock.Timestamp = Io.Clock.Timestamp.now(io, .awake);
+    started.store(1, .release);
+    while (Io.Clock.Timestamp.compare(.now(base, .awake), .lt, bound)) {
+        try io.futexWaitTimeout(u32, &word.raw, 0, .{ .deadline = due });
+    }
+    return error.LostCancel;
+}
+
 fn waitEvent(io: Io, event: *Io.Event, timeout: Io.Timeout) Io.Event.WaitTimeoutError!void {
     return event.waitTimeout(io, timeout);
 }

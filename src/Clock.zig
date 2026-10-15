@@ -260,10 +260,12 @@ fn futexWait(userdata: ?*anyopaque, ptr: *const u32, expected: u32, timeout: Io.
     switch (when(l, timeout)) {
         .base => return l.base.vtable.futexWait(l.base.userdata, ptr, expected, timeout),
         .never => return l.base.vtable.futexWait(l.base.userdata, ptr, expected, .none),
-        .due => return,
+        // Due already: no wait, but a cancel aimed at the waiter is still its answer,
+        // as the base's own wait would give it.
+        .due => return l.base.checkCancel(),
         .at => |at| {
             var timer: Timer = .{ .clock = at.clock, .futex = ptr };
-            if (!arm(l, &timer, at.deadline)) return;
+            if (!arm(l, &timer, at.deadline)) return l.base.checkCancel();
             defer disarm(l, &timer);
             const slice = recheck(l);
             // A wake that leaves the word at `expected` is taken for a
