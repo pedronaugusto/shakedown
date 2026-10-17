@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `leak`: timing-leak tests, whether an operation's time depends on its secret input. Two classes of input, a fixed one and random ones, are measured interleaved in a random order and compared with Welch's t-test, uncropped, cropped at a hundred percentiles and in second order (dudect). For the built code a constant-time claim rests on: cloak's kernels first.
+
 ## [0.4.6] - 2026-10-17
 
 ### Fixed

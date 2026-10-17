@@ -99,6 +99,8 @@ pub const EveryCrashError = every.crash.Error;
 
 /// Named benchmark workloads, resolution-aware measurement and run comparison.
 pub const bench = @import("bench.zig");
+/// Timing-leak tests: whether an operation's time depends on its secret input (dudect).
+pub const leak = @import("leak.zig");
 
 /// Stateful command generation, replay and postcondition checking.
 pub const Machine = @import("Machine.zig").Machine;

@@ -67,4 +67,5 @@ test {
 
 test {
     _ = @import("bench_test.zig");
+    _ = @import("leak_test.zig");
 }

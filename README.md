@@ -582,6 +582,18 @@ and smoke rows cannot be compared. Build tools can use the fetched package's
 `shakedown-bench-compare` artifact. CI smoke-checks and compiles measuring,
 with no timing thresholds.
 
+`shakedown.leak` asks whether an operation's time depends on its secret input.
+The context prepares each slot's input of a class, the fixed one or a random one,
+untimed, and `call` runs the operation; the classes are drawn at random and
+measured interleaved, and Welch's t-test compares them uncropped, cropped at a
+hundred percentiles and in second order (dudect). `Report.leak` is |t| above the
+threshold, 4.5 by default. Run it on the build that ships, since a compiler can
+turn constant-time source into a branch. It finds a leak with some confidence and
+never proves there is none; the hardware is part of what it measures (a
+data-memory prefetcher that reads memory contents times inputs apart that the code
+treats alike), and `batch` repeats a call within one measurement to rise above the
+clock's resolution.
+
 ## Platforms
 
 `Clock`, `Layer`, `FaultIo`, `everyFault`, `everyCrash`, `check`, `Counting`, `NoResize` and
