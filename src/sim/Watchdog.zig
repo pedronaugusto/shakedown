@@ -9,8 +9,11 @@
 //! Each sample reads a watched simulation's running task and call count. A
 //! task that makes no call for the simulation's watchdog time is reported
 //! and the run marked stuck, which ends it at the task's next call; one
-//! that never makes one is reported again and the process aborted, since
-//! nothing else can stop it.
+//! that makes none for another watchdog time after it was marked is
+//! reported again and the process aborted, since nothing else can stop it.
+//! The second time counts from the mark, not from the task's last call: a
+//! sample taken late (the watchdog's own thread descheduled on a loaded
+//! host) leaves the task the whole time to reach its call.
 const std = @import("std");
 const Io = std.Io;
 const ids = @import("../ids.zig");
@@ -42,6 +45,8 @@ pub const Watched = struct {
     previous: ?*Watched = null,
     seen: u64 = 0,
     since: ?i64 = null,
+    /// When the run was marked stuck.
+    marked: ?i64 = null,
 };
 
 pub fn init() Watchdog {
@@ -136,21 +141,52 @@ fn sample(w: *Watchdog) ?Next {
 
 fn look(watched: *Watched, now: i64) void {
     const task = watched.running.load(.monotonic);
-    const calls = watched.calls.load(.monotonic);
+    switch (verdict(watched, task, watched.calls.load(.monotonic), now)) {
+        .running => {},
+        .marked => |idle| say("shakedown: task {d} has run {d} ms without an Io call; the run ends as stuck at its next one\n", .{ task.raw(), @divTrunc(idle, std.time.ns_per_ms) }),
+        .unstoppable => |idle| {
+            say("shakedown: task {d} has made no Io call for {d} ms and cannot be stopped; aborting\n", .{ task.raw(), @divTrunc(idle, std.time.ns_per_ms) });
+            std.process.abort();
+        },
+    }
+}
+
+/// What one sample finds: a task that runs as it should, one just marked
+/// stuck, or one that made no call in a whole watchdog time after it was
+/// marked. Each carries how long the task has gone without a call.
+const Verdict = union(enum) { running, marked: i64, unstoppable: i64 };
+
+fn verdict(watched: *Watched, task: ids.TaskId, calls: u64, now: i64) Verdict {
     if (task == ids.outside or calls != watched.seen or watched.since == null) {
         watched.seen = calls;
         watched.since = now;
-        return;
+        watched.marked = null;
+        return .running;
     }
     const idle = now -| watched.since.?;
-    if (idle >= watched.limit and !watched.stuck.load(.monotonic)) {
-        watched.stuck.store(true, .monotonic);
-        say("shakedown: task {d} has run {d} ms without an Io call; the run ends as stuck at its next one\n", .{ task.raw(), @divTrunc(idle, std.time.ns_per_ms) });
-    }
-    if (idle >= 2 *| watched.limit) {
-        say("shakedown: task {d} has made no Io call for {d} ms and cannot be stopped; aborting\n", .{ task.raw(), @divTrunc(idle, std.time.ns_per_ms) });
-        std.process.abort();
-    }
+    if (watched.marked) |marked| return if (now -| marked >= watched.limit) .{ .unstoppable = idle } else .running;
+    if (idle < watched.limit) return .running;
+    watched.marked = now;
+    watched.stuck.store(true, .monotonic);
+    return .{ .marked = idle };
+}
+
+test "a task marked stuck has a whole watchdog time from the mark to reach its call" {
+    var running: std.atomic.Value(ids.TaskId) = .init(.fromRaw(1));
+    var calls: std.atomic.Value(u64) = .init(0);
+    var stuck: std.atomic.Value(bool) = .init(false);
+    const ms = std.time.ns_per_ms;
+    var watched: Watched = .{ .running = &running, .calls = &calls, .stuck = &stuck, .limit = 50 * ms };
+    const task: ids.TaskId = .fromRaw(1);
+    try std.testing.expectEqual(Verdict.running, verdict(&watched, task, 0, 0));
+    // A late sample marks it at 95 ms; the next, at 101 ms, is not past the grace.
+    try std.testing.expectEqual(Verdict{ .marked = 95 * ms }, verdict(&watched, task, 0, 95 * ms));
+    try std.testing.expect(stuck.load(.monotonic));
+    try std.testing.expectEqual(Verdict.running, verdict(&watched, task, 0, 101 * ms));
+    try std.testing.expectEqual(Verdict{ .unstoppable = 145 * ms }, verdict(&watched, task, 0, 145 * ms));
+    // A call clears the mark.
+    try std.testing.expectEqual(Verdict.running, verdict(&watched, task, 1, 150 * ms));
+    try std.testing.expectEqual(Verdict.running, verdict(&watched, task, 1, 199 * ms));
 }
 
 fn say(comptime fmt: []const u8, args: anytype) void {
