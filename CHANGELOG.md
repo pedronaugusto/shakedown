@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- `gen.any` draws slices: drawing a type with a slice in it failed to compile (the length of a nested list was computed as a shift of an untyped constant by a run-time amount), so a property over such a type could not be written.
+
 ## [0.4.5] - 2026-10-15
 
 ### Fixed

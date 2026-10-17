@@ -326,7 +326,7 @@ fn anySlice(s: *Source, comptime T: type, comptime p: std.builtin.Type.Pointer, 
     defer s.end(mark);
     // Deeper values get shorter lists: 8 on average at the top, none
     // past 24 open spans.
-    const average: u32 = if (s.depth >= 24) 0 else 8 >> @intCast(s.depth / 6);
+    const average: u32 = if (s.depth >= 24) 0 else @as(u32, 8) >> @intCast(s.depth / 6);
     while (true) {
         const item = s.begin();
         defer s.end(item);
@@ -404,6 +404,22 @@ test "a zero tape draws the simplest value of every kind" {
     const Value = struct { a: u8, b: ?u16, c: [2]bool, d: union(enum) { x: u8, y: void } };
     const v = try any(&s, Value, std.testing.allocator);
     try std.testing.expectEqual(Value{ .a = 0, .b = null, .c = .{ false, false }, .d = .{ .x = 0 } }, v);
+}
+
+test "any draws slices of every element type, lists shorter the deeper they lie" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const Row = struct { id: u8, tags: []const u8 };
+    const Value = struct { names: []const []const u8, rows: []const Row, nested: []const []const []const u16 };
+    var longest: usize = 0;
+    var seed: u64 = 0;
+    while (seed < 64) : (seed += 1) {
+        var s: Source = try .init(std.testing.allocator, .{ .prng = seed });
+        defer s.deinit();
+        const v = try any(&s, Value, arena.allocator());
+        longest = @max(longest, v.names.len, v.rows.len, v.nested.len);
+    }
+    try std.testing.expect(longest > 0);
 }
 
 test "a range's values alternate around its target, then run along the longer side" {
