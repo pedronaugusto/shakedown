@@ -13,5 +13,6 @@
     "aarch64-macos"
   ],
   "compile_once": true,
-  "hardened": true
+  "hardened": true,
+  "shards": {"riscv64": 2}
 }
