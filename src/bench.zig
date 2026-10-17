@@ -101,6 +101,15 @@ pub fn Row(comptime Context: type, comptime WorkloadError: type) type {
         /// short to read is `Unmeasurable`. It is held to the clock's
         /// resolution alone; `Options.minimum` is the target of growth.
         grow: bool = true,
+        /// Time units one at a time, this many after the warmup: the row's
+        /// samples are single units, and its median and p99 a latency
+        /// distribution's, not batch means'. For a workload whose unit is a
+        /// round trip to another process or machine, where a mean would hide
+        /// the tail. Units are not batched (`initial` and `grow` are unused),
+        /// and each is held to `latency_resolution_multiple` times the clock's
+        /// resolution; a shorter one is `Unmeasurable`, and the workload is a
+        /// batched row instead.
+        latency: ?usize = null,
         run: *const fn (*Context, u64) WorkloadError!void,
         fixture: ?Fixture = null,
         /// Untimed, before each batch: put the fixture in the state `run(units)`
@@ -111,6 +120,10 @@ pub fn Row(comptime Context: type, comptime WorkloadError: type) type {
         settle: ?Step = null,
     };
 }
+
+/// What a unit of a `latency` row is held to, in clock resolutions: a single
+/// unit cannot be batched past the clock, so its reading may be off by 1%.
+pub const latency_resolution_multiple = 100;
 
 /// The timing policy. Resolution error is at most 1/resolution_multiple of
 /// each retained sample. Batching is bounded; an unmeasurable row is an error.
@@ -160,7 +173,7 @@ pub fn RunError(comptime WorkloadError: type) type {
 pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, context: anytype, rows: []const Row(std.meta.Child(@TypeOf(context)), WorkloadError), metadata: Metadata, options: Options) RunError(WorkloadError)!void {
     if (metadata.commit.len == 0 or metadata.zig.len == 0 or metadata.cpu.len == 0 or metadata.os.len == 0 or options.samples == 0 or options.warmup == 0 or options.resolution_multiple == 0 or options.minimum.nanoseconds < 0) return error.InvalidOptions;
     for (rows, 0..) |row, i| {
-        if (row.name.len == 0 or row.unit.len == 0 or row.initial == 0 or row.smoke == 0 or row.initial > options.max_batch) return error.InvalidOptions;
+        if (row.name.len == 0 or row.unit.len == 0 or row.initial == 0 or row.smoke == 0 or row.initial > options.max_batch or row.latency == 0) return error.InvalidOptions;
         for (rows[0..i]) |previous| if (std.mem.eql(u8, previous.name, row.name)) return error.DuplicateRow;
     }
     if (options.smoke) {
@@ -175,13 +188,14 @@ pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer:
     const resolution = (try Io.Clock.awake.resolution(io)).nanoseconds;
     if (resolution <= 0 or resolution > std.math.maxInt(u64)) return error.ClockUnavailable;
     const readable = std.math.mul(i96, resolution, options.resolution_multiple) catch return error.InvalidOptions;
-    const samples = try gpa.alloc(f64, options.samples);
-    defer gpa.free(samples);
     for (rows) |row| {
         if (!std.mem.startsWith(u8, row.name, options.prefix)) continue;
+        const samples = try gpa.alloc(f64, row.latency orelse options.samples);
+        defer gpa.free(samples);
         // A row that grows is read over at least `minimum`; one that cannot is
-        // read at the clock's resolution alone.
-        const target = if (row.grow) @max(options.minimum.nanoseconds, readable) else readable;
+        // read at the clock's resolution alone, and a latency row's unit at a
+        // smaller multiple of it.
+        const target = if (row.latency != null) resolution * latency_resolution_multiple else if (row.grow) @max(options.minimum.nanoseconds, readable) else readable;
         try opening(row, context);
         const batch = try closing(WorkloadError, row, context, sample(WorkloadError, io, context, row, samples, target, options));
         const stats = try statistics(gpa, samples);
@@ -212,6 +226,15 @@ fn closing(comptime WorkloadError: type, row: anytype, context: anytype, outcome
 /// Calibration is discarded, as is an entire sample set if its fastest batch
 /// reveals that calibration was distorted by a cold cache.
 fn sample(comptime WorkloadError: type, io: Io, context: anytype, row: Row(std.meta.Child(@TypeOf(context)), WorkloadError), samples: []f64, target: i96, options: Options) RunError(WorkloadError)!u64 {
+    if (row.latency != null) {
+        for (0..options.warmup) |_| _ = try invoke(WorkloadError, false, io, context, row, 1);
+        for (samples) |*slot| {
+            const ns = try invoke(WorkloadError, true, io, context, row, 1);
+            if (ns < target) return error.Unmeasurable;
+            slot.* = @floatFromInt(ns);
+        }
+        return 1;
+    }
     var batch = row.initial;
     for (0..options.warmup) |_| _ = try invoke(WorkloadError, false, io, context, row, batch);
     while (true) {

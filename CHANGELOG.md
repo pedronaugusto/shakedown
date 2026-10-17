@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `bench.Row.latency`: a row whose units are timed one at a time, that many, so its median and p99 are a latency distribution's rather than batch means'. For a unit that is a round trip to another process or machine, where a mean hides the tail; each unit is held to `bench.latency_resolution_multiple` (100) clock resolutions. parley's benchmarks time requests to a server process with it.
+
 ## [0.4.9] - 2026-10-17
 
 ### Fixed

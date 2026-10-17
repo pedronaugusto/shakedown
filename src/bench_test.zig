@@ -665,3 +665,49 @@ fn stagedAllocationCase(gpa: std.mem.Allocator) !void {
 test "bench stages and a kept fixture release owned allocations on every allocation failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, stagedAllocationCase, .{});
 }
+
+/// A round trip whose time grows with each one: 200 ns, 400 ns, ...
+const Trips = struct {
+    clock: *Clock,
+    units: u64 = 0,
+    fn run(self: *Trips, units: u64) error{}!void {
+        self.units += units;
+        self.clock.advance(.fromNanoseconds(@intCast(self.units * 200)));
+    }
+};
+
+test "bench times a latency row's units one at a time and keeps each" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(2) });
+    var trips: Trips = .{ .clock = &clock };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    const row: bench.Row(Trips, error{}) = .{ .name = "trip", .unit = "request", .latency = 100, .run = Trips.run };
+    // `minimum` and `samples` are a batched row's: a latency row keeps its own count, unbatched.
+    try bench.run(error{}, std.testing.allocator, clock.io(), &output.writer, &trips, &.{row}, metadata, .{ .samples = 3, .warmup = 2, .minimum = .fromSeconds(1) });
+    var parsed = try bench.parse(std.testing.allocator, output.written());
+    defer parsed.deinit();
+    const r = parsed.rows.items[0].value;
+    try std.testing.expectEqual(@as(u64, 1), r.batch);
+    try std.testing.expectEqual(@as(usize, 100), r.samples.len);
+    // Two warmup units, then the hundred timed: the third to the 102nd.
+    try std.testing.expectEqual(@as(u64, 102), trips.units);
+    try std.testing.expectEqual(@as(f64, 600), r.samples[0]);
+    try std.testing.expectEqual(@as(f64, 600), r.best);
+    // Nearest rank: the 99th of a hundred.
+    try std.testing.expectEqual(@as(f64, 200 * 101), r.p99);
+    try std.testing.expectEqual(@as(f64, (200 * 52 + 200 * 53) / 2), r.median);
+}
+
+test "bench refuses a latency unit shorter than a hundred resolutions, and a row of none" {
+    var clock: Clock = .init(std.testing.io, .{ .resolution = .fromNanoseconds(10) });
+    var trips: Trips = .{ .clock = &clock };
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    // The third unit takes 600 ns: under 1 000.
+    const row: bench.Row(Trips, error{}) = .{ .name = "trip", .unit = "request", .latency = 10, .run = Trips.run };
+    try std.testing.expectError(error.Unmeasurable, bench.run(error{}, std.testing.allocator, clock.io(), &output.writer, &trips, &.{row}, metadata, .{}));
+    try std.testing.expectEqual(@as(usize, 0), output.written().len);
+    var none = row;
+    none.latency = 0;
+    try std.testing.expectError(error.InvalidOptions, bench.run(error{}, std.testing.allocator, clock.io(), &output.writer, &trips, &.{none}, metadata, .{}));
+}
