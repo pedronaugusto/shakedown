@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Pins shuttle 0.3.0 (its pool makes a stack usable when first handed out) and aegis 0.1.12.
+
 ## [0.4.10] - 2026-10-17
 
 ### Added
