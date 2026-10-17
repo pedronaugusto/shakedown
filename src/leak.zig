@@ -20,7 +20,7 @@ pub const Class = enum(u1) {
 };
 
 pub const Options = struct {
-    /// Measurements in all, the classes drawn at random for each.
+    /// Measurements in all, the classes drawn at random for each: at least `slots + floor`.
     measurements: usize = 1 << 20,
     /// Inputs prepared at a time: each round prepares this many, then measures them in order.
     slots: usize = 1 << 12,
@@ -51,6 +51,9 @@ pub const Report = struct {
     leak: bool,
 };
 
+/// Measurements a test needs, past the first round, before its |t| says anything (dudect's).
+pub const floor = 10_000;
+
 pub const RunError = std.mem.Allocator.Error || error{ InvalidOptions, NonMonotonicClock };
 
 /// Measures `context`: `prepare(context, slot, class, random)` sets up slot's input of `class`
@@ -58,7 +61,9 @@ pub const RunError = std.mem.Allocator.Error || error{ InvalidOptions, NonMonoto
 /// Inputs a call consumes are prepared again for each round; a call must not depend on earlier
 /// calls.
 pub fn run(gpa: std.mem.Allocator, io: Io, context: anytype, options: Options) RunError!Report {
-    if (options.measurements < 2 * options.slots or options.slots < 2 or options.batch == 0 or !(options.threshold > 0)) return error.InvalidOptions;
+    // The first round sets the crop points and is left out; what is left must reach the floor
+    // below which a test says nothing.
+    if (options.slots < 2 or options.measurements < options.slots + floor or options.batch == 0 or !(options.threshold > 0)) return error.InvalidOptions;
     var prng: std.Random.DefaultPrng = .init(options.seed);
     const random = prng.random();
     const classes = try gpa.alloc(Class, options.slots);
@@ -109,7 +114,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io, context: anytype, options: Options) R
     var report: Report = .{ .t = 0, .test_index = 0, .measurements = done, .mean = stats[0].mean, .leak = false };
     for (&stats, 0..) |*s, i| {
         // dudect's floor: a test with fewer measurements says nothing yet.
-        if (s.n[0] + s.n[1] < 10_000 or s.n[0] < 2 or s.n[1] < 2) continue;
+        if (s.n[0] + s.n[1] < floor or s.n[0] < 2 or s.n[1] < 2) continue;
         const t = @abs(s.t());
         if (t > report.t) {
             report.t = t;

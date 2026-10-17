@@ -58,5 +58,7 @@ test "leak: options that cannot measure are refused" {
     var compare: Compare = .{ .whole = true };
     try std.testing.expectError(error.InvalidOptions, leak.run(std.testing.allocator, std.testing.io, &compare, .{ .measurements = 10, .slots = 8 }));
     try std.testing.expectError(error.InvalidOptions, leak.run(std.testing.allocator, std.testing.io, &compare, .{ .slots = 1 }));
+    // Too few past the first round for any test to say something: refused, not a |t| of zero.
+    try std.testing.expectError(error.InvalidOptions, leak.run(std.testing.allocator, std.testing.io, &compare, .{ .measurements = 8192, .slots = 1024 }));
     try std.testing.expectError(error.InvalidOptions, leak.run(std.testing.allocator, std.testing.io, &compare, .{ .batch = 0 }));
 }
