@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-10-17
+
 ### Fixed
 
 - `leak.run` refuses options whose measurements past the first round cannot reach the floor below which a test says nothing (`leak.floor`, 10 000): such a run reported a |t| of zero, "no leak", having tested nothing (cloak's RSA row did).

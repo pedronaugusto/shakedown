@@ -1,6 +1,6 @@
 .{
     .name = .shakedown,
-    .version = "0.4.7",
+    .version = "0.4.8",
     .minimum_zig_version = "0.17.0",
     .fingerprint = 0xfb25f62e3141f05,
     .paths = .{
