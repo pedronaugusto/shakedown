@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-10-17
+
 ### Fixed
 
 - A simulation's watchdog could abort the process when its own sample came late: it gave a task marked stuck until twice the watchdog time after the task's last call, so a mark taken late (the watchdog's thread descheduled on a loaded host) left the task no time to reach the call that ends the run. The second watchdog time now counts from the mark (cloak's suite aborted once in the VM just after its restart).
