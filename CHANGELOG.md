@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-10-21
+
 ### Added
 
 - `Sim.Fs.ownership(inode)`: the device, owner and group of the file a stat through the simulation's `Io` reports as `inode` (null for an inode no file has), which `std.Io`'s stat does not carry, so a seam that builds a platform's whole stat over a simulation (airlock's) fills them from the model. `Sim.Fs.Options` names the volume's `device` and the simulated process's `uid` and `gid` (1, 1000 and 1000 by default): a file takes the owner and group at create, a set-owner call through the `Io` changes them, and they persist as the file's other metadata does.
