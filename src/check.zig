@@ -31,6 +31,17 @@ pub const Case = struct {
     /// Private: the run this case belongs to.
     runner: *Runner,
 
+    /// The `Io` for the case's own work: `std.testing.io`, except under the
+    /// fuzzer, where each input has an `Io` of its own, joined when the input
+    /// ends. Zig's fuzzing runner keeps one `std.testing.io` for all of a
+    /// target's inputs while `std.testing.allocator` is a new one per input,
+    /// and a group's task is freed by the thread that ran it after the
+    /// group's await has returned: through the shared `Io`, into the next
+    /// input's allocator.
+    pub fn io(c: *const Case) std.Io {
+        return c.runner.io orelse std.testing.io;
+    }
+
     /// Kept, and printed, only for the final, minimal failing case.
     pub fn note(c: *Case, comptime fmt: []const u8, args: anytype) void {
         const notes = &(c.runner.notes orelse return);
@@ -230,6 +241,9 @@ pub const Runner = struct {
     /// Whether the test runner handed `check`'s fuzz function an input of its
     /// own: it does not fuzz.
     probed: bool = false,
+    /// The fuzzer's input's own `Io`, which `Case.io` hands out; null
+    /// otherwise.
+    io: ?std.Io = null,
     /// The final run's error return trace, taken before the error is
     /// handled and its frames are let go.
     trace: [32]usize = undefined,
@@ -426,6 +440,14 @@ fn fuzzOne(r: *Runner, smith: *std.testing.Smith) anyerror!void {
     var own: Runner = try .init(r.gpa, r.options);
     defer own.deinit();
     own.body = r.body;
+    // Its `deinit` joins the input's tasks before the runner checks the
+    // input's allocator (`Case.io`).
+    var io: std.Io.Threaded = .init(std.testing.allocator, .{
+        .argv0 = std.testing.io_instance.argv0,
+        .environ = std.testing.io_instance.environ.process_environ,
+    });
+    defer io.deinit();
+    own.io = io.io();
     switch (try own.once(.{ .smith = smith })) {
         .pass, .discard => {},
         .fail => |err| {

@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Case.io()`: the `Io` for a case's own work. It is `std.testing.io`, except under the fuzzer, where each input has an `Io` of its own, joined when the input ends. Zig 0.17's fuzzing runner keeps one `std.testing.io` for all of a target's inputs while `std.testing.allocator` is a new one per input, and `Io.Threaded` frees a group's task on the thread that ran it after the group's await has returned, so a property that started tasks on `std.testing.io` could free one into the next input's allocator ("corrupted footer metadata").
+
 ## [0.4.12] - 2026-10-20
 
 ### Fixed

@@ -270,7 +270,12 @@ and the count. Under `zig build test --fuzz` the same property runs on the
 fuzzer's input instead, with the regressions as its corpus, and a failure it
 finds prints as a tape. A test that asserts how `check` ran (its cases, its
 seed, the error it returned) sets `.fuzz = false`, and the fuzzer leaves it
-alone. `corpus.fromTape` turns any tape into such an input.
+alone. A case's own work on an `Io` goes through `case.io()`: `std.testing.io`,
+and under the fuzzer an `Io` of the input's own, whose tasks end with the
+input (the fuzzer keeps one `std.testing.io` for all its inputs while each
+input has a new `std.testing.allocator`, and a task freed after its group's
+await would free into the next input's). `corpus.fromTape` turns any tape into
+a fuzzer's input.
 `SHAKEDOWN_TAPE` shrinks the tape it replays when the property fails, so a
 long tape the fuzzer found comes back minimal.
 

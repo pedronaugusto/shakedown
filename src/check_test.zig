@@ -155,3 +155,21 @@ test "every case's simulation shares the run's one watchdog" {
     try shakedown.check(testing.allocator, &ctx, SimCases.body, .{ .cases = 20, .seed = 3, .fuzz = false });
     try testing.expectEqual(@as(u32, 20), ctx.cases);
 }
+
+fn groupWork(_: void, c: *Case) !void {
+    const n = gen.intRange(c.source, usize, 1, 8);
+    const io = c.io();
+    var sums: [8]u64 = @splat(0);
+    var group: std.Io.Group = .init;
+    for (sums[0..n], 0..) |*sum, i| group.async(io, struct {
+        fn add(out: *u64, k: usize) void {
+            out.* = k * k;
+        }
+    }.add, .{ sum, i });
+    try group.await(io);
+    for (sums[0..n], 0..) |sum, i| try testing.expectEqual(i * i, sum);
+}
+
+test "a case's Io runs its group's tasks, and under the fuzzer they end with the input" {
+    try shakedown.check(testing.allocator, {}, groupWork, .{ .cases = 64 });
+}
