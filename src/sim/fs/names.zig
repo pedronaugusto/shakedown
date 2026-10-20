@@ -79,6 +79,50 @@ pub fn equal(a: []const u8, b: []const u8, darwin: bool) bool {
     const bv = key(b, &bk, darwin) orelse return false;
     return std.mem.eql(u21, av, bv);
 }
+
+/// A hash two names share whenever `equal` calls them the same, so a lookup
+/// compares names only where the hashes agree: the hash of the name's key,
+/// or of its bytes when it has none (a name that is not WTF-8, which `equal`
+/// compares byte for byte).
+pub fn hash(bytes: []const u8, darwin: bool) u64 {
+    var out: [1024]u21 = undefined;
+    const folded = asciiKey(bytes, &out, darwin) orelse key(bytes, &out, darwin) orelse
+        return std.hash.Wyhash.hash(1, bytes);
+    return std.hash.Wyhash.hash(0, std.mem.sliceAsBytes(folded));
+}
+
+/// `key` for a name all in ASCII, without the tables: Darwin folds a
+/// letter to lower case, Windows raises it to upper case, and nothing else
+/// in ASCII changes or moves. `null` for any other name.
+fn asciiKey(bytes: []const u8, out: *[1024]u21, darwin: bool) ?[]const u21 {
+    if (bytes.len > out.len) return null;
+    for (bytes, 0..) |c, i| {
+        if (c >= 128) return null;
+        out[i] = if (darwin) std.ascii.toLower(c) else std.ascii.toUpper(c);
+    }
+    return out[0..bytes.len];
+}
+
+test "the key of a name in ASCII is the tables' key" {
+    for ([_]bool{ false, true }) |darwin| {
+        for (0..128) |c| {
+            const name = [1]u8{@intCast(c)};
+            var fast: [1024]u21 = undefined;
+            var slow: [1024]u21 = undefined;
+            try std.testing.expectEqualSlices(u21, key(&name, &slow, darwin).?, asciiKey(&name, &fast, darwin).?);
+        }
+    }
+}
+
+test "names equal share a hash" {
+    const pairs = [_][2][]const u8{ .{ "Readme", "README" }, .{ "k", "\u{212A}" }, .{ "caf\u{e9}", "cafe\u{301}" }, .{ "\u{e9}", "\u{c9}" } };
+    for ([_]bool{ false, true }) |darwin| {
+        for (pairs) |pair| {
+            if (!equal(pair[0], pair[1], darwin)) continue;
+            try std.testing.expectEqual(hash(pair[0], darwin), hash(pair[1], darwin));
+        }
+    }
+}
 const fold = [_]Mapping{
     .{ .from = 0x41, .to = &.{0x61} },
     .{ .from = 0x42, .to = &.{0x62} },

@@ -189,8 +189,23 @@ fn validName(fs: *const Model, name: []const u8) Error!void {
         for ([_][]const u8{ "¹", "²", "³" }) |digit| if (std.mem.eql(u8, suffix, digit)) return error.BadPathName;
     }
 }
+fn nameHash(fs: *const Model, name: []const u8) u64 {
+    if (fs.options.names == .posix) return std.hash.Wyhash.hash(0, name);
+    return names.hash(name, fs.options.names == .darwin);
+}
+/// A name an entry is made with, its lookup hash computed once.
+fn entryName(fs: *const Model, bytes: []const u8) !*Name {
+    const name = try Name.create(fs.gpa, bytes);
+    name.hash = fs.nameHash(bytes);
+    return name;
+}
 pub fn find(fs: *const Model, entries: []const Entry, parent_id: u32, name: []const u8) ?usize {
-    for (entries, 0..) |e, i| if (e.parent == parent_id and fs.sameName(e.name.bytes, name)) return i;
+    // Every lookup of every path walks the entries: names are compared
+    // only where the parent and the hash agree.
+    return fs.findHashed(entries, parent_id, fs.nameHash(name), name);
+}
+fn findHashed(fs: *const Model, entries: []const Entry, parent_id: u32, hash: u64, name: []const u8) ?usize {
+    for (entries, 0..) |e, i| if (e.parent == parent_id and e.name.hash == hash and fs.sameName(e.name.bytes, name)) return i;
     return null;
 }
 fn parentOf(fs: *const Model, inode: u32) u32 {
@@ -330,7 +345,7 @@ pub fn create(fs: *Model, base: u32, path: []const u8, kind: Io.File.Kind, permi
 fn createIn(fs: *Model, p: Parent, kind: Io.File.Kind, permissions: Io.File.Permissions, target: ?[]const u8) Error!u32 {
     std.debug.assert(fs.find(fs.root.entries.items, p.inode, p.name) == null);
     try fs.unique();
-    const name = try Name.create(fs.gpa, p.name);
+    const name = try fs.entryName(p.name);
     defer name.release(fs.gpa);
     try fs.root.entries.ensureUnusedCapacity(fs.gpa, 1);
     try fs.root.pending.ensureUnusedCapacity(fs.gpa, 1);
@@ -392,7 +407,7 @@ pub fn rename(fs: *Model, old_base: u32, old_path: []const u8, new_base: u32, ne
         }
     }
     try fs.unique();
-    const name = try Name.create(fs.gpa, to.name);
+    const name = try fs.entryName(to.name);
     defer name.release(fs.gpa);
     const changes = [_]Change{ .{ .parent = from.inode, .name = fs.root.entries.items[i].name, .inode = null }, .{ .parent = to.inode, .name = name, .inode = inode } };
     if (fs.options.names == .windows and from.inode != to.inode) {
@@ -410,7 +425,7 @@ pub fn link(fs: *Model, inode: u32, base: u32, path: []const u8) Error!void {
     const p = try fs.parent(base, path);
     if (fs.find(fs.root.entries.items, p.inode, p.name) != null) return error.PathAlreadyExists;
     try fs.unique();
-    const name = try Name.create(fs.gpa, p.name);
+    const name = try fs.entryName(p.name);
     defer name.release(fs.gpa);
     try fs.entryEffect(&.{.{ .parent = p.inode, .name = name, .inode = inode }}, inode);
 }
@@ -998,8 +1013,13 @@ pub const CrashStateIterator = struct {
 };
 fn sameStorage(fs: *const Model, other: *const State) bool {
     if (fs.root.entries.items.len != other.entries.items.len or fs.root.nodes.items.len != other.nodes.items.len) return false;
-    for (fs.root.entries.items) |e| {
-        const i = fs.find(other.entries.items, e.parent, e.name.bytes) orelse return false;
+    for (fs.root.entries.items, other.entries.items) |e, o| {
+        // States of one run share their names, and mostly their order.
+        if (e.parent == o.parent and e.name == o.name) {
+            if (e.inode != o.inode) return false;
+            continue;
+        }
+        const i = fs.findHashed(other.entries.items, e.parent, e.name.hash, e.name.bytes) orelse return false;
         if (e.inode != other.entries.items[i].inode) return false;
     }
     for (fs.root.nodes.items, other.nodes.items) |a, b| {

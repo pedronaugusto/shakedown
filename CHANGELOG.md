@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-10-20
+
+### Changed
+
+- `Sim.Fs` finds a name in a directory by a hash every name keeps (the same for any two names the file system calls the same, Darwin's and Windows' folding included), where each lookup compared the name with every entry of the disk; and two crash states compare their entries by the names they share before looking any up. A crash exploration of a git ref update on a Darwin-named disk spent most of its time there.
+
 ## [0.4.13] - 2026-10-20
 
 ### Added

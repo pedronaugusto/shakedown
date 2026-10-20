@@ -6,6 +6,10 @@ pub const Image = @import("Image.zig");
 pub const Name = struct {
     refs: usize = 1,
     bytes: []u8,
+    /// What a directory lookup compares before the names themselves: the
+    /// same for every two names the file system calls the same (`Model`'s
+    /// `nameHash`). A symbolic link's target is never looked up and keeps 0.
+    hash: u64 = 0,
     pub fn create(gpa: Allocator, bytes: []const u8) !*Name {
         const n = try gpa.create(Name);
         errdefer gpa.destroy(n);
