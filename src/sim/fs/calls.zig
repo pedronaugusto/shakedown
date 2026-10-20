@@ -248,9 +248,14 @@ const slots = struct {
     }
     pub fn dirCreateFile(c: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, options: Io.Dir.CreateFileOptions) !Io.File {
         const base = try fs.directory(dir);
+        // A new file's permissions are for the opens after this one, as
+        // POSIX `open` with `O_CREAT` and Windows' `CreateFile` apply them:
+        // the call that makes a read-only file writes it, as git writes its
+        // loose objects at 0444.
+        const existed = if (fs.resolve(base, path, true)) |_| true else |err| if (err == error.FileNotFound) false else return err;
         const id = try fs.openOrCreate(base, path, options.permissions, options.exclusive);
         if (fs.root.nodes.items[id].kind == .directory) return error.IsDir;
-        if (!canWrite(fs.root.nodes.items[id].meta.permissions)) return error.AccessDenied;
+        if (existed and !canWrite(fs.root.nodes.items[id].meta.permissions)) return error.AccessDenied;
         const file = try fs.openHandle(id, options.read, true, false, false);
         errdefer fs.close(file.handle);
         if (options.lock != .none) try acquire(c, fs, file, options.lock, options.lock_nonblocking);

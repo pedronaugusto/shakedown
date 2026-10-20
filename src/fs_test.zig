@@ -850,3 +850,22 @@ test "Fs a listing that removes what it lists sees every entry once" {
     defer sim.deinit();
     try t.expect(sim.run(Work.run, .{sim.io()}) == .finished);
 }
+
+test "Fs the create that makes a read-only file writes it, and later opens for writing are refused" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const Work = struct {
+        fn run(io: Io) !void {
+            const cwd = Io.Dir.cwd();
+            const read_only: Io.File.Permissions = .fromMode(0o444);
+            const file = try cwd.createFile(io, "object", .{ .exclusive = true, .permissions = read_only });
+            try file.writePositionalAll(io, "blob", 0);
+            file.close(io);
+            try t.expectError(error.AccessDenied, cwd.createFile(io, "object", .{}));
+            try t.expectError(error.AccessDenied, cwd.openFile(io, "object", .{ .mode = .read_write }));
+        }
+    };
+    try t.expect(sim.run(Work.run, .{sim.io()}) == .finished);
+    try bytesEqual(sim.fs(), "object", "blob");
+}
