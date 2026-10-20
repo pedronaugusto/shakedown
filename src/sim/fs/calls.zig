@@ -252,7 +252,10 @@ const slots = struct {
         // POSIX `open` with `O_CREAT` and Windows' `CreateFile` apply them:
         // the call that makes a read-only file writes it, as git writes its
         // loose objects at 0444.
-        const existed = if (fs.resolve(base, path, true)) |_| true else |err| if (err == error.FileNotFound) false else return err;
+        // Whether it was there before; why it could not be found is
+        // `openOrCreate`'s to answer (an exclusive create of a symlink loop
+        // is `PathAlreadyExists`, not the loop).
+        const existed = if (fs.resolve(base, path, true)) |_| true else |_| false;
         const id = try fs.openOrCreate(base, path, options.permissions, options.exclusive);
         if (fs.root.nodes.items[id].kind == .directory) return error.IsDir;
         if (existed and !canWrite(fs.root.nodes.items[id].meta.permissions)) return error.AccessDenied;
