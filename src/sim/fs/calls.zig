@@ -490,8 +490,13 @@ fn setPermissions(fs: *Fs, id: u32, permissions: Io.File.Permissions) !void {
 }
 fn setOwner(fs: *Fs, id: u32, uid: ?Io.File.Uid, gid: ?Io.File.Gid) !void {
     var meta = fs.root.nodes.items[id].meta;
-    if (uid) |u| meta.uid = u;
-    if (gid) |g| meta.gid = g;
+    // On Windows std's owner types are `void`: a set-owner call changes nothing there.
+    if (uid) |u| if (@TypeOf(u) != void) {
+        meta.uid = u;
+    };
+    if (gid) |g| if (@TypeOf(g) != void) {
+        meta.gid = g;
+    };
     meta.ctime = fs.rounded(fs.at);
     return fs.metadata(id, meta);
 }

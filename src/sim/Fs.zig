@@ -10,6 +10,7 @@ pub const Durability = Model.Durability;
 pub const CrashPolicy = Model.CrashPolicy;
 pub const Flush = Model.Flush;
 pub const Snapshot = Model.Snapshot;
+pub const Ownership = Model.Ownership;
 pub const CrashStateIterator = Model.CrashStateIterator;
 pub const SetupError = Model.Error;
 pub const ReadError = Model.Error;
@@ -89,6 +90,13 @@ pub fn flushDir(fs: *Fs, handle: Io.Dir.Handle, kind: Flush) FlushError!void {
 pub fn flushNow(fs: *Fs, handle: Io.File.Handle, kind: Flush, dir: bool) FlushError!void {
     fs.setTime();
     return if (dir) fs.model.flushDir(handle, kind) else fs.model.flush(handle, kind);
+}
+/// The device, owner and group of the file a stat through the simulation's
+/// `Io` reports as `inode`, which `std.Io`'s stat does not carry; null for
+/// an inode no file has. A seam that builds a platform's whole stat over
+/// the simulation fills them from here.
+pub fn ownership(fs: *const Fs, inode: Io.File.INode) ?Ownership {
+    return fs.model.ownership(inode);
 }
 pub fn dump(fs: *const Fs, w: *Io.Writer) Io.Writer.Error!void {
     return fs.model.dump(w);

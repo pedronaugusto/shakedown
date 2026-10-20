@@ -33,8 +33,9 @@ pub const Meta = struct {
     atime: Io.Timestamp,
     mtime: Io.Timestamp,
     ctime: Io.Timestamp,
-    uid: ?Io.File.Uid = null,
-    gid: ?Io.File.Gid = null,
+    /// The owner and group, as `Model.ownership` answers them.
+    uid: u32,
+    gid: u32,
 };
 pub const Node = struct {
     kind: Io.File.Kind,

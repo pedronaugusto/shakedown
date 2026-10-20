@@ -24,7 +24,16 @@ pub const Options = struct {
     capacity: ?u64 = null,
     sector: u32 = 512,
     durability: Durability = .strict,
+    /// The volume's device number, as a stat's `dev` holds it.
+    device: u64 = 1,
+    /// The simulated process's owner and group: a file it creates takes
+    /// them, and a set-owner call changes a file's.
+    uid: u32 = 1000,
+    gid: u32 = 1000,
 };
+/// What a stat carries that `std.Io`'s does not: the device of the file's
+/// volume and its owner and group.
+pub const Ownership = struct { device: u64, uid: u32, gid: u32 };
 pub const Durability = enum { strict, ordered_metadata };
 pub const CrashPolicy = enum { lose_all, keep_all, random, os_crash };
 pub const Flush = enum { writeout, barrier, data, full };
@@ -90,7 +99,7 @@ fn newNode(fs: *Model, kind: Io.File.Kind, permissions: Io.File.Permissions, tar
     errdefer image.release(fs.gpa);
     const name = if (target) |t| try Name.create(fs.gpa, t) else null;
     errdefer if (name) |n| n.release(fs.gpa);
-    const meta: state.Meta = .{ .permissions = permissions, .atime = fs.rounded(fs.at), .mtime = fs.rounded(fs.at), .ctime = fs.rounded(fs.at) };
+    const meta: state.Meta = .{ .permissions = permissions, .atime = fs.rounded(fs.at), .mtime = fs.rounded(fs.at), .ctime = fs.rounded(fs.at), .uid = fs.options.uid, .gid = fs.options.gid };
     var id: u32 = @intCast(fs.root.nodes.items.len);
     for (fs.root.nodes.items, 0..) |n, i| if (n.kind == .unknown) {
         id = @intCast(i);
@@ -436,6 +445,14 @@ pub fn stat(fs: *const Model, inode: u32) Io.File.Stat {
         links += 1;
     };
     return .{ .inode = @intCast(inode + 1), .nlink = links, .size = if (n.target) |t| t.bytes.len else n.live.size, .permissions = n.meta.permissions, .kind = n.kind, .atime = n.meta.atime, .mtime = n.meta.mtime, .ctime = n.meta.ctime, .block_size = Image.page_size };
+}
+/// The ownership of the file a stat reports as `inode`, or null for an
+/// inode no file has.
+pub fn ownership(fs: *const Model, inode: Io.File.INode) ?Ownership {
+    if (inode <= 0 or inode > fs.root.nodes.items.len) return null;
+    const n = fs.root.nodes.items[@intCast(inode - 1)];
+    if (n.kind == .unknown) return null;
+    return .{ .device = fs.options.device, .uid = n.meta.uid, .gid = n.meta.gid };
 }
 fn used(fs: *const Model) u64 {
     var size: u64 = 0;

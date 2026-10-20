@@ -869,3 +869,46 @@ test "Fs the create that makes a read-only file writes it, and later opens for w
     try t.expect(sim.run(Work.run, .{sim.io()}) == .finished);
     try bytesEqual(sim.fs(), "object", "blob");
 }
+
+test "Fs answers each inode's device, owner and group: the creator's at create, a set-owner's after, durable as metadata" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null, .fs = .{ .device = 0x0803, .uid = 501, .gid = 20 } });
+    defer sim.deinit();
+    try sim.fs().write("setup", "s");
+    const Work = struct {
+        fn run(io: Io, stats: *[2]Io.File.Stat) !void {
+            const cwd = Io.Dir.cwd();
+            const file = try cwd.createFile(io, "made", .{});
+            defer file.close(io);
+            if (builtin.os.tag != .windows) {
+                try file.setOwner(io, 0, null);
+                try file.sync(io);
+            }
+            stats[0] = try cwd.statFile(io, "setup", .{});
+            stats[1] = try file.stat(io);
+        }
+    };
+    var stats: [2]Io.File.Stat = undefined;
+    try t.expect(sim.run(Work.run, .{ sim.io(), &stats }) == .finished);
+    const fs = sim.fs();
+    try t.expectEqual(Sim.Fs.Ownership{ .device = 0x0803, .uid = 501, .gid = 20 }, fs.ownership(stats[0].inode).?);
+    const changed: u32 = if (builtin.os.tag == .windows) 501 else 0;
+    try t.expectEqual(Sim.Fs.Ownership{ .device = 0x0803, .uid = changed, .gid = 20 }, fs.ownership(stats[1].inode).?);
+    try fs.crash(.lose_all);
+    try t.expectEqual(changed, fs.ownership(stats[1].inode).?.uid);
+    try t.expectEqual(@as(?Sim.Fs.Ownership, null), fs.ownership(0));
+    try t.expectEqual(@as(?Sim.Fs.Ownership, null), fs.ownership(1 << 40));
+}
+
+test "Fs ownership by default: one volume, an ordinary user's owner and group" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    try sim.fs().write("f", "");
+    const Work = struct {
+        fn run(io: Io, stat: *Io.File.Stat) !void {
+            stat.* = try Io.Dir.cwd().statFile(io, "f", .{});
+        }
+    };
+    var stat: Io.File.Stat = undefined;
+    try t.expect(sim.run(Work.run, .{ sim.io(), &stat }) == .finished);
+    try t.expectEqual(Sim.Fs.Ownership{ .device = 1, .uid = 1000, .gid = 1000 }, sim.fs().ownership(stat.inode).?);
+}
