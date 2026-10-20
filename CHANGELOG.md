@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-10-20
+
 ### Fixed
 
 - `Sim.Fs`: the `createFile` that makes a file with read-only permissions returns a handle that writes it, as POSIX `open` with `O_CREAT` and Windows' `CreateFile` do (the permissions are for later opens); it was `error.AccessDenied`, which stopped git's way of writing a loose object (0444) in a simulation.
