@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-10-21
+
 ### Fixed
 
 - On Windows, a simulated process's standard error was taken for its standard output where the test process's two shared one handle, as a hosted runner's steps do: the simulation tells a process's streams apart by the handle its code names. Each simulation, before it runs, now gives the test process standard handles no two of its streams share (each that shares an earlier one's gets a duplicate of it, `SetStdHandle`); a test makes them share and runs a child's output and errors through. conduit's simulated pipes test was red on every Windows leg so.
