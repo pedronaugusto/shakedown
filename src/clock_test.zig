@@ -287,6 +287,9 @@ test "auto: a timed futex wait and a batch wait time out at once, on the clock" 
     try testing.expectEqual(Io.Duration.fromSeconds(3630), start.durationTo(clock.read(.awake)));
 }
 
+/// The most real time the clock stress steps its clock for.
+const stress_budget: Io.Timeout = .{ .duration = .{ .raw = .fromSeconds(20), .clock = .awake } };
+
 test "no timed wait hangs or times out early while the clock moves from another thread" {
     var clock: Clock = .init(testing.io, .{});
     // ThreadSanitizer finds a race in a few threads interleaving, and makes
@@ -301,9 +304,17 @@ test "no timed wait hangs or times out early while the clock moves from another 
     for (handles, 0..) |*h, i| h.* = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, waiter, .{
         &clock, i, &stop, &finished, &early, &waits,
     });
+    // The rounds asked for, or as many as `stress_budget` of real time holds:
+    // a machine QEMU emulates instruction by instruction steps a thousand
+    // waiters many times slower, and the stress is in how they interleave,
+    // not in how long it lasts.
+    const budget = stress_budget.toTimestamp(testing.io).?;
     for (0..build_options.stress_rounds) |round| {
         clock.advance(.fromMilliseconds(1));
-        if (round % 64 == 0) std.Thread.yield() catch std.atomic.spinLoopHint();
+        if (round % 64 == 0) {
+            std.Thread.yield() catch std.atomic.spinLoopHint();
+            if (budget.compare(.lte, .now(testing.io, .awake))) break;
+        }
     }
     stop.store(true, .release);
     // Every waiter is now at most a few milliseconds of clock time from its

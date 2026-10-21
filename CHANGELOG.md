@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- The clock stress test steps its clock for the rounds asked, or as many as 20 s of real time holds: on the riscv64 machine QEMU emulates, its thousand waiters ran past the hosted job's limit (811 s on the 2026-10-21 nightly), where they finish in about two minutes in a local VM. The stress is in how the waiters interleave, which the rounds a budget holds still exercise.
+
 ## [0.4.15] - 2026-10-21
 
 ### Added
