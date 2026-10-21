@@ -128,11 +128,6 @@ fn conflict(a: Access, b: Access) bool {
     return a.object == b.object and (a.write or b.write);
 }
 
-fn conflicts(a: []const Access, b: []const Access) bool {
-    for (a) |x| for (b) |y| if (conflict(x, y)) return true;
-    return false;
-}
-
 /// A run of a pool: `[start, start + len)`.
 const Range = struct {
     start: u32 = 0,

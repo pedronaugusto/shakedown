@@ -6,7 +6,6 @@ const Io = std.Io;
 const t = std.testing;
 const shakedown = @import("shakedown.zig");
 const Case = shakedown.Case;
-const Sim = shakedown.Sim;
 
 fn explored(comptime body: anytype, ctx: anytype, options: shakedown.ExploreOptions) !shakedown.Exploration {
     return shakedown.explore(t.allocator, ctx, body, options);
