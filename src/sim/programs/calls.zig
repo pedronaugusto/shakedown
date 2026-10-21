@@ -42,6 +42,46 @@ pub fn slot(comptime name: []const u8) @FieldType(Io.VTable, name) {
 
 // Standard handles.
 
+/// Windows: makes the test process's standard handles values no two of its
+/// streams share. A parent may pass one handle as several of them (a hosted
+/// runner gives its steps one pipe for output and errors), and
+/// `standardIndex` tells a simulated process's streams apart by the handle
+/// its code names, which would then take its errors for its output. Each
+/// stream that shares an earlier one's handle is given a duplicate of it
+/// (`SetStdHandle`): the same pipe or console under a value of its own.
+/// Before each simulation runs, one thread at a time; once they are apart it
+/// changes nothing. POSIX's are 0, 1 and 2 already.
+pub fn distinctStandardHandles() void {
+    if (builtin.target.os.tag != .windows) return;
+    while (standard_handles.swap(true, .acquire)) std.atomic.spinLoopHint();
+    defer standard_handles.store(false, .release);
+    const windows = std.os.windows;
+    const params = windows.peb().ProcessParameters;
+    const handles = [_]*windows.HANDLE{ &params.hStdInput, &params.hStdOutput, &params.hStdError };
+    const which = [_]windows.DWORD{ std_input_handle, std_output_handle, std_error_handle };
+    for (handles, which, 0..) |handle, id, i| {
+        const shared = for (handles[0..i]) |earlier| {
+            if (earlier.* == handle.*) break true;
+        } else false;
+        // A missing stream has nothing to duplicate; a simulated process's
+        // missing stream is closed, whichever it is.
+        if (!shared or @intFromPtr(handle.*) == 0) continue; // safe: a handle's value, compared and never dereferenced
+        const process = windows.GetCurrentProcess();
+        var own: windows.HANDLE = undefined;
+        if (DuplicateHandle(process, handle.*, process, &own, 0, .FALSE, duplicate_same_access) == .FALSE) continue;
+        if (SetStdHandle(id, own) == .FALSE) windows.CloseHandle(own);
+    }
+}
+
+/// Held while `distinctStandardHandles` looks and changes them.
+var standard_handles: std.atomic.Value(bool) = .init(false);
+pub const std_input_handle: u32 = @bitCast(@as(i32, -10));
+pub const std_output_handle: u32 = @bitCast(@as(i32, -11));
+pub const std_error_handle: u32 = @bitCast(@as(i32, -12));
+const duplicate_same_access: u32 = 0x2;
+extern "kernel32" fn DuplicateHandle(source_process: std.os.windows.HANDLE, source: std.os.windows.HANDLE, target_process: std.os.windows.HANDLE, target: *std.os.windows.HANDLE, access: u32, inherit: std.os.windows.BOOL, options: u32) callconv(.winapi) std.os.windows.BOOL;
+pub extern "kernel32" fn SetStdHandle(which: u32, handle: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+
 /// Which standard stream `handle` is: 0, 1 or 2.
 fn standardIndex(handle: Io.File.Handle) ?usize {
     if (handle == Io.File.stdout().handle) return 1;

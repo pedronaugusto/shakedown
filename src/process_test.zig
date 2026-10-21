@@ -1,6 +1,7 @@
 //! Simulated processes from outside: `std.process` spawning registered
 //! programs, their pipes, environment, working directory, exit and kill.
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const t = std.testing;
 const Sim = @import("Sim.zig");
@@ -95,6 +96,26 @@ test "a child's stdin and stdout are pipes that carry a megabyte through a small
         try sim.programs().register("upper", upper, .{});
         try t.expectEqual(Sim.Outcome.finished, sim.run(pipeThrough, .{ sim.io(), input }));
     }
+}
+
+test "Windows: a child's output and errors stay apart where the test's own share a handle, as a parent may pass them" {
+    if (builtin.target.os.tag != .windows) return error.SkipZigTest;
+    const windows = std.os.windows;
+    const process_calls = @import("sim/programs/calls.zig");
+    const params = windows.peb().ProcessParameters;
+    const own = params.hStdError;
+    // Errors on output's handle, as a hosted runner gives its steps one pipe.
+    try t.expect(process_calls.SetStdHandle(process_calls.std_error_handle, params.hStdOutput) != .FALSE);
+    defer {
+        const given = params.hStdError;
+        _ = process_calls.SetStdHandle(process_calls.std_error_handle, own);
+        if (given != own and given != params.hStdOutput) windows.CloseHandle(given);
+    }
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    try t.expect(params.hStdError != params.hStdOutput);
+    try sim.programs().register("upper", upper, .{});
+    try t.expectEqual(Sim.Outcome.finished, sim.run(pipeThrough, .{ sim.io(), "some words" }));
 }
 
 const Failing = struct {

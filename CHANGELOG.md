@@ -8,6 +8,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- On Windows, a simulated process's standard error was taken for its standard output where the test process's two shared one handle, as a hosted runner's steps do: the simulation tells a process's streams apart by the handle its code names. Each simulation, before it runs, now gives the test process standard handles no two of its streams share (each that shares an earlier one's gets a duplicate of it, `SetStdHandle`); a test makes them share and runs a child's output and errors through. conduit's simulated pipes test was red on every Windows leg so.
 - The clock stress test steps its clock for the rounds asked, or as many as 20 s of real time holds: on the riscv64 machine QEMU emulates, its thousand waiters ran past the hosted job's limit (811 s on the 2026-10-21 nightly), where they finish in about two minutes in a local VM. The stress is in how the waiters interleave, which the rounds a budget holds still exercise.
 
 ## [0.4.15] - 2026-10-21

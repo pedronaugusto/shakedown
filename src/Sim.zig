@@ -76,6 +76,7 @@ watch: Watchdog.Watched = undefined,
 pub const InitError = error{ OutOfMemory, ExecutorUnavailable, FaultNotInErrorSet, FaultNotApplicable, InvalidLink, InvalidSchedule };
 
 pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
+    @import("sim/programs/calls.zig").distinctStandardHandles();
     const s = try gpa.create(Sim);
     errdefer gpa.destroy(s);
     s.* = .{ .gpa = gpa, .core = undefined, .own_source = try .init(gpa, .{ .prng = options.seed }) };
