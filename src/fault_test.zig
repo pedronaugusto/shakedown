@@ -753,3 +753,17 @@ test "an operation still pending at a second await is not counted again, and one
         try testing.expectEqual(@as(u64, 2 * (round + 1)), fio.count(.file_read_streaming));
     }
 }
+
+test "a cancel planned under blocked protection does not land, on a thread no task of the base runs on" {
+    // std's `Threaded` keeps no protection for the test's own thread, so
+    // FaultIo keeps what each task set through it.
+    const entries = [_]IoPlan.Entry{.{ .at = .{ .nth = .{ .call = .checkCancel, .n = 1 } }, .fault = .cancel }};
+    const f = try FaultIo.init(testing.allocator, testing.io, .{ .plan = &entries });
+    defer f.deinit();
+    const io = f.io();
+    const was = io.swapCancelProtection(.blocked);
+    try io.checkCancel();
+    try testing.expectEqual(Io.CancelProtection.blocked, io.swapCancelProtection(was));
+    // The second asks after protection is lifted, and nothing was planned there.
+    try io.checkCancel();
+}

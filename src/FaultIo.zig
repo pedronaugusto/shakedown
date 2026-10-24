@@ -84,6 +84,11 @@ rearmed: std.atomic.Value(u32) = .init(0),
 /// Private: the calling task, and whether its cancel protection is
 /// blocked. A simulation sets its own.
 tasks: Tasks = .{},
+/// Private: the cancel protection each task set through this `FaultIo`,
+/// under the lock. A base need not keep one for a thread no task of its
+/// runs on (std's `Threaded` keeps none for a test's own thread), and a
+/// cancel planned under protection must not land there either.
+protections: std.AutoHashMapUnmanaged(u64, Io.CancelProtection) = .empty,
 /// Private: how many batches have a state, read without the lock.
 batch_count: std.atomic.Value(usize) = .init(0),
 /// Private: what is known of each batch an await has seen, the states no
@@ -149,6 +154,7 @@ pub fn deinit(f: *FaultIo) void {
     for (f.shims.items) |s| gpa.destroy(s);
     f.shims.deinit(gpa);
     f.cancels.deinit(gpa);
+    f.protections.deinit(gpa);
     var it = f.batches.valueIterator();
     while (it.next()) |b| b.*.destroy(gpa);
     f.batches.deinit(gpa);
@@ -622,6 +628,27 @@ fn forward(f: *FaultIo, comptime name: []const u8, args: anytype) Return(name) {
 
 fn intercept(comptime name: []const u8, userdata: ?*anyopaque, args: anytype) Return(name) {
     const f = of(userdata);
+    if (comptime std.mem.eql(u8, name, "swapCancelProtection")) return f.swapProtection(f.passOn(name, args), args[0]);
+    return f.passOn(name, args);
+}
+
+/// A task's protection, as it set it here; the base's answer otherwise.
+fn swapProtection(f: *FaultIo, base_old: Io.CancelProtection, new: Io.CancelProtection) Io.CancelProtection {
+    const task = f.tasks.id(f.base);
+    f.lock();
+    defer f.unlock();
+    const slot = f.protections.getOrPut(f.gpa, task) catch return base_old;
+    const old = if (slot.found_existing) slot.value_ptr.* else base_old;
+    slot.value_ptr.* = new;
+    return old;
+}
+
+/// Whether `task` blocked its cancels here. Under the lock.
+fn blockedHereLocked(f: *const FaultIo, task: u64) bool {
+    return if (f.protections.get(task)) |p| p == .blocked else false;
+}
+
+fn passOn(f: *FaultIo, comptime name: []const u8, args: anytype) Return(name) {
     if (comptime std.mem.eql(u8, name, "operate")) return f.operate(args[0]);
     if (comptime std.mem.eql(u8, name, "batchAwaitAsync")) return f.batchAwait(false, args[0], .none);
     if (comptime std.mem.eql(u8, name, "batchAwaitConcurrent")) return f.batchAwait(true, args[0], args[1]);
@@ -922,6 +949,7 @@ fn land(f: *FaultIo) bool {
     const task = f.tasks.id(f.base);
     f.lock();
     defer f.unlock();
+    if (f.blockedHereLocked(task)) return false;
     for (f.cancels.items) |*h| if (h.task == task) {
         if (h.rearmed) {
             h.rearmed = false;
@@ -962,6 +990,11 @@ fn rearmedLands(f: *FaultIo) bool {
         return false;
     };
     if (f.tasks.blocked(f.base)) return false;
+    {
+        f.lock();
+        defer f.unlock();
+        if (f.blockedHereLocked(task)) return false;
+    }
     // Only the task itself changes its entry, and entries are never
     // removed, so its index still holds it.
     f.lock();
