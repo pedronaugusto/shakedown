@@ -10,6 +10,8 @@ pub const Durability = Model.Durability;
 pub const CrashPolicy = Model.CrashPolicy;
 pub const Flush = Model.Flush;
 pub const Snapshot = Model.Snapshot;
+/// The digests of file images `Snapshot.digest` keeps between calls.
+pub const ImageDigests = Model.ImageDigests;
 pub const Ownership = Model.Ownership;
 pub const CrashStateIterator = Model.CrashStateIterator;
 pub const SetupError = Model.Error;

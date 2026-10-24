@@ -6,6 +6,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- `Sim.Fs.Snapshot.digest`: a tree's identity whatever history and inode numbers reached it (every path in name order, which of them name one inode, each inode's kind, metadata, bytes, target and damage; inodes no path reaches left out), 128 bits. It keeps each file image's digest in a `Sim.Fs.ImageDigests`, which holds the image, so the states of one crash point, sharing every file none of them changed, hash each file once.
+- `EveryFaultReport.repeated`: the crash states `everyCrash` did not recover again.
+
+### Changed
+
+- `everyCrash` recovers each distinct crash state once: a state an earlier crash point already left (the same `digest`) is counted in `repeated` and not recovered again, since recovery sees nothing but that storage. Most points of a long operation leave the states the points before it left; relic's crash test of maintenance's loose-objects task made 31,520 recoveries of 447 distinct states.
+
 ## [0.4.17] - 2026-10-24
 
 ### Changed

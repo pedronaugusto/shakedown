@@ -61,6 +61,9 @@ pub const EveryFaultReport = struct {
     runs: u64 = 0,
     /// everyCrash: crash points at which the state bound stopped exploration.
     bounded: u64 = 0,
+    /// everyCrash: crash states an earlier point already recovered, whose
+    /// recovery is not made again: a state recovers as it did.
+    repeated: u64 = 0,
     failure: ?Failure = null,
     /// Private: what `failure.trace` was allocated with.
     gpa: ?Allocator = null,

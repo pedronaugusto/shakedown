@@ -20,6 +20,11 @@ pub const Error = Sim.InitError || error{ OutOfMemory, Nondeterministic, CheckFa
 /// own application heap state in ctx and release it in tearDown.
 /// Recovery runs on a fresh scheduler with the crashed storage. The returned
 /// bounded count makes an incomplete exploration visible to the caller.
+/// A state is recovered once: one an earlier crash point left (the same
+/// tree, `Sim.Fs.Snapshot.digest`) is counted in `repeated` and not
+/// recovered again, since recovery sees nothing but that storage. `recover`
+/// and `check` are judged once per distinct state, so they must not count
+/// on being called once per crash point.
 pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptions) Error!Report {
     if (options.sim.fs == null) return error.FileSystemDisabled;
     if (options.max_states == 0) return error.CheckFailed;
@@ -49,6 +54,8 @@ pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptio
     }
     var report: Report = .{ .steps = clean.steps(), .runs = 1 };
     const baseline = clean.trace().records();
+    var recovered_states: std.AutoHashMapUnmanaged(u128, void) = .empty;
+    defer recovered_states.deinit(gpa);
     // The first point is before call 1; the last is after the root returned.
     for (0..@intCast(report.steps + 1)) |point| {
         config.max_steps = point;
@@ -65,6 +72,9 @@ pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptio
         }
         var states = try stopped.fs().crashStates(options.max_states +| 1);
         defer states.deinit();
+        // The point's states share the files none of them changed.
+        var images: Sim.Fs.ImageDigests = .init(gpa);
+        defer images.deinit();
         var count: u32 = 0;
         while (try states.next()) |snap| {
             defer snap.deinit();
@@ -73,6 +83,10 @@ pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptio
                 break;
             }
             count += 1;
+            if ((try recovered_states.getOrPut(gpa, try snap.digest(&images))).found_existing) {
+                report.repeated += 1;
+                continue;
+            }
             var recovery_options = options.sim;
             recovery_options.faults = &.{};
             const recovery = try Sim.init(gpa, recovery_options);

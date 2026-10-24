@@ -291,9 +291,81 @@ test "Fs everyCrash sweeps call boundaries and recovery on fresh schedulers" {
     var ctx: CrashContext = .{};
     const report = try shakedown.everyCrash(t.allocator, &ctx, .{ .sim = .{ .watchdog = null }, .max_states = 64 });
     try t.expect(report.steps >= 5);
-    try t.expect(report.runs > report.steps);
+    try t.expect(report.runs + report.repeated > report.steps);
     try t.expectEqual(0, report.bounded);
     try t.expectEqual(ctx.recovered + 1, report.runs);
+    // Before the temporary file is made and after the rename is synced,
+    // every point leaves a state another point left: each is recovered once.
+    try t.expect(report.repeated > 0);
+}
+
+/// The digest of what `build` leaves on a fresh simulated disk.
+fn digestOf(build: *const fn (*Sim.Fs) anyerror!void) !u128 {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    try build(sim.fs());
+    const snap = try sim.fs().snapshot();
+    defer snap.deinit();
+    var images: Sim.Fs.ImageDigests = .init(t.allocator);
+    defer images.deinit();
+    return snap.digest(&images);
+}
+
+test "Fs snapshot digests name a tree, not the history or inode numbers that made it" {
+    const Trees = struct {
+        fn ab(fs: *Sim.Fs) !void {
+            try fs.mkdir("d");
+            try fs.write("d/a", "one");
+            try fs.write("b", "two");
+        }
+        fn ba(fs: *Sim.Fs) !void {
+            try fs.write("b", "two");
+            try fs.mkdir("d");
+            try fs.write("d/a", "one");
+        }
+        fn rewritten(fs: *Sim.Fs) !void {
+            try fs.write("b", "draft");
+            try fs.mkdir("d");
+            try fs.write("d/a", "one");
+            try fs.write("b", "two");
+        }
+        fn changed(fs: *Sim.Fs) !void {
+            try fs.mkdir("d");
+            try fs.write("d/a", "one");
+            try fs.write("b", "tw0");
+        }
+        fn moved(fs: *Sim.Fs) !void {
+            try fs.mkdir("d");
+            try fs.write("a", "one");
+            try fs.write("d/b", "two");
+        }
+        fn copies(fs: *Sim.Fs) !void {
+            try fs.write("a", "same");
+            try fs.write("b", "same");
+        }
+        fn linked(fs: *Sim.Fs) !void {
+            try fs.write("a", "same");
+            try fs.model.link(try fs.model.resolve(0, "a", true), 0, "b");
+        }
+        fn sparse(fs: *Sim.Fs) !void {
+            var bytes: [3 * 4096]u8 = @splat(0);
+            bytes[bytes.len - 1] = 'x';
+            try fs.write("a", &bytes);
+        }
+        fn sparseElsewhere(fs: *Sim.Fs) !void {
+            var bytes: [3 * 4096]u8 = @splat(0);
+            bytes[0] = 'x';
+            try fs.write("a", &bytes);
+        }
+    };
+    const ab = try digestOf(Trees.ab);
+    try t.expectEqual(ab, try digestOf(Trees.ba));
+    try t.expectEqual(ab, try digestOf(Trees.rewritten));
+    try t.expect(ab != try digestOf(Trees.changed));
+    try t.expect(ab != try digestOf(Trees.moved));
+    // Two names for one file are not two files with the same bytes.
+    try t.expect(try digestOf(Trees.copies) != try digestOf(Trees.linked));
+    try t.expect(try digestOf(Trees.sparse) != try digestOf(Trees.sparseElsewhere));
 }
 
 test "Fs crash fault abandons every task and skips defers" {

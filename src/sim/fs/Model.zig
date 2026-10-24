@@ -13,6 +13,7 @@ const names = @import("names.zig");
 const Image = state.Image;
 const Name = state.Name;
 const Entry = state.Entry;
+const Node = state.Node;
 const Change = state.Change;
 const Effect = state.Effect;
 const State = state.State;
@@ -822,6 +823,132 @@ pub const Snapshot = struct {
     gpa: Allocator,
     pub fn deinit(snap: Snapshot) void {
         snap.root.release(snap.gpa);
+    }
+
+    /// The live tree's identity, whatever history and inode numbers reached
+    /// it: every path reachable from the root, in name order, which of them
+    /// name one inode, and each inode's kind, metadata, bytes, target and
+    /// damage. Inodes no path reaches are left out; after a crash no handle
+    /// is left to reach them. Two trees with one digest look the same to
+    /// every call a recovery can make. A 128-bit hash, two 64-bit halves.
+    /// An image `images` holds is not hashed again, so the states of one
+    /// crash point, which share every file a state did not change, hash
+    /// each file once.
+    pub fn digest(snap: Snapshot, images: *ImageDigests) error{OutOfMemory}!u128 {
+        const tree = snap.root;
+        const entries = tree.entries.items;
+        // Entries by parent, then name: each directory's children are one
+        // run of them, `first[dir]` its start.
+        const sorted = try snap.gpa.alloc(u32, entries.len);
+        defer snap.gpa.free(sorted);
+        for (sorted, 0..) |*s, i| s.* = @intCast(i);
+        std.mem.sortUnstable(u32, sorted, entries, struct {
+            fn less(es: []const Entry, a: u32, b: u32) bool {
+                if (es[a].parent != es[b].parent) return es[a].parent < es[b].parent;
+                return std.mem.lessThan(u8, es[a].name.bytes, es[b].name.bytes);
+            }
+        }.less);
+        const first = try snap.gpa.alloc(u32, tree.nodes.items.len + 1);
+        defer snap.gpa.free(first);
+        var at: u32 = 0;
+        for (first, 0..) |*f, dir| {
+            while (at < sorted.len and entries[sorted[at]].parent < dir) at += 1;
+            f.* = at;
+        }
+        // The order each inode is first reached in, the identity hashed.
+        const order = try snap.gpa.alloc(u32, tree.nodes.items.len);
+        defer snap.gpa.free(order);
+        @memset(order, std.math.maxInt(u32));
+        var w: Walk = .{ .snap = snap, .images = images, .sorted = sorted, .first = first, .order = order };
+        order[0] = 0;
+        try w.node(tree.nodes.items[0]);
+        try w.directory(0);
+        return w.h.final();
+    }
+
+    const Digest = struct {
+        a: std.hash.Wyhash = .init(0x5348_414b_4544_4f57),
+        b: std.hash.Wyhash = .init(0x4352_4153_4853_5441),
+        pub fn update(d: *Digest, bytes: []const u8) void {
+            d.a.update(bytes);
+            d.b.update(bytes);
+        }
+        fn final(d: *Digest) u128 {
+            return @as(u128, d.a.final()) << 64 | d.b.final();
+        }
+    };
+
+    const Walk = struct {
+        snap: Snapshot,
+        images: *ImageDigests,
+        sorted: []const u32,
+        first: []const u32,
+        order: []u32,
+        reached: u32 = 1,
+        h: Digest = .{},
+
+        fn directory(w: *Walk, dir: u32) error{OutOfMemory}!void {
+            const entries = w.snap.root.entries.items;
+            for (w.sorted[w.first[dir]..w.first[dir + 1]]) |index| {
+                const e = entries[index];
+                if (e.inode == dir) continue;
+                w.h.update(std.mem.asBytes(&e.name.bytes.len));
+                w.h.update(e.name.bytes);
+                const new = w.order[e.inode] == std.math.maxInt(u32);
+                if (new) {
+                    w.order[e.inode] = w.reached;
+                    w.reached += 1;
+                }
+                w.h.update(std.mem.asBytes(&w.order[e.inode]));
+                if (!new) continue;
+                const n = w.snap.root.nodes.items[e.inode];
+                try w.node(n);
+                if (n.kind == .directory) try w.directory(e.inode);
+            }
+            // Where this directory's entries end.
+            w.h.update(&.{0xff});
+        }
+
+        fn node(w: *Walk, n: Node) error{OutOfMemory}!void {
+            w.h.update(std.mem.asBytes(&n.kind));
+            std.hash.autoHash(&w.h.a, n.meta);
+            std.hash.autoHash(&w.h.b, n.meta);
+            w.h.update(std.mem.asBytes(&n.bad_start));
+            w.h.update(std.mem.asBytes(&n.bad_len));
+            const target = if (n.target) |t| t.bytes else "";
+            w.h.update(std.mem.asBytes(&target.len));
+            w.h.update(target);
+            const bytes = try w.images.of(n.live);
+            w.h.update(std.mem.asBytes(&bytes));
+        }
+    };
+};
+
+/// The digests of the file images one crash point's states hold, for
+/// `Snapshot.digest`. Each image is held until `deinit`, so no other
+/// image can be made at its address while its digest is kept.
+pub const ImageDigests = struct {
+    gpa: Allocator,
+    held: std.AutoHashMapUnmanaged(*Image, u128) = .empty,
+
+    pub fn init(gpa: Allocator) ImageDigests {
+        return .{ .gpa = gpa };
+    }
+
+    pub fn deinit(d: *ImageDigests) void {
+        var it = d.held.keyIterator();
+        while (it.next()) |image| image.*.release(d.gpa);
+        d.held.deinit(d.gpa);
+    }
+
+    fn of(d: *ImageDigests, image: *Image) error{OutOfMemory}!u128 {
+        const slot = try d.held.getOrPut(d.gpa, image);
+        if (slot.found_existing) return slot.value_ptr.*;
+        var h: Snapshot.Digest = .{};
+        image.hashInto(&h);
+        slot.value_ptr.* = h.final();
+        _ = image.retain();
+        return slot.value_ptr.*;
     }
 };
 pub fn snapshot(fs: *Model) error{OutOfMemory}!Snapshot {

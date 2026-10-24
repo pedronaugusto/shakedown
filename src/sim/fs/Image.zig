@@ -184,6 +184,27 @@ pub fn edit(image: *const Image, gpa: Allocator, size: u64, offset: u64, bytes: 
     return next;
 }
 
+/// Feed `hasher` the image as `eql` sees it: its size, then each page that
+/// holds a byte other than zero, with its index. Holes and zero pages feed
+/// nothing, so two images `eql` calls equal feed the same.
+pub fn hashInto(image: *const Image, hasher: anytype) void {
+    hasher.update(std.mem.asBytes(&image.size));
+    hashLink(image.root, image.depth, 0, hasher);
+}
+fn hashLink(link: Link, depth: u4, base: u64, hasher: anytype) void {
+    switch (link) {
+        .empty => {},
+        .page => |p| if (!std.mem.allEqual(u8, &p.bytes, 0)) {
+            hasher.update(std.mem.asBytes(&base));
+            hasher.update(&p.bytes);
+        },
+        .branch => |b| {
+            const width = @as(u64, 1) << shift(depth - 1);
+            for (b.children, 0..) |child, i| hashLink(child, depth - 1, base + i * width, hasher);
+        },
+    }
+}
+
 /// Compare sparse images without walking their holes; shared subtrees compare once.
 pub fn eql(a: *const Image, b: *const Image) bool {
     return a == b or (a.size == b.size and equalLinks(a.root, a.depth, b.root, b.depth));
