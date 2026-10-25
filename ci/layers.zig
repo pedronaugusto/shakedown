@@ -29,6 +29,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/gen.zig",
         "src/plan.zig",
         "src/shrink.zig",
+        "src/target.zig",
         "src/trace.zig",
     } },
     .{ .name = "disk pages", .patterns = &.{ "src/sim/fs/Image.zig", "src/sim/fs/names.zig" } },

@@ -33,6 +33,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A simulated task's life is an aegis `state.Machine`: a move it does not allow stops the run instead of leaving the scheduler in a state no edge reaches.
 - The conformance files check reads its file back with `aegis.own.readFile`, which states the file's length before it reads, so a simulation's trace of the conformance workload changes.
 - Pins shuttle 0.4.0.
+### Added
+
+- Targeted search: `Case.target(score, label)` reports how far a case got toward something `check` should steer toward. Once half of the cases have run, `check` climbs each label's highest-scoring case: from the last choice back, each choice jumps to its bound and to 0, then steps up and down by the largest step that raises the score (an exponential, then a binary search). The climb works on the tape, so it steers a property's inputs and its simulations' schedules, faults and latencies alike. Its replays count as cases, a failure it finds is shrunk as any other, and the report names the highest score each label reached.
+- `Source.Backend.extend`: a tape's choices, then fresh draws from a seed past its end, for a climb's replays.
 
 ## [0.4.18] - 2026-10-25
 

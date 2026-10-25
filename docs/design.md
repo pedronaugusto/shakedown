@@ -242,6 +242,40 @@ ready queue in arrival order (so a choice of 0 is the oldest), and gives each
 task its own stream for `random`, so independent tasks' bytes do not depend on
 their order.
 
+## Targeted search
+
+`check` owns the run: its `Runner` keeps a `target.Targets` while it draws its
+own cases. The table holds each label, the highest score the current case
+reported, and each label's best passing case (score, choices, bounds). It has
+none under `explore`, a replayed tape or the fuzzer, so `Case.target` does
+nothing there. `target.climb` knows nothing of `check`. It is given a starting
+case and a `Probe` that replays a candidate tape and says whether the property
+failed, what the climbed label scored, and what tape the replay drew. The
+shrinker is built the same way, around its `Replay`.
+
+The climb keeps one current tape and score. From the last choice back, each
+choice tries, in each direction, a jump (to its recorded bound, or to 0). The
+jump is kept when the score does not fall and the tape grows no longer. Failing
+that, a step search: steps of 1 to 4, then doubling, then halving the gap, each
+kept only when it raises the score. A replay's tape replaces the current one
+whole, since a moved choice can change what every later draw means. After a rise
+the scan starts again from the end. A climb ends when a whole scan raises
+nothing, after `max_improvements` rises, at a failure, or when its budget is
+spent. `check` climbs each label in turn, round after round while any label
+rises. Every climb replay is a case (a pass counts toward `cases`, a discard
+toward the ten-fold try limit), and the case it draws updates every label's
+best, not only the one being climbed.
+
+A candidate replays through `Source.Backend.extend`: its choices, then fresh
+draws from a seed. A move that lengthens a list, or lets a task take one more
+step, then meets real values rather than the zeros past a replay's end. The seed
+is the case seed of the run's next index, so a check's seed fixes its climbs.
+Scores are `f64`, compared exactly: a score coarser than its choice, a 64-bit
+distance among them, is level across neighbouring values and stops a step
+search. The jump exists because shakedown draws a yes-or-no decision as a
+threshold inside a wide range (`more`, `chance`): crossing it by steps costs
+some forty replays, and one jump does it.
+
 ## Simulated processes
 
 The process model (`sim/programs/Model.zig`) sits below the core and knows no

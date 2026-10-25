@@ -39,6 +39,7 @@ test {
     _ = @import("gen.zig");
     _ = @import("shrink.zig");
     _ = @import("check.zig");
+    _ = @import("target.zig");
     _ = @import("Sim.zig");
     _ = @import("sim/Core.zig");
     _ = @import("sim/Watchdog.zig");
@@ -57,6 +58,7 @@ test {
     _ = @import("fault_test.zig");
     _ = @import("every_fault_test.zig");
     _ = @import("check_test.zig");
+    _ = @import("target_test.zig");
     _ = @import("fuzz.zig");
     _ = @import("parsers_test.zig");
     _ = @import("explore_test.zig");

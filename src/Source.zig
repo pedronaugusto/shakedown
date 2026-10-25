@@ -52,6 +52,10 @@ pub const Backend = union(enum) {
     /// The choices of a tape, in order. Past its end, and wherever a choice
     /// is larger than the draw allows, the draw is 0.
     replay: []const u64,
+    /// The choices of a tape, then, past its end, a generator from this seed:
+    /// a tape edited near its end, its remaining draws fresh (targeted
+    /// search's).
+    extend: struct { choices: []const u64, seed: u64 },
     /// The fuzzer's input. `Smith` reads each draw as an integer.
     smith: *std.testing.Smith,
     /// A search that makes every choice itself: `explore`'s.
@@ -85,7 +89,7 @@ pub const Chooser = struct {
 
 const From = union(enum) {
     prng: std.Random.Xoshiro256,
-    replay: struct { choices: []const u64, at: usize = 0 },
+    replay: struct { choices: []const u64, at: usize = 0, past: ?std.Random.Xoshiro256 = null },
     smith: *std.testing.Smith,
     chooser: Chooser,
 };
@@ -169,6 +173,7 @@ fn fromBackend(backend: Backend) From {
     return switch (backend) {
         .prng => |seed| .{ .prng = .init(seed) },
         .replay => |choices| .{ .replay = .{ .choices = choices } },
+        .extend => |e| .{ .replay = .{ .choices = e.choices, .past = .init(e.seed) } },
         .smith => |smith| .{ .smith = smith },
         .chooser => |chooser| .{ .chooser = chooser },
     };
@@ -199,7 +204,7 @@ fn draw(s: *Source, max: u64, site: usize) u64 {
     const choice = switch (s.from) {
         .prng => |*prng| lemire(prng, max),
         .replay => |*replay| choice: {
-            if (replay.at == replay.choices.len) break :choice 0;
+            if (replay.at == replay.choices.len) break :choice if (replay.past) |*past| lemire(past, max) else 0;
             const c = replay.choices[replay.at];
             replay.at += 1;
             break :choice if (c <= max) c else 0;
@@ -548,4 +553,23 @@ test "a list drawn with more is about its average long" {
     // within 0.6 of it with overwhelming probability.
     const mean = @as(f64, @floatFromInt(total)) / lists;
     try std.testing.expect(mean > 7.4 and mean < 8.6);
+}
+
+test "an extended tape replays its choices, then draws from its seed past them" {
+    var a: Source = try .init(std.testing.allocator, .{ .extend = .{ .choices = &.{ 3, 9 }, .seed = 11 } });
+    defer a.deinit();
+    var b: Source = try .init(std.testing.allocator, .{ .extend = .{ .choices = &.{ 3, 9 }, .seed = 11 } });
+    defer b.deinit();
+    var fresh: Source = try .init(std.testing.allocator, .{ .prng = 11 });
+    defer fresh.deinit();
+    try std.testing.expectEqual(@as(u64, 3), a.below(5));
+    // A choice too large for its draw is 0, as in a replay.
+    try std.testing.expectEqual(@as(u64, 0), a.below(5));
+    _ = b.below(5);
+    _ = b.below(5);
+    for (0..8) |_| {
+        const x = a.below(1 << 40);
+        try std.testing.expectEqual(x, b.below(1 << 40));
+        try std.testing.expectEqual(fresh.below(1 << 40), x);
+    }
 }
