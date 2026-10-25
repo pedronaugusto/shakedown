@@ -6,6 +6,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Targeted search: `Case.target(score, label)` reports how far a case got toward something `check` should steer toward. Once half of the cases have run, `check` climbs each label's highest-scoring case: from the last choice back, each choice jumps to its bound and to 0, then steps up and down by the largest step that raises the score (an exponential, then a binary search). The climb works on the tape, so it steers a property's inputs and its simulations' schedules, faults and latencies alike. Its replays count as cases, a failure it finds is shrunk as any other, and the report names the highest score each label reached.
+- `Source.Backend.extend`: a tape's choices, then fresh draws from a seed past its end, for a climb's replays.
+
 ## [0.4.18] - 2026-10-25
 
 ### Added

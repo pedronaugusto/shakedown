@@ -13,7 +13,7 @@ const shakedown = @import("shakedown");
 
 const WorkloadError = blk: {
     var E: type = error{};
-    for (.{ netRpc, netGossip, fsCycleSim, fsCycleThreaded, fsCrashStates, fsSnapshot, nowThreaded, nowLayer, nowClock, nowFaultIo, checkCancelThreaded, checkCancelFaultIo, preadSim, preadThreaded, preadLayer, preadClock, preadFaultEmpty, preadFaultTrace, preadFaultPlan, allocRaw, allocCounting, allocFailing, allocFaultIo, allocQuarantine, randomThreaded, randomFaultIo, randomFaultSeeded, batchThreaded, batchFaultIo, everyFaultSweep, simNow, simSwitchFibers, simSwitchThreads, simSpawn, simContentionRandom, simContentionPct, simTimers, simNew, simDeterminism, simReplay, checkCases, checkSimCases, checkShrink, exploreRuns, exploreReduced }) |callback| {
+    for (.{ netRpc, netGossip, fsCycleSim, fsCycleThreaded, fsCrashStates, fsSnapshot, nowThreaded, nowLayer, nowClock, nowFaultIo, checkCancelThreaded, checkCancelFaultIo, preadSim, preadThreaded, preadLayer, preadClock, preadFaultEmpty, preadFaultTrace, preadFaultPlan, allocRaw, allocCounting, allocFailing, allocFaultIo, allocQuarantine, randomThreaded, randomFaultIo, randomFaultSeeded, batchThreaded, batchFaultIo, everyFaultSweep, simNow, simSwitchFibers, simSwitchThreads, simSpawn, simContentionRandom, simContentionPct, simTimers, simNew, simDeterminism, simReplay, checkCases, checkCasesTargeted, checkSimCases, checkShrink, targetSum, targetNeedle, targetQueue, exploreRuns, exploreReduced }) |callback| {
         E = E || @typeInfo(@typeInfo(@TypeOf(callback)).@"fn".return_type.?).error_union.error_set;
     }
     break :blk E;
@@ -29,6 +29,8 @@ const Context = struct {
     dir: Io.Dir,
     file: Io.File,
     sink: u64 = 0,
+    /// The next seed a finding row checks with, so each find is a new one.
+    seed: u64 = 0,
 };
 
 const rows = [_]Row{
@@ -73,8 +75,12 @@ const rows = [_]Row{
     .{ .name = "sim/determinism", .unit = "op", .run = simDeterminism },
     .{ .name = "sim/replay", .unit = "op", .initial = 100, .smoke = 100, .run = simReplay },
     .{ .name = "check/sum-cases", .unit = "op", .run = checkCases },
+    .{ .name = "check/sum-cases-targeted", .unit = "op", .run = checkCasesTargeted },
     .{ .name = "check/sim-cases", .unit = "op", .run = checkSimCases },
     .{ .name = "check/shrink-distinct", .unit = "op", .run = checkShrink },
+    .{ .name = "target/sum-16000", .unit = "find", .run = targetSum },
+    .{ .name = "target/needle-48", .unit = "find", .run = targetNeedle },
+    .{ .name = "target/queue-22", .unit = "find", .initial = 1, .smoke = 1, .run = targetQueue },
     .{ .name = "explore/mutex-4x4", .unit = "run", .initial = 64, .run = exploreRuns },
     .{ .name = "explore/nodes-3-reduced", .unit = "search", .initial = 1, .run = exploreReduced },
 };
@@ -625,6 +631,123 @@ fn checkShrink(ctx: *Context, ops: u64) !void {
         };
         return error.BenchFailed;
     }
+}
+
+/// `sumCommutes`, reporting its list's length as a target: what observing
+/// one costs a case.
+fn sumCommutesTargeted(_: void, c: *shakedown.Case) !void {
+    const list = try shakedown.gen.slice(c.source, i64, intElement, c.gpa, .{});
+    c.target(@floatFromInt(list.len), "length");
+    var forward: i64 = 0;
+    for (list) |x| forward +%= x;
+    var backward: i64 = 0;
+    var i = list.len;
+    while (i > 0) {
+        i -= 1;
+        backward +%= list[i];
+    }
+    if (forward != backward) return error.BenchFailed;
+}
+
+fn checkCasesTargeted(ctx: *Context, ops: u64) !void {
+    try shakedown.check(ctx.gpa, {}, sumCommutesTargeted, .{ .cases = @intCast(ops), .seed = 1 });
+}
+
+fn byteElement(s: *shakedown.Source) u8 {
+    return shakedown.gen.int(s, u8);
+}
+
+/// Fails once a list of bytes sums to 16,000, its sum the target: random
+/// cases never reach it in 256.
+fn sumPast16000(_: void, c: *shakedown.Case) !void {
+    const list = try shakedown.gen.slice(c.source, u8, byteElement, c.gpa, .{});
+    var sum: u64 = 0;
+    for (list) |x| sum += x;
+    c.target(@floatFromInt(sum), "sum");
+    if (sum >= 16_000) return error.SumTooLarge;
+}
+
+/// Fails within a thousand of a 48-bit number, its closeness the target.
+fn needle48(_: void, c: *shakedown.Case) !void {
+    const needle: u48 = 0x1234_5678_9abc;
+    const x = shakedown.gen.int(c.source, u48);
+    const distance = if (x > needle) x - needle else needle - x;
+    c.target(-@as(f64, @floatFromInt(distance)), "closeness");
+    if (distance < 1000) return error.FoundTheNeedle;
+}
+
+/// A producer and a consumer whose item times, 1 to 4 ms, the simulation's
+/// `random` draws; fails when the queue between them holds 22, the most it
+/// held the target.
+const Queue = struct {
+    depth: u32 = 0,
+    most: u32 = 0,
+    const items = 64;
+
+    fn pause(io: Io) Io.Cancelable!void {
+        var b: [1]u8 = undefined;
+        io.random(&b);
+        try io.sleep(.fromMilliseconds(1 + b[0] % 4), .awake);
+    }
+
+    fn consume(io: Io, q: *Queue) Io.Cancelable!void {
+        for (0..items) |_| {
+            while (q.depth == 0) try io.sleep(.fromMilliseconds(1), .awake);
+            try pause(io);
+            q.depth -= 1;
+        }
+    }
+
+    fn produce(io: Io, q: *Queue) !void {
+        var consumer = try io.concurrent(consume, .{ io, q });
+        // glint-ignore: Z026 -- on a failure before the await, the consumer's own end is not the one to report
+        defer consumer.cancel(io) catch {};
+        for (0..items) |_| {
+            try pause(io);
+            q.depth += 1;
+            q.most = @max(q.most, q.depth);
+        }
+        try consumer.await(io);
+    }
+
+    fn body(_: void, c: *shakedown.Case) !void {
+        const sim = try c.sim(.{});
+        var q: Queue = .{};
+        if (sim.run(produce, .{ sim.io(), &q }) != .finished) return error.BenchFailed;
+        c.target(@floatFromInt(q.most), "queue depth");
+        if (q.most >= 22) return error.QueueFull;
+    }
+};
+
+/// Checks `body` on a new seed per unit, each of which must find its
+/// failure within `cases`.
+fn finds(ctx: *Context, comptime body: fn (void, *shakedown.Case) anyerror!void, cases: u32, ops: u64) !void {
+    for (0..ops) |_| {
+        const seed = ctx.seed;
+        ctx.seed += 1;
+        var report: shakedown.CheckReport = undefined;
+        shakedown.check(ctx.gpa, {}, body, .{ .seed = seed, .cases = cases, .diagnostics = &report }) catch |err| switch (err) {
+            error.PropertyFailed => {
+                ctx.sink +%= report.shrink_runs;
+                report.deinit();
+                continue;
+            },
+            else => return err,
+        };
+        return error.BenchFailed;
+    }
+}
+
+fn targetSum(ctx: *Context, ops: u64) !void {
+    try finds(ctx, sumPast16000, 256, ops);
+}
+
+fn targetNeedle(ctx: *Context, ops: u64) !void {
+    try finds(ctx, needle48, 1000, ops);
+}
+
+fn targetQueue(ctx: *Context, ops: u64) !void {
+    try finds(ctx, Queue.body, 2000, ops);
 }
 
 fn fsCycleRoot(io: Io, sim: *shakedown.Sim, ops: u64) !void {

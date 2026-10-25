@@ -279,6 +279,31 @@ a fuzzer's input.
 `SHAKEDOWN_TAPE` shrinks the tape it replays when the property fails, so a
 long tape the fuzzer found comes back minimal.
 
+### Targeted search
+
+Some failures need a value, a length or a timing far from anything random
+drawing reaches in a test's budget. `case.target(score, label)` says how close a
+case came: how many items a queue held, how long a list grew, how near a number
+is to a boundary. Once half of the cases have run, `check` climbs the passing
+case that scored highest on each label. From the last choice back, each choice
+jumps to its bound and to 0, then steps up and down by the largest step that
+raises the score (doubling, then halving the gap). A jump is kept when the score
+does not fall and the tape grows no longer, so a yes-or-no draw flips in one
+replay. Draws past the edited tape's end are fresh. The climb edits the tape,
+so it steers a simulation as it steers inputs: the schedule, the faults, the
+latencies and `random` all come from the same choices. In the package's own
+test, a producer and a consumer whose item times the simulation draws fill
+their queue to 22 under steering, a depth no seed reaches in 2,000 random
+cases.
+
+A climb's replays count toward `cases`. A failure it finds is shrunk like any
+other, and the report adds the highest score each label reached. A label
+reported more than once in a case keeps its highest score, so a body can report
+the most a quantity reached over a run. Scores compare as `f64`: integers are
+exact up to 2^53. A score that only says whether a state was reached has no
+slope to climb, so give it a measure of distance. `explore`, `SHAKEDOWN_TAPE`
+and the fuzzer ignore targets.
+
 ### Continuous fuzzing
 
 `shakedown-fuzz` (an artifact of the package, as `shakedown-bench-compare` is)

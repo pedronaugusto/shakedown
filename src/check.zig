@@ -18,7 +18,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Source = @import("Source.zig");
 const Tape = Source.Tape;
+const aegis = @import("aegis");
 const shrinker = @import("shrink.zig");
+const target = @import("target.zig");
 const corpus = @import("corpus.zig");
 const Sim = @import("Sim.zig");
 
@@ -47,6 +49,24 @@ pub const Case = struct {
         const notes = &(c.runner.notes orelse return);
         // glint-ignore: Z026 -- a note that cannot be kept is lost; the failure itself is still reported
         notes.print(c.runner.gpa, "    " ++ fmt ++ "\n", args) catch {};
+    }
+
+    /// How far this case got toward what `label` names, for `check` to
+    /// steer toward: once half of its cases have run, it climbs the case
+    /// that scored highest, raising and lowering its choices one at a time
+    /// while the score keeps rising. The choices are the property's inputs
+    /// and its simulations' schedules, faults and latencies, so a score
+    /// steers them all. Give it a gradient: how close, how many, how long.
+    /// A score that only says whether a state was reached is flat, and
+    /// steers nothing. A label reported more than once in a case keeps its
+    /// highest score. `score` is finite, and compared as an f64: exactly for
+    /// integers up to 2^53, coarser past them. Under `explore`, `SHAKEDOWN_TAPE`
+    /// and the fuzzer, it does nothing.
+    pub fn target(c: *Case, score: f64, label: []const u8) void {
+        aegis.assert.pre(std.math.isFinite(score), "a target's score is finite");
+        const targets = &(c.runner.targets orelse return);
+        // glint-ignore: Z026 -- a score that cannot be kept is lost; the case runs on as it would without it
+        targets.observe(score, label) catch {};
     }
 
     /// A simulation whose every decision comes from this case's source, so
@@ -138,30 +158,117 @@ pub fn check(
         defer gpa.free(choices);
         return runner.replayOnly(choices);
     }
+    runner.targets = .init(gpa);
+    const targets = &runner.targets.?;
     for (options.regressions, 0..) |text, i| {
         const choices = Tape.parse(gpa, text) catch |err| return invalid(err);
         defer gpa.free(choices);
         switch (try runner.once(.{ .replay = choices })) {
             .fail => |err| return runner.failed(err, .{ .regression = i }),
-            .pass, .discard => {},
+            .pass => try targets.record(runner.source.tape()),
+            .discard => {},
         }
     }
     const seed = try seedOf(gpa, options);
     const cases = (try environmentNumber(gpa, "SHAKEDOWN_CASES")) orelse options.cases;
-    var valid: u64 = 0;
-    var tries: u64 = 0;
-    while (valid < cases) : (tries += 1) {
-        if (tries >= @as(u64, cases) * 10) return error.Unsatisfiable;
+    var run: Run = .{ .seed = seed, .cases = cases };
+    var climbed = false;
+    while (run.valid < cases) {
+        if (run.tries >= run.most()) return error.Unsatisfiable;
+        // Half of the cases drawn, the targets reported so far are climbed;
+        // the climbs' replays count as cases, and fresh ones fill the rest.
+        if (!climbed and run.valid >= cases / 2 and targets.any()) {
+            climbed = true;
+            try climbTargets(&runner, &run);
+            continue;
+        }
+        const index = run.tries;
+        run.tries += 1;
         // Collections grow over the first half of the cases, so the first
         // failure found is a small one when a small one exists.
-        runner.source.setGrowth(@intCast(@min(1000, 2000 * (tries + 1) / @max(cases, 1))));
-        switch (try runner.once(.{ .prng = caseSeed(seed, tries) })) {
-            .pass => valid += 1,
+        runner.source.setGrowth(@intCast(@min(1000, 2000 * (index + 1) / @max(cases, 1))));
+        switch (try runner.once(.{ .prng = caseSeed(seed, index) })) {
+            .pass => {
+                run.valid += 1;
+                try targets.record(runner.source.tape());
+            },
             .discard => {},
-            .fail => |err| return runner.failed(err, .{ .case = .{ .seed = seed, .index = tries, .passed = valid } }),
+            .fail => |err| return runner.failed(err, .{ .case = .{ .seed = seed, .index = index, .passed = run.valid } }),
         }
     }
 }
+
+/// Where a `check` stands: the cases that passed, the runs tried.
+const Run = struct {
+    seed: u64,
+    cases: u64,
+    valid: u64 = 0,
+    tries: u64 = 0,
+
+    /// The most runs a check may try: ten for every case it needs.
+    fn most(r: *const Run) u64 {
+        return r.cases * 10;
+    }
+
+    /// The replays a climb may still make.
+    fn left(r: *const Run) u32 {
+        return std.math.lossyCast(u32, @min(r.cases -| r.valid, r.most() -| r.tries));
+    }
+};
+
+/// Climbs each label's best case in turn, round after round while one
+/// rises, until the budget is spent. A climb's replay that fails the
+/// property is shrunk and reported as any failure.
+fn climbTargets(runner: *Runner, run: *Run) CheckError!void {
+    const targets = &runner.targets.?;
+    while (true) {
+        var rose = false;
+        for (0..targets.labels.items.len) |label| {
+            const best = &(targets.best.items[label] orelse continue);
+            var budget = run.left();
+            if (budget == 0) return;
+            var climbing: Climbing = .{ .runner = runner, .run = run, .label = label };
+            switch (try target.climb(runner.gpa, best, .{ .ctx = &climbing, .run = Climbing.replay }, &budget)) {
+                .failed => return runner.failed(climbing.failure.?, .{ .targeted = .{ .label = targets.labels.items[label], .run = climbing.runs, .passed = run.valid } }),
+                .improved => rose = true,
+                .flat => {},
+                .spent => return,
+            }
+        }
+        if (!rose) return;
+    }
+}
+
+/// A climb's replay: the candidate tape, its draws past the end fresh from
+/// the run's seed, counted as a case.
+const Climbing = struct {
+    runner: *Runner,
+    run: *Run,
+    label: usize,
+    runs: u64 = 0,
+    failure: ?anyerror = null,
+
+    fn replay(ctx: *anyopaque, choices: []const u64) Allocator.Error!target.Ran {
+        const self: *Climbing = @ptrCast(@alignCast(ctx)); // safe: `climbTargets` pairs this function with its own Climbing
+        const r = self.runner;
+        const index = self.run.tries;
+        self.run.tries += 1;
+        self.runs += 1;
+        switch (try r.once(.{ .extend = .{ .choices = choices, .seed = caseSeed(self.run.seed, index) } })) {
+            .fail => |err| {
+                self.failure = err;
+                return .failed;
+            },
+            .discard => return .{ .ran = .{ .score = null, .tape = r.source.tape() } },
+            .pass => {
+                self.run.valid += 1;
+                const targets = &r.targets.?;
+                try targets.record(r.source.tape());
+                return .{ .ran = .{ .score = targets.reported(self.label), .tape = r.source.tape() } };
+            },
+        }
+    }
+};
 
 pub fn invalid(err: Tape.ParseError) CheckError {
     return switch (err) {
@@ -222,6 +329,8 @@ pub const Origin = union(enum) {
     replay,
     /// The run of `explore` that failed, counted from 1.
     explored: u64,
+    /// A replay of the climb toward `label`'s highest score, counted from 1.
+    targeted: struct { label: []const u8, run: u64, passed: u64 },
 };
 
 /// The state of one `check` or `explore`: the recording source and the
@@ -238,6 +347,8 @@ pub const Runner = struct {
     notes: ?std.ArrayList(u8) = null,
     /// Under `explore`: the schedule every case's simulations take.
     bounded: ?Sim.Schedule.Bounded = null,
+    /// Under `check`'s own cases: the scores they reported (`Case.target`).
+    targets: ?target.Targets = null,
     /// Whether the test runner handed `check`'s fuzz function an input of its
     /// own: it does not fuzz.
     probed: bool = false,
@@ -271,6 +382,7 @@ pub const Runner = struct {
         r.sims.deinit(r.gpa);
         r.watchdog.deinit();
         if (r.notes) |*n| n.deinit(r.gpa);
+        if (r.targets) |*t| t.deinit();
         r.* = undefined;
     }
 
@@ -278,6 +390,7 @@ pub const Runner = struct {
     pub fn once(r: *Runner, backend: Source.Backend) error{OutOfMemory}!Outcome {
         r.source.restart(backend);
         _ = r.arena.reset(.retain_capacity);
+        if (r.targets) |*t| t.startCase();
         var c: Case = .{ .source = &r.source, .gpa = r.arena.allocator(), .runner = r };
         if (@errorReturnTrace()) |t| t.index = 0;
         const result = r.body.run(r.body.ctx, &c);
@@ -326,6 +439,7 @@ pub const Runner = struct {
         var text: std.Io.Writer.Allocating = .init(r.gpa);
         defer text.deinit();
         print(&text.writer, err, origin, choices, shrink_runs, outcome, r.notes.?.items) catch return error.OutOfMemory;
+        if (r.targets) |*t| printTargets(&text.writer, t) catch return error.OutOfMemory;
         if (r.trace_len > 0) {
             const t: std.builtin.StackTrace = .{ .instruction_addresses = r.trace[0..r.trace_len], .index = r.trace_len };
             // glint-ignore: Z026 -- a trace that cannot be written leaves the report without it
@@ -355,6 +469,7 @@ fn print(w: *std.Io.Writer, err: anyerror, origin: Origin, choices: []const u64,
         .case => |c| try w.print("shakedown: property failed after {d} passing cases (seed 0x{x}, case {d})", .{ c.passed, c.seed, c.index }),
         .replay => try w.writeAll("shakedown: property failed on SHAKEDOWN_TAPE"),
         .explored => |run| try w.print("shakedown: property failed on run {d} of the search", .{run}),
+        .targeted => |t| try w.print("shakedown: property failed after {d} passing cases, on run {d} of the climb toward the highest \"{s}\"", .{ t.passed, t.run, t.label }),
     }
     if (shrink_runs > 0) try w.print(", shrunk in {d} runs", .{shrink_runs});
     try w.print(": error.{t}\n", .{err});
@@ -363,6 +478,16 @@ fn print(w: *std.Io.Writer, err: anyerror, origin: Origin, choices: []const u64,
     switch (outcome) {
         .fail => |again| if (again != err) try w.print("  the replay failed with error.{t} instead\n", .{again}),
         .pass, .discard => try w.writeAll("  the replay did not fail again: the property depends on something outside its source\n"),
+    }
+}
+
+/// The highest score each label reached in a passing case.
+fn printTargets(w: *std.Io.Writer, targets: *const target.Targets) std.Io.Writer.Error!void {
+    if (!targets.any()) return;
+    try w.writeAll("  targets, the highest score a passing case reached:\n");
+    for (targets.labels.items, targets.best.items) |label, best| {
+        const b = best orelse continue;
+        try w.print("    {s}: {d}\n", .{ label, b.score });
     }
 }
 
