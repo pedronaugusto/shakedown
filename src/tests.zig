@@ -41,6 +41,7 @@ test {
     _ = @import("Sim.zig");
     _ = @import("sim/Core.zig");
     _ = @import("sim/Watchdog.zig");
+    _ = @import("sim/os_thread.zig");
     _ = @import("sim/Region.zig");
     _ = @import("sim/executor.zig");
     _ = @import("conformance.zig");

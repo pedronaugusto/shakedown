@@ -14,6 +14,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const shuttle = @import("shuttle");
+const os_thread = @import("os_thread.zig");
 const windows = std.os.windows;
 
 pub const Kind = enum { fibers, threads };
@@ -57,6 +58,10 @@ const Baton = struct {
     handle: ?Thread = null,
     entry: ?Entry = null,
     arg: ?*anyopaque = null,
+    /// The thread the context runs on, as the watchdog reads it: the driver's
+    /// own, or a task's, which names itself before `start` returns.
+    os: os_thread.Thread = .none,
+    named: std.atomic.Value(u32) = .init(0),
 };
 
 /// A task's thread. On Windows a thread of our own: std's `Thread.join`
@@ -92,12 +97,13 @@ pub fn start(c: *Context, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
             if (!threads_supported) unreachable; // unreachable: Sim.init refuses an executor the target lacks
             if (builtin.os.tag == .windows) {
                 c.thread.handle = win32.CreateThread(null, stack_size, win32ThreadStart, &c.thread, win32.stack_size_param_is_a_reservation, null) orelse return error.SystemResources;
-                return;
+            } else {
+                c.thread.handle = std.Thread.spawn(.{ .stack_size = @max(stack_size, thread_stack_floor) }, threadMain, .{&c.thread}) catch |err| return switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => error.SystemResources,
+                };
             }
-            c.thread.handle = std.Thread.spawn(.{ .stack_size = @max(stack_size, thread_stack_floor) }, threadMain, .{&c.thread}) catch |err| return switch (err) {
-                error.OutOfMemory => error.OutOfMemory,
-                else => error.SystemResources,
-            };
+            while (c.thread.named.load(.acquire) == 0) real().futexWaitUncancelable(u32, &c.thread.named.raw, 0);
         },
     }
 }
@@ -131,6 +137,7 @@ pub fn destroy(c: *Context) void {
 /// The calling thread's context, as the driver.
 pub fn initDriver(kind: Kind) Context {
     var c: Context = .{ .kind = kind };
+    c.thread.os = os_thread.current();
     if (kind == .fibers) if (fibers_supported) {
         c.fiber = .{};
     };
@@ -178,6 +185,9 @@ fn win32ThreadStart(param: ?*anyopaque) callconv(.winapi) u32 {
 }
 
 fn threadMain(b: *Baton) void {
+    b.os = os_thread.current();
+    b.named.store(1, .release);
+    real().futexWake(u32, &b.named.raw, 1);
     wait(b);
     b.entry.?(b.arg.?);
 }

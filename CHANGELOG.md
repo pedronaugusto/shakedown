@@ -13,10 +13,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- Pins preflight 0.17.3.
 - `everyCrash` recovers each distinct crash state once: a state an earlier crash point already left (the same `digest`) is counted in `repeated` and not recovered again, since recovery sees nothing but that storage. Most points of a long operation leave the states the points before it left; relic's crash test of maintenance's loose-objects task made 31,520 recoveries of 447 distinct states.
 
 ### Fixed
 
+- The watchdog counts the time a task could run, not real time: its thread's CPU time, and all the time the thread is blocked in the kernel, where it could not have made a call either. On a loaded Mac a task's thread waited for a CPU a whole watchdog time after the mark, and the watchdog aborted the process over a task that had not had the time to reach its call (sim_test's 50 ms watchdog test). The watchdog reads the thread from its own: `/proc/self/task/<tid>/stat` and the thread's CPU clock on Linux, `thread_info` on macOS, the system's process snapshot on Windows. Where nothing can be read, real time counts, as before. `Sim.Watchdog.Watched` takes the thread as `runner`, null for none.
 - A cancel `FaultIo` planned at a cancelation point under blocked protection landed on a thread none of the base's tasks run on: std's `Threaded` keeps no protection for the test's own thread, and FaultIo asked it. FaultIo now keeps the protection each task sets through it (`swapCancelProtection`) and asks the base only for a task that set none; an `everyFault` sweep of code that blocks cancels around its teardown (relic's lock files) saw a cancel taken in there that a real run never meets.
 
 ## [0.4.17] - 2026-10-24

@@ -365,11 +365,12 @@ at once, as std allows, and `concurrent` returns `error.ConcurrencyUnavailable`.
 A run ends `finished`, `failed` with the root task's error, `deadlock` with a
 report of every task still waiting (what it waits on, where it was started and
 its stack), at a step or time limit, or `stuck`: a watchdog thread notices a
-task that makes no `Io` call for ten seconds of real time and ends the run at
-its next call, or aborts the process with the report printed when that call
-never comes. A simulation starts its watchdog's thread on its first run, unless
-`Options.watched_by` hands it a `Sim.Watchdog` it shares; `check` shares one
-among all its cases' simulations. `start`, `step`, `runFor` and `runUntil` drive a run a step or a
+task that runs ten seconds without an `Io` call (its thread's time on a CPU or
+blocked in the kernel; time waiting for a CPU on a loaded host does not count)
+and ends the run at its next call, or aborts the process with the report
+printed when that call never comes. A simulation starts its watchdog's thread
+on its first run, unless `Options.watched_by` hands it a `Sim.Watchdog` it
+shares; `check` shares one among all its cases' simulations. `start`, `step`, `runFor` and `runUntil` drive a run a step or a
 frame at a time, and `at` starts a task at an instant, for input replay.
 `Options.faults` puts a `FaultIo` outermost, drawing its chances from the same
 source. `allocator()` lays memory out the same way in every run of a seed, from

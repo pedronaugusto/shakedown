@@ -101,8 +101,9 @@ pub const Options = struct {
     max_steps: u64 = 50_000_000,
     /// A run whose time would pass this ends as `time_limit`.
     max_time: Io.Duration = .fromSeconds(30 * 24 * 3600),
-    /// Real time a task may run without an `Io` call before the run is
-    /// stuck; null turns the watchdog off. See `Outcome.stuck`.
+    /// Time a task may run without an `Io` call before the run is stuck:
+    /// time its thread had a CPU or was blocked in the kernel, not time it
+    /// waited for a CPU. Null turns the watchdog off. See `Outcome.stuck`.
     watchdog: ?Io.Duration = .fromSeconds(10),
     /// A watchdog shared with other simulations, which must outlive this
     /// one; null starts one of the simulation's own on its first run.
@@ -209,9 +210,9 @@ pub const Outcome = union(enum) {
     step_limit,
     /// The run's time would pass `Options.max_time`.
     time_limit,
-    /// The watchdog found this task running for `Options.watchdog` of real
-    /// time without an `Io` call, and it then made one. A task that never
-    /// makes one again cannot be stopped: after twice the watchdog's time
-    /// the process is aborted, with the report printed first.
+    /// The watchdog found this task running for `Options.watchdog` without
+    /// an `Io` call, and it then made one. A task that never makes one again
+    /// cannot be stopped: once it could run another watchdog time, the
+    /// process is aborted, with the report printed first.
     stuck: TaskReport,
 };

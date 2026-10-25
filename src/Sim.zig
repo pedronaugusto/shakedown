@@ -237,7 +237,7 @@ pub fn step(s: *Sim) ?Outcome {
 fn drive(s: *Sim, mode: Core.Mode, until: i64) ?Outcome {
     if (s.watched_by == null) if (s.core.options.watchdog) |limit| {
         const w = s.core.options.watched_by orelse &s.own_watchdog;
-        s.watch = .{ .running = &s.core.running, .calls = &s.core.calls, .stuck = &s.core.stuck, .limit = Core.nanoseconds(limit.nanoseconds) };
+        s.watch = .{ .running = &s.core.running, .calls = &s.core.calls, .stuck = &s.core.stuck, .runner = &s.core.runner, .limit = Core.nanoseconds(limit.nanoseconds) };
         if (w.add(&s.watch)) s.watched_by = w;
     };
     return s.core.drive(mode, until) catch |err| .{ .failed = err };

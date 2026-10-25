@@ -121,9 +121,11 @@ capturing: ?*Task = null,
 reports: std.ArrayList(TaskReport) = .empty,
 
 /// Shared with the watchdog thread: the step count, the running task's id (0
-/// when none), and whether the watchdog found the run stuck.
+/// when none), the thread it runs on, and whether the watchdog found the
+/// run stuck.
 calls: std.atomic.Value(u64) = .init(0),
 running: std.atomic.Value(ids.TaskId) = .init(ids.outside),
+runner: std.atomic.Value(u64) = .init(0),
 stuck: std.atomic.Value(bool) = .init(false),
 
 const max_depth = 16;
@@ -742,6 +744,8 @@ pub fn dispatch(c: *Core, from: *executor.Context) void {
     const to: *executor.Context = if (c.next()) |n| to: {
         c.current = n;
         n.state = .running;
+        // Fibers all run on the driver's thread, named once in `drive`.
+        if (c.kind == .threads) c.runner.store(@backingInt(n.ctx.thread.os), .monotonic);
         c.running.store(n.id, .monotonic);
         if (c.searched) c.source.step(c.actorOf(n));
         break :to &n.ctx;
@@ -942,6 +946,7 @@ pub fn drive(c: *Core, mode: Mode, until: i64) executor.CreateError!?Outcome {
     c.until = until;
     c.step_taken = false;
     c.driver = executor.initDriver(c.kind);
+    c.runner.store(@backingInt(c.driver.thread.os), .monotonic);
     const previous = running_core;
     running_core = c;
     defer running_core = previous;
