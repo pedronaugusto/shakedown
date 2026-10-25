@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.18] - 2026-10-25
+
 ### Added
 
 - `Sim.Fs.Snapshot.digest`: a tree's identity whatever history and inode numbers reached it (every path in name order, which of them name one inode, each inode's kind, metadata, bytes, target and damage; inodes no path reaches left out), 128 bits. It keeps each file image's digest in a `Sim.Fs.ImageDigests`, which holds the image, so the states of one crash point, sharing every file none of them changed, hash each file once.
