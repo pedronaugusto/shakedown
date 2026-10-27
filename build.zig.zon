@@ -19,8 +19,8 @@
         },
 
         .shuttle = .{
-            .url = "git+https://github.com/pedronaugusto/shuttle?ref=v0.4.0#b3d9b6f771fe24d568ec930586ba0dffcb070ae6",
-            .hash = "shuttle-0.4.0-0xOo5sdXAwA5B0y0bfq7FTt_EORdNoXJsxDXyPa8OK4-",
+            .url = "git+https://github.com/pedronaugusto/shuttle?ref=typed#9dac340bb4c11b5ded93288a4d2d2f5d71da6f94",
+            .hash = "shuttle-0.4.2-0xOo5omoAwB0X1Cvp7vk4-GomhUpJJovyHbuR6WtGPt9",
         },
     },
     .dev_dependencies = .{

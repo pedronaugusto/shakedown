@@ -91,7 +91,7 @@ pub fn start(c: *Context, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
                 error.Overflow => error.OutOfMemory,
             };
             errdefer c.stack.deinit();
-            c.fiber = shuttle.Context.init(&c.stack, fiberStart, &c.thread) catch return error.SystemResources;
+            c.fiber = shuttle.Context.init(&c.stack, *Baton, shuttle.Context.Nothing, fiberStart, &c.thread) catch return error.SystemResources;
         },
         .threads => {
             if (!threads_supported) unreachable; // unreachable: Sim.init refuses an executor the target lacks
@@ -149,7 +149,7 @@ pub fn initDriver(kind: Kind) Context {
 pub inline fn switchTo(from: *Context, to: *Context) void {
     switch (from.kind) {
         .fibers => if (fibers_supported) {
-            _ = shuttle.switchTo(&from.fiber.?, &to.fiber.?, null);
+            _ = shuttle.switchTo(&from.fiber.?, &to.fiber.?, shuttle.Context.Nothing, null);
         } else unreachable, // unreachable: Sim.init refuses an executor the target lacks
         .threads => {
             pass(&to.thread);
@@ -166,8 +166,7 @@ pub fn fiberTrace(c: *const Context, first_address: usize, out: []usize) []usize
     return c.fiber.?.traceFrom(&c.stack, first_address, out);
 }
 
-fn fiberStart(arg: ?*anyopaque, _: ?*anyopaque) callconv(.c) noreturn {
-    const b: *Baton = @ptrCast(@alignCast(arg.?)); // aegis: no-danger: `start` passes the context's baton, which holds the entry
+fn fiberStart(b: *Baton, _: ?shuttle.Context.Nothing) callconv(.c) noreturn {
     b.entry.?(b.arg.?);
 }
 

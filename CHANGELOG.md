@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Pins shuttle 0.5: the simulation's fibers are typed contexts, each started with its baton and switched with no message, so the start no longer casts its argument back.
+
 ## [0.5.0] - 2026-10-27
 
 ### Breaking
