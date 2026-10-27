@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-27
+
 ### Breaking
 
 - `Sim.Watchdog.Watched` reads aegis cells: `running` an `aegis.Atomic(TaskId)`, `calls` an `aegis.Atomic(Sim.Watchdog.Calls)`, `stuck` an `aegis.Atomic(Sim.Watchdog.Stuck)` (`running` or `stuck`, no longer a bool), `runner` an `aegis.Atomic` of the thread. `Sim.Watchdog`'s thread is `started()`, no longer a field.
