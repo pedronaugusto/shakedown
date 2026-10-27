@@ -18,6 +18,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Every lock holds what it guards (aegis `BlockingGuarded`: `FaultIo`'s, `Clock`'s, the watchdog's), and time from std enters as aegis's checked nanoseconds, saturating past ±292 years as before, in one conversion that `Clock` and the simulation share.
 - A simulated task's life is an aegis `state.Machine`: a move it does not allow stops the run instead of leaving the scheduler in a state no edge reaches.
 - The conformance files check reads its file back with `aegis.own.readFile`, which states the file's length before it reads, so a simulation's trace of the conformance workload changes.
+- Pins shuttle 0.4.0.
 
 ## [0.4.18] - 2026-10-25
 
