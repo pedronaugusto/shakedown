@@ -24,6 +24,7 @@ const aegis = @import("aegis");
 const Io = std.Io;
 const assert = std.debug.assert;
 const Layer = @import("layer.zig").Layer;
+const nanoseconds = @import("nanoseconds.zig");
 
 const Clock = @This();
 
@@ -81,14 +82,10 @@ const L = Layer(State, .{
 /// The clocks a `Clock` moves, as indices into its state.
 const Kept = enum(u2) { awake, boot, real };
 
-/// A reading of one of the kept clocks, which a `Kept` beside it names, in
-/// nanoseconds as the clock keeps them: past ±292 years they saturate.
-const Reading = aegis.units.Instant(Clock, .nanosecond, i64);
+/// A reading of one of the kept clocks, which a `Kept` beside it names.
+const Reading = nanoseconds.Reading(Clock);
 /// How far the kept clocks move, or are from a deadline.
-const Span = aegis.units.Duration(.nanosecond, i64);
-/// A timestamp or duration as std keeps it, before the clock saturates it.
-const WideReading = aegis.units.Instant(Clock, .nanosecond, i96);
-const WideSpan = aegis.units.Duration(.nanosecond, i96);
+const Span = nanoseconds.Span;
 /// Timers armed.
 const Armed = aegis.units.Count(Timer, usize);
 
@@ -526,19 +523,11 @@ fn clockOf(kept: Kept) Io.Clock {
     };
 }
 
-/// A timestamp as the clock keeps it: past ±292 years it saturates.
 fn readingOf(t: Io.Timestamp) Reading {
-    const wide = WideReading.fromTimestamp(t, .exact);
-    return wide.convert(.nanosecond, i64, .exact) catch
-        if (wide.compare(.fromRaw(0)) == .lt) .fromRaw(std.math.minInt(i64)) else .fromRaw(std.math.maxInt(i64));
+    return nanoseconds.reading(Clock, t);
 }
 
-/// A duration as the clock keeps it: past ±292 years it saturates.
-fn spanOf(d: Io.Duration) Span {
-    const wide = WideSpan.fromIoDuration(d, .exact);
-    return wide.convert(.nanosecond, i64, .exact) catch
-        if (wide.compare(.fromRaw(0)) == .lt) .fromRaw(std.math.minInt(i64)) else .fromRaw(std.math.maxInt(i64));
-}
+const spanOf = nanoseconds.span;
 
 test "a fired timer is out of the set, and an expired one is never armed" {
     var clock: Clock = .init(std.testing.io, .{});

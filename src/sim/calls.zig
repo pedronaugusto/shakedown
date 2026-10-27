@@ -11,6 +11,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const Io = std.Io;
 const Core = @import("Core.zig");
+const nanoseconds = @import("../nanoseconds.zig");
 const Task = Core.Task;
 const fs_calls = @import("fs/calls.zig");
 const net_calls = @import("net/calls.zig");
@@ -114,14 +115,14 @@ const slots = struct {
         const t = e.task orelse outside("await");
         const target: *Task = @ptrCast(@alignCast(any_future)); // aegis: no-danger: a future of this simulation is its task
         c.touch(Core.Object.task(c.actorOf(target)), true);
-        if (target.state != .done) {
+        if (target.state.current() != .done) {
             target.awaiter = t;
             if (c.block(t, .{ .task = target }, true) == .canceled) {
                 // As std's threaded Io does: the cancel passes on to the
                 // awaited task, and stays the awaiter's if that task does
                 // not take it.
                 c.requestCancel(target);
-                while (target.state != .done) _ = c.block(t, .{ .task = target }, false);
+                while (target.state.current() != .done) _ = c.block(t, .{ .task = target }, false);
                 if (target.cancel != .delivered) t.cancel = .requested;
             }
         }
@@ -138,7 +139,7 @@ const slots = struct {
         c.touch(Core.Object.task(c.actorOf(target)), true);
         c.requestCancel(target);
         target.awaiter = t;
-        while (target.state != .done) _ = c.block(t, .{ .task = target }, false);
+        while (target.state.current() != .done) _ = c.block(t, .{ .task = target }, false);
         @memcpy(result, target.result());
         c.release(target);
         c.record(.cancel, e, 0);
@@ -291,7 +292,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), true);
         const at = c.now(which);
-        c.record(.now, e, @truncate(@as(u96, @bitCast(at.nanoseconds))));
+        c.record(.now, e, @bitCast(nanoseconds.reading(Core, at).raw()));
         return at;
     }
 
@@ -532,7 +533,7 @@ fn spawnMember(
 
 fn startDeferred(c: *Core, group: *Io.Group) void {
     for (c.tasks.items) |t| {
-        if (t.state == .deferred and t.group == group) c.makeReady(t);
+        if (t.state.current() == .deferred and t.group == group) c.makeReady(t);
     }
 }
 

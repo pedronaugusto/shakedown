@@ -7,6 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const aegis = @import("aegis");
 const Source = @import("../../Source.zig");
 const state = @import("state.zig");
 const names = @import("names.zig");
@@ -67,7 +68,7 @@ pub const Handle = struct {
 
 pub fn init(gpa: Allocator, source: *Source, options: Options) !*Model {
     std.debug.assert(options.sector > 0);
-    std.debug.assert(options.timestamp_granularity.nanoseconds > 0);
+    std.debug.assert(Grain.fromIoDuration(options.timestamp_granularity, .exact).compare(.fromRaw(0)) == .gt);
     const fs = try gpa.create(Model);
     errdefer gpa.destroy(fs);
     const root = try gpa.create(State);
@@ -91,9 +92,13 @@ fn unique(fs: *Model) !void {
     fs.root = next;
 }
 pub fn rounded(fs: *const Model, at: Io.Timestamp) Io.Timestamp {
-    const grain = fs.options.timestamp_granularity.nanoseconds;
-    return .fromNanoseconds(@divFloor(at.nanoseconds, grain) * grain);
+    const grain = Grain.fromIoDuration(fs.options.timestamp_granularity, .exact);
+    return Stamp.fromTimestamp(at, .exact).floor(grain).toTimestamp();
 }
+
+/// A timestamp as std keeps it, and the grain it is rounded down to.
+const Stamp = aegis.units.Instant(Model, .nanosecond, i96);
+const Grain = aegis.units.Duration(.nanosecond, i96);
 fn newNode(fs: *Model, kind: Io.File.Kind, permissions: Io.File.Permissions, target: ?[]const u8) !u32 {
     try fs.root.nodes.ensureUnusedCapacity(fs.gpa, 1);
     const image = try Image.empty(fs.gpa);
@@ -140,7 +145,7 @@ pub fn directory(fs: *Model, dir: Io.Dir) Error!u32 {
     if (fs.root.nodes.items[h.inode].kind != .directory) return error.NotDir;
     return h.inode;
 }
-pub fn openHandle(fs: *Model, inode: u32, read_access: bool, write_access: bool, path_only: bool, iterate: bool) !Io.File {
+pub fn openHandle(fs: *Model, inode: u32, read_access: bool, write_access: bool, path_only: bool, iterate: bool) !Io.File { // aegis: boundary: std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
     if (fs.next_handle >= 0x1000_0000) return error.OutOfMemory;
     const id = fs.next_handle;
     try fs.handles.append(fs.gpa, .{ .id = id, .inode = inode, .read = read_access, .write = write_access, .path_only = path_only, .iterate = iterate });

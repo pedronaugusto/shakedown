@@ -10,6 +10,7 @@
 //! repeats a call within one measurement to rise above it).
 const std = @import("std");
 const Io = std.Io;
+const nanoseconds = @import("nanoseconds.zig");
 
 /// The class of one measurement's input.
 pub const Class = enum(u1) {
@@ -84,8 +85,9 @@ pub fn run(gpa: std.mem.Allocator, io: Io, context: anytype, options: Options) R
             const start = Io.Timestamp.now(io, .awake);
             for (0..options.batch) |_| context.call(slot);
             const end = Io.Timestamp.now(io, .awake);
-            if (end.nanoseconds < start.nanoseconds) return error.NonMonotonicClock;
-            time.* = @as(f64, @floatFromInt(end.nanoseconds - start.nanoseconds)) / @as(f64, @floatFromInt(options.batch));
+            const spent = nanoseconds.span(start.durationTo(end));
+            if (spent.compare(.fromRaw(0)) == .lt) return error.NonMonotonicClock;
+            time.* = @as(f64, @floatFromInt(spent.raw())) / @as(f64, @floatFromInt(options.batch));
         }
         // The first round only sets the crop points, from its own spread: measurements while
         // caches and branch predictors warm are left out.

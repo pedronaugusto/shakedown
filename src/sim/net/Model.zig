@@ -209,8 +209,14 @@ fn draw(m: *Model, max: u64) u64 {
 fn chance(m: *Model, ppm: u32) bool {
     return ppm != 0 and (ppm == 1000000 or m.draw(999999) < ppm);
 }
+/// A latency or a mean as the model keeps it, in nanoseconds: one past
+/// ±292 years saturates. The model is its own module (the network bench
+/// measures it alone), so it converts with aegis itself.
 fn duration(d: Io.Duration) i64 {
-    return std.math.lossyCast(i64, d.nanoseconds);
+    const wide = aegis.units.Duration(.nanosecond, i96).fromIoDuration(d, .exact);
+    const kept = wide.convert(.nanosecond, i64, .exact) catch
+        return if (wide.compare(.fromRaw(0)) == .lt) std.math.minInt(i64) else std.math.maxInt(i64);
+    return kept.raw();
 }
 fn latency(m: *Model, d: Dist) i64 {
     return switch (d) {

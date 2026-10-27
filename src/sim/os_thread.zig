@@ -10,8 +10,12 @@
 //! nothing can be read, and `read` returns null.
 const builtin = @import("builtin");
 const std = @import("std");
+const aegis = @import("aegis");
 const windows = std.os.windows;
 const linux = std.os.linux;
+
+/// The whole seconds the system gives a CPU time in.
+const Seconds = aegis.units.Duration(.second, i64);
 
 /// A thread, as `current` names it; `none` names no thread.
 pub const Thread = enum(u64) { none = 0, _ };
@@ -77,7 +81,9 @@ fn readLinux(tid: u32) ?Reading {
     var buf: [512]u8 = undefined;
     const n = linux.read(fd, &buf, buf.len);
     if (linux.errno(n) != .SUCCESS) return null;
-    return .{ .cpu = @as(i64, ts.sec) * std.time.ns_per_s + ts.nsec, .blocked = blockedState(buf[0..n]) orelse return null };
+    const seconds = Seconds.fromRaw(ts.sec).convert(.nanosecond, i64, .exact) catch return null;
+    const cpu = seconds.add(.fromRaw(ts.nsec)) catch return null;
+    return .{ .cpu = cpu.raw(), .blocked = blockedState(buf[0..n]) orelse return null };
 }
 
 /// Whether the state in a `/proc/<pid>/task/<tid>/stat` line is a wait in
@@ -98,9 +104,12 @@ fn readMach(port: std.c.mach_port_t) ?Reading {
     var info: std.c.thread_basic_info = undefined;
     var count: std.c.mach_msg_type_number_t = std.c.THREAD.BASIC.INFO_COUNT;
     if (std.c.thread_info(port, std.c.THREAD.BASIC.INFO, @ptrCast(&info), &count) != 0) return null; // aegis: boundary: thread_info fills a thread_basic_info, as count says
-    const us = @as(i64, info.user_time.seconds + info.system_time.seconds) * std.time.us_per_s + info.user_time.microseconds + info.system_time.microseconds;
+    const seconds = Seconds.fromRaw(info.user_time.seconds).saturatingAdd(.fromRaw(info.system_time.seconds));
+    const us = (seconds.convert(.microsecond, i64, .exact) catch return null)
+        .saturatingAdd(.fromRaw(info.user_time.microseconds)).saturatingAdd(.fromRaw(info.system_time.microseconds));
+    const cpu = us.convert(.nanosecond, i64, .exact) catch return null;
     // TH_STATE_WAITING, TH_STATE_UNINTERRUPTIBLE; TH_STATE_RUNNING is running or runnable.
-    return .{ .cpu = us * std.time.ns_per_us, .blocked = info.run_state == 3 or info.run_state == 4 };
+    return .{ .cpu = cpu.raw(), .blocked = info.run_state == 3 or info.run_state == 4 };
 }
 
 /// `SYSTEM_PROCESS_INFORMATION`, its threads after it.

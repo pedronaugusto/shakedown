@@ -105,7 +105,7 @@ pub const Size = Pipes.Size;
 pub const Terminal = struct { master: Io.File, slave: Io.File };
 
 /// A pipe the caller owns: its read end and its write end.
-pub fn pipe(p: Programs) Pipes.CreateError![2]Io.File {
+pub fn pipe(p: Programs) Pipes.CreateError![2]Io.File { // aegis: boundary: a simulated pipe's ends as std's Io.File names them, the caller's to close as an Io call's result is
     return calls.pipe(p.core, @returnAddress());
 }
 

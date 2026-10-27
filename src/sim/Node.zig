@@ -34,7 +34,10 @@ pub fn crash(n: *Node, policy: Fs.CrashPolicy) Fs.CrashError!void {
 pub fn restart(n: *Node, comptime f: anytype, args: std.meta.ArgsTuple(@TypeOf(f))) error{ OutOfMemory, SystemResources, NodeBusy, SimulationEnded }!void {
     const c = n.context.core;
     if (c.outcome != null) return error.SimulationEnded;
-    for (c.tasks.items) |task| if (task.node == n.context.node and (task.state == .ready or task.state == .running or task.state == .parked or task.state == .deferred)) return error.NodeBusy;
+    for (c.tasks.items) |task| if (task.node == n.context.node and switch (task.state.current()) {
+        .ready, .running, .parked, .deferred => true,
+        .idle, .done, .abandoned => false,
+    }) return error.NodeBusy;
     const Args = @TypeOf(args);
     const Start = struct {
         fn start(context: *const anyopaque, result: *anyopaque) void {

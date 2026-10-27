@@ -4,6 +4,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const Io = std.Io;
+const nanoseconds = @import("nanoseconds.zig");
 
 /// Provenance supplied by the build or driver. CPU names the selected target
 /// CPU model; drivers may supply the physical CPU name instead.
@@ -39,7 +40,7 @@ pub const Statistics = struct { best: f64, median: f64, p99: f64, radius: f64 };
 pub const StatisticsError = error{ OutOfMemory, InvalidSamples };
 pub fn statistics(gpa: std.mem.Allocator, samples: []const f64) StatisticsError!Statistics {
     if (samples.len == 0) return error.InvalidSamples;
-    for (samples) |s| if (!std.math.isFinite(s) or s <= 0 or !std.math.isFinite(1e9 / s)) return error.InvalidSamples;
+    for (samples) |s| if (!std.math.isFinite(s) or s <= 0 or !std.math.isFinite(1e9 / s)) return error.InvalidSamples; // aegis: no-danger: a float division, by a sample the test before it found positive; a zero would give an infinity, never a stop
     const sorted = try gpa.dupe(f64, samples);
     defer gpa.free(sorted);
     std.mem.sort(f64, sorted, {}, std.sort.asc(f64));
@@ -171,7 +172,7 @@ pub fn RunError(comptime WorkloadError: type) type {
     };
 }
 pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer: *Io.Writer, context: anytype, rows: []const Row(std.meta.Child(@TypeOf(context)), WorkloadError), metadata: Metadata, options: Options) RunError(WorkloadError)!void {
-    if (metadata.commit.len == 0 or metadata.zig.len == 0 or metadata.cpu.len == 0 or metadata.os.len == 0 or options.samples == 0 or options.warmup == 0 or options.resolution_multiple == 0 or options.minimum.nanoseconds < 0) return error.InvalidOptions;
+    if (metadata.commit.len == 0 or metadata.zig.len == 0 or metadata.cpu.len == 0 or metadata.os.len == 0 or options.samples == 0 or options.warmup == 0 or options.resolution_multiple == 0 or nanoseconds.span(options.minimum).compare(.fromRaw(0)) == .lt) return error.InvalidOptions;
     for (rows, 0..) |row, i| {
         if (row.name.len == 0 or row.unit.len == 0 or row.initial == 0 or row.smoke == 0 or row.initial > options.max_batch or row.latency == 0) return error.InvalidOptions;
         for (rows[0..i]) |previous| if (std.mem.eql(u8, previous.name, row.name)) return error.DuplicateRow;
@@ -185,8 +186,8 @@ pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer:
         }
         return;
     }
-    const resolution = (try Io.Clock.awake.resolution(io)).nanoseconds;
-    if (resolution <= 0 or resolution > std.math.maxInt(u64)) return error.ClockUnavailable;
+    const resolution: i96 = nanoseconds.span(try Io.Clock.awake.resolution(io)).raw();
+    if (resolution <= 0) return error.ClockUnavailable;
     const readable = std.math.mul(i96, resolution, options.resolution_multiple) catch return error.InvalidOptions;
     for (rows) |row| {
         if (!std.mem.startsWith(u8, row.name, options.prefix)) continue;
@@ -195,7 +196,7 @@ pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer:
         // A row that grows is read over at least `minimum`; one that cannot is
         // read at the clock's resolution alone, and a latency row's unit at a
         // smaller multiple of it.
-        const target = if (row.latency != null) resolution * latency_resolution_multiple else if (row.grow) @max(options.minimum.nanoseconds, readable) else readable;
+        const target = if (row.latency != null) resolution * latency_resolution_multiple else if (row.grow) @max(nanoseconds.span(options.minimum).raw(), readable) else readable;
         try opening(row, context);
         const batch = try closing(WorkloadError, row, context, sample(WorkloadError, io, context, row, samples, target, options));
         const stats = try statistics(gpa, samples);
@@ -281,14 +282,14 @@ fn invoke(comptime WorkloadError: type, comptime timed: bool, io: Io, context: a
 
 fn staged(comptime WorkloadError: type, comptime timed: bool, io: Io, context: anytype, row: Row(std.meta.Child(@TypeOf(context)), WorkloadError), units: u64) RunError(WorkloadError)!i96 {
     if (row.stage) |stage| try stage(context, units);
-    const start = if (timed) Io.Timestamp.now(io, .awake) else Io.Timestamp.fromNanoseconds(0);
+    const start = if (timed) Io.Timestamp.now(io, .awake) else Io.Timestamp.zero;
     // Cleanup is attempted exactly once. A failed run keeps its own error if
     // settling also fails.
     row.run(context, units) catch |err| {
         if (row.settle) |settle| settle(context, units) catch return err;
         return err;
     };
-    const elapsed = if (timed) start.durationTo(.now(io, .awake)).nanoseconds else 0;
+    const elapsed: i96 = if (timed) nanoseconds.span(start.durationTo(.now(io, .awake))).raw() else 0;
     if (row.settle) |settle| try settle(context, units);
     return elapsed;
 }

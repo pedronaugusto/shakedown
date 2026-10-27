@@ -23,7 +23,8 @@ fn traceHash(seed: u64, executor: Sim.Executor) !u64 {
 // B4 extends the fixture with files, hard links and mmap, including input digests.
 // B5 adds the node namespace to each record; scheduler choices are unchanged.
 // A listing resumes by cookie, so one that removes what it listed skips nothing.
-const golden: u64 = 0x1aba0c62c00a5093;
+// The files check reads its file back with aegis's whole-file read: a stat, then reads to the end.
+const golden: u64 = 0xda0784688f9ac38a;
 
 test "a thousand seeds of the conformance workload repeat their runs, and the runs are fixed" {
     var digest: u64 = 0;

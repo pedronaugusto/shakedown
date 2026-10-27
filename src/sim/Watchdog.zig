@@ -26,6 +26,7 @@ const aegis = @import("aegis");
 const Io = std.Io;
 const ids = @import("../ids.zig");
 const os_thread = @import("os_thread.zig");
+const nanoseconds = @import("../nanoseconds.zig");
 
 const Watchdog = @This();
 
@@ -170,7 +171,7 @@ fn sample(w: *Watchdog) ?Next {
     defer held.deinit(real());
     const s = held.value();
     if (s.stopping) return null;
-    const now = std.math.lossyCast(i64, Io.Timestamp.now(real(), .awake).nanoseconds);
+    const now = nanoseconds.reading(Watchdog, .now(real(), .awake)).raw();
     var slice: ?i64 = null;
     var it = s.first;
     while (it) |watched| : (it = watched.next) {

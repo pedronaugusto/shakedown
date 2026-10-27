@@ -183,7 +183,7 @@ pub const TaskReport = struct {
         switch (r.waiting) {
             .futex => |address| try w.print("waiting on the futex at 0x{x}", .{address}),
             .sleep => |until| if (until) |at| {
-                try w.print("sleeping until {d} ns on {t}", .{ at.raw.nanoseconds, at.clock });
+                try w.print("sleeping until {d} ns on {t}", .{ at.raw, at.clock });
             } else try w.writeAll("sleeping for ever"),
             .task => |id| try w.print("waiting for task {d}", .{id.raw()}),
             .group => try w.writeAll("waiting for its group"),

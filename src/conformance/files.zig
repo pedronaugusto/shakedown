@@ -1,5 +1,6 @@
 //! The same file guarantees, exercised on Threaded and simulated Io.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 
 pub fn run(gpa: std.mem.Allocator, io: Io) !void {
@@ -65,7 +66,7 @@ pub fn run(gpa: std.mem.Allocator, io: Io) !void {
     try opened.writePositionalAll(io, "Q", 1);
     try map.read(io);
     if (map.memory[1] != 'Q') return error.MapReadStale;
-    const content = try dir.readFileAlloc(io, path, gpa, .limited(32));
+    const content = try aegis.own.readFile(io, dir, path, gpa, .fromRaw(32));
     defer gpa.free(content);
     if (!std.mem.eql(u8, content, "MQZ")) return error.ReaderWrongData;
 }

@@ -25,6 +25,7 @@ const Source = @import("Source.zig");
 const FaultIo = @import("FaultIo.zig");
 const Trace = @import("trace.zig").Trace;
 const Core = @import("sim/Core.zig");
+const nanoseconds = @import("nanoseconds.zig");
 const ids = @import("ids.zig");
 const calls = @import("sim/calls.zig");
 const Region = @import("sim/Region.zig");
@@ -219,12 +220,12 @@ fn errorOf(value: anytype) ?anyerror {
 /// them. The outcome once every task has ended or a limit is reached.
 pub fn runFor(s: *Sim, d: Io.Duration) ?Outcome {
     const now_ns = s.core.clocks[@backingInt(Core.Kept.awake)];
-    return s.drive(.until, now_ns +| Core.nanoseconds(d.nanoseconds));
+    return s.drive(.until, now_ns +| nanoseconds.span(d).raw());
 }
 
 /// `runFor` up to an instant on `.awake`.
 pub fn runUntil(s: *Sim, t: Io.Timestamp) ?Outcome {
-    return s.drive(.until, Core.nanoseconds(t.nanoseconds));
+    return s.drive(.until, nanoseconds.reading(Core, t).raw());
 }
 
 /// One scheduling step: the next ready task runs to its next blocking call,
@@ -237,7 +238,7 @@ pub fn step(s: *Sim) ?Outcome {
 fn drive(s: *Sim, mode: Core.Mode, until: i64) ?Outcome {
     if (s.watched_by == null) if (s.core.options.watchdog) |limit| {
         const w = s.core.options.watched_by orelse &s.own_watchdog;
-        s.watch = .{ .running = &s.core.running, .calls = &s.core.calls, .stuck = &s.core.stuck, .runner = &s.core.runner, .limit = Core.nanoseconds(limit.nanoseconds) };
+        s.watch = .{ .running = &s.core.running, .calls = &s.core.calls, .stuck = &s.core.stuck, .runner = &s.core.runner, .limit = nanoseconds.span(limit).raw() };
         if (w.add(&s.watch)) s.watched_by = w;
     };
     return s.core.drive(mode, until) catch |err| .{ .failed = err };
@@ -246,7 +247,7 @@ fn drive(s: *Sim, mode: Core.Mode, until: i64) ?Outcome {
 /// Calls `f(io, ctx)` on a task of its own once `.awake` reaches `t`: input
 /// replay, an event at a set time.
 pub fn at(s: *Sim, t: Io.Timestamp, ctx: *anyopaque, f: *const fn (io: Io, ctx: *anyopaque) void) error{ OutOfMemory, SystemResources }!void {
-    const when = Core.nanoseconds(t.nanoseconds);
+    const when = nanoseconds.reading(Core, t).raw();
     const task = try s.core.spawn(.{ .at = .{ .ctx = ctx, .f = f } }, &.{}, .@"1", 0, .@"1", .parked);
     task.spawned_at = @returnAddress();
     if (when <= s.core.clocks[@backingInt(Core.Kept.awake)]) {

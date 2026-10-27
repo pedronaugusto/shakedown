@@ -22,6 +22,7 @@ const Trace = @import("../trace.zig").Trace;
 const IoCall = @import("../io_call.zig").IoCall;
 const executor = @import("executor.zig");
 const os_thread = @import("os_thread.zig");
+const nanoseconds = @import("../nanoseconds.zig");
 const Watchdog = @import("Watchdog.zig");
 const options_mod = @import("options.zig");
 const Options = options_mod.Options;
@@ -168,7 +169,35 @@ pub const Job = union(enum) {
     program: *Process,
 };
 
+/// Where a task is in its life.
 pub const State = enum { idle, ready, running, parked, deferred, done, abandoned };
+/// What moves a task along its life.
+const Turn = enum { ready, hold, park, run, finish, release, abandon };
+const Life = aegis.state.Machine(State, Turn, .{
+    .initial = .idle,
+    .terminal = &.{.abandoned},
+    .edges = &.{
+        // Spawned: runnable, held for its group's await, or parked until its time.
+        .{ .from = .idle, .on = .ready, .to = .ready },
+        .{ .from = .idle, .on = .hold, .to = .deferred },
+        .{ .from = .idle, .on = .park, .to = .parked },
+        // Woken, started by its group's await or by a cancel, or yielding.
+        .{ .from = .parked, .on = .ready, .to = .ready },
+        .{ .from = .deferred, .on = .ready, .to = .ready },
+        .{ .from = .running, .on = .ready, .to = .ready },
+        .{ .from = .ready, .on = .run, .to = .running },
+        .{ .from = .running, .on = .park, .to = .parked },
+        // A future ends and waits for its await; a task ended is put back.
+        .{ .from = .running, .on = .finish, .to = .done },
+        .{ .from = .running, .on = .release, .to = .idle },
+        .{ .from = .done, .on = .release, .to = .idle },
+        // Abandoned, retired or dropped, it never runs again.
+        .{ .from = .running, .on = .abandon, .to = .abandoned },
+        .{ .from = .ready, .on = .abandon, .to = .abandoned },
+        .{ .from = .parked, .on = .abandon, .to = .abandoned },
+        .{ .from = .deferred, .on = .abandon, .to = .abandoned },
+    },
+});
 
 pub const Cancel = enum { none, requested, delivered };
 
@@ -195,7 +224,7 @@ pub const Task = struct {
     process: ?*Process = null,
     /// The namespace of the call the task is making.
     io_context: ?*Context = null,
-    state: State = .idle,
+    state: Life.Runtime(void) = .init({}),
     ctx: executor.Context,
     job: Job = undefined,
     /// The job's context bytes and result, at their alignments.
@@ -231,6 +260,12 @@ pub const Task = struct {
     /// Every field from `fresh` but the context and the frame, which outlive a
     /// job: a reused task's thread waits on its context's turn while the next
     /// job is laid out, so the context is never written here.
+    /// Moves the task along its life; every caller reaches it from a
+    /// state the event leaves.
+    fn step(t: *Task, event: Turn) void {
+        _ = t.state.step(event) catch aegis.assert.never("a task moves along its life's edges");
+    }
+
     fn reset(t: *Task, fresh: Task) void {
         inline for (@typeInfo(Task).@"struct".field_names) |name| {
             if (comptime std.mem.eql(u8, name, "ctx") or std.mem.eql(u8, name, "frame")) continue;
@@ -266,7 +301,7 @@ pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
         .fibers => if (executor.available(.fibers)) .fibers else return error.ExecutorUnavailable,
         .threads => if (executor.available(.threads)) .threads else return error.ExecutorUnavailable,
     };
-    const monotonic = nanoseconds(options.clock.monotonic.nanoseconds);
+    const monotonic = nanoseconds.reading(Core, options.clock.monotonic).raw();
     var processes: Processes = try .init(gpa, options.programs);
     errdefer processes.deinit();
     var c: Core = .{
@@ -278,7 +313,7 @@ pub fn init(gpa: Allocator, options: Options, source: *Source) InitError!Core {
         .source = source,
         .kind = kind,
         .trace = .init(gpa, options.trace),
-        .clocks = .{ monotonic, monotonic, nanoseconds(options.clock.real.nanoseconds) },
+        .clocks = .{ monotonic, monotonic, nanoseconds.reading(Core, options.clock.real).raw() },
         .start = monotonic,
         .driver = .{ .kind = kind },
     };
@@ -355,7 +390,7 @@ pub fn processOf(c: *const Core) ?*Process {
 
 /// The working directory a context's calls mean by `Dir.cwd()`; null for
 /// its node's root.
-pub fn cwdOf(ctx: *const Context) ?Io.Dir {
+pub fn cwdOf(ctx: *const Context) ?Io.Dir { // aegis: design: a borrow of the working directory the context's process holds and closes
     if (ctx.process) |p| return p.cwd;
     return ctx.cwd;
 }
@@ -374,7 +409,7 @@ pub fn endProcess(c: *Core, p: *Process, term: Processes.Term) void {
         c.wakeLocks(d.model);
     }
     c.network.closeOwned(p.pid);
-    for (c.tasks.items) |t| if (t.state == .parked and t.wait == .process and t.wait.process == p.pid) c.wake(t, .woken);
+    for (c.tasks.items) |t| if (t.state.current() == .parked and t.wait == .process and t.wait.process == p.pid) c.wake(t, .woken);
     c.wakeIo();
 }
 
@@ -507,9 +542,9 @@ pub fn spawn(
     }
     switch (start) {
         .ready => c.makeReady(t),
-        .deferred => t.state = .deferred,
+        .deferred => t.step(.hold),
         .parked => {
-            t.state = .parked;
+            t.step(.park);
             t.wait = .start;
         },
     }
@@ -552,8 +587,7 @@ fn layOut(c: *Core, t: *Task, context_len: usize, context_alignment: std.mem.Ali
 pub fn release(c: *Core, t: *Task) void {
     // A second release would queue the task twice, and two jobs would then
     // share its frame and stack.
-    aegis.assert.pre(t.state == .running or t.state == .done, "a task is released once, after it ended");
-    t.state = .idle;
+    t.step(.release);
     c.idle.appendAssumeCapacity(t);
 }
 
@@ -596,7 +630,7 @@ fn finish(c: *Core, t: *Task) void {
     }
     switch (t.job) {
         .future => {
-            t.state = .done;
+            t.step(.finish);
             if (t.awaiter) |a| c.wake(a, .woken);
         },
         .member => {
@@ -638,7 +672,7 @@ pub fn groupAwaiter(g: *Io.Group) ?*Task {
 // Scheduling.
 
 pub fn makeReady(c: *Core, t: *Task) void {
-    t.state = .ready;
+    t.step(.ready);
     c.ready_seq += 1;
     t.seq = c.ready_seq;
     switch (c.options.schedule) {
@@ -745,7 +779,7 @@ fn outranked(c: *const Core, t: *const Task) bool {
 pub fn dispatch(c: *Core, from: *executor.Context) void {
     const to: *executor.Context = if (c.next()) |n| to: {
         c.current = n;
-        n.state = .running;
+        n.step(.run);
         // Fibers all run on the driver's thread, named once in `drive`.
         if (c.kind == .threads) c.runner.store(n.ctx.thread.os, .monotonic);
         c.running.store(n.id, .monotonic);
@@ -788,7 +822,7 @@ fn next(c: *Core) ?*Task {
                 c.moveTo(c.until);
                 return null;
             }
-            if (at -| c.start > nanoseconds(c.options.max_time.nanoseconds)) {
+            if (nanoseconds.Span.fromRaw(at -| c.start).compare(nanoseconds.span(c.options.max_time)) == .gt) {
                 c.outcome = .time_limit;
                 return null;
             }
@@ -813,7 +847,7 @@ pub fn block(c: *Core, t: *Task, wait: Wait, cancelable: bool) Wake {
     t.wait = wait;
     t.cancelable = cancelable and t.protection == .unblocked;
     t.wake = .none;
-    t.state = .parked;
+    t.step(.park);
     // The choices drawn while others ran were theirs: this call keeps its own.
     const mine = c.decision;
     c.dispatch(&t.ctx);
@@ -831,7 +865,7 @@ pub fn block(c: *Core, t: *Task, wait: Wait, cancelable: bool) Wake {
 }
 
 pub fn wake(c: *Core, t: *Task, reason: Wake) void {
-    if (t.state != .parked or t.wake != .none or t.wait == .start) return;
+    if (t.state.current() != .parked or t.wake != .none or t.wait == .start) return;
     t.wake = reason;
     c.makeReady(t);
 }
@@ -847,7 +881,7 @@ pub fn yield(c: *Core, t: *Task) void {
 /// Ends the run as `outcome` from inside `t`, which never runs again.
 pub fn abandon(c: *Core, t: *Task, outcome: Outcome) noreturn {
     c.outcome = outcome;
-    t.state = .abandoned;
+    t.step(.abandon);
     c.live -= 1;
     c.current = null;
     c.running.store(ids.outside, .monotonic);
@@ -860,7 +894,7 @@ pub fn abandon(c: *Core, t: *Task, outcome: Outcome) noreturn {
 /// had ended and was not yet awaited is put back for reuse.
 pub fn drop(c: *Core, t: *Task) void {
     aegis.assert.pre(t != c.current, "a task drops others, never itself");
-    switch (t.state) {
+    switch (t.state.current()) {
         .idle, .abandoned => return,
         .done => return c.release(t),
         .running => unreachable, // unreachable: only the current task runs
@@ -871,7 +905,7 @@ pub fn drop(c: *Core, t: *Task) void {
         },
         .deferred => {},
     }
-    t.state = .abandoned;
+    t.step(.abandon);
     c.live -= 1;
 }
 
@@ -880,7 +914,7 @@ pub fn drop(c: *Core, t: *Task) void {
 pub fn retire(c: *Core, t: *Task) noreturn {
     aegis.assert.pre(t == c.current, "a task retires itself");
     if (t.timer_armed) c.disarm(t);
-    t.state = .abandoned;
+    t.step(.abandon);
     c.live -= 1;
     c.dispatch(&t.ctx);
     @panic("shakedown: a retired task was resumed");
@@ -922,13 +956,13 @@ pub fn wakeLocks(c: *Core, model: *Disk) void {
 /// Delivers a cancel to `t`'s next cancelation point, or now if it waits
 /// at one.
 pub fn requestCancel(c: *Core, t: *Task) void {
-    switch (t.state) {
+    switch (t.state.current()) {
         .idle, .done, .abandoned => return,
         .ready, .running, .parked, .deferred => {},
     }
     if (t.cancel == .none) t.cancel = .requested;
-    if (t.state == .deferred) c.makeReady(t);
-    if (t.state == .parked and t.cancelable and t.cancel == .requested) c.wake(t, .canceled);
+    if (t.state.current() == .deferred) c.makeReady(t);
+    if (t.state.current() == .parked and t.cancelable and t.cancel == .requested) c.wake(t, .canceled);
 }
 
 /// At a cancelation point: whether a cancel lands here, delivering it.
@@ -965,7 +999,7 @@ fn gatherReports(c: *Core) []const TaskReport {
     c.reports.clearRetainingCapacity();
     c.reports.ensureTotalCapacity(c.gpa, c.live) catch return &.{};
     for (c.tasks.items) |t| {
-        switch (t.state) {
+        switch (t.state.current()) {
             .parked => if (t.wait == .start) {
                 c.reports.appendAssumeCapacity(.{ .id = t.id, .node = t.node, .spawned_at = t.spawned_at, .waiting = .unstarted });
             } else {
@@ -1015,12 +1049,12 @@ pub const Deadline = union(enum) { never, due, at: struct { clock: Kept, ns: i64
 pub fn deadline(c: *const Core, timeout: Io.Timeout) Deadline {
     const which, const raw, const relative = switch (timeout) {
         .none => return .never,
-        .duration => |d| .{ d.clock, nanoseconds(d.raw.nanoseconds), true },
-        .deadline => |d| .{ d.clock, nanoseconds(d.raw.nanoseconds), false },
+        .duration => |d| .{ d.clock, nanoseconds.span(d.raw).raw(), true },
+        .deadline => |d| .{ d.clock, nanoseconds.reading(Core, d.raw).raw(), false },
     };
     const kept = keptOf(which) orelse {
         // The CPU clocks are frozen: a deadline not already reached never is.
-        const frozen = nanoseconds(c.options.clock.monotonic.nanoseconds);
+        const frozen = nanoseconds.reading(Core, c.options.clock.monotonic).raw();
         return if ((if (relative) frozen +| raw else raw) <= frozen) .due else .never;
     };
     const current = c.clocks[@backingInt(kept)];
@@ -1066,7 +1100,7 @@ fn advance(c: *Core, by: i64) void {
     while (c.earliest()) |e| {
         if (e.remaining > 0) break;
         c.disarm(e.t);
-        if (e.t.state != .parked) continue;
+        if (e.t.state.current() != .parked) continue;
         if (e.t.wait == .start) {
             // A task of `Sim.at`, due: it starts now.
             e.t.wait = .none;
@@ -1096,10 +1130,6 @@ fn clockOf(kept: Kept) Io.Clock {
         .boot => .boot,
         .real => .real,
     };
-}
-
-pub fn nanoseconds(n: i96) i64 {
-    return std.math.lossyCast(i64, n);
 }
 
 // Futexes.

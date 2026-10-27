@@ -19,6 +19,7 @@ test {
     _ = @import("shakedown.zig");
     _ = @import("layer.zig");
     _ = @import("Clock.zig");
+    _ = @import("nanoseconds.zig");
     _ = @import("alloc/Counting.zig");
     _ = @import("alloc/Quarantine.zig");
     _ = @import("alloc/NoResize.zig");

@@ -1,5 +1,6 @@
 //! Compare two JSONL runs; flags describe observed noise, never exit status.
 const std = @import("std");
+const aegis = @import("aegis");
 const bench = @import("measuring");
 const Io = std.Io;
 
@@ -15,9 +16,9 @@ pub fn main(init: std.process.Init) !void {
         try report(init.gpa, &stdout.interface, a, b);
     } else {
         if (args.len != 3) return error.ExpectedTwoRuns;
-        const before = try Io.Dir.cwd().readFileAlloc(init.io, args[1], init.gpa, .limited(64 * 1024 * 1024));
+        const before = try aegis.own.readFile(init.io, .cwd(), args[1], init.gpa, run_limit);
         defer init.gpa.free(before);
-        const after = try Io.Dir.cwd().readFileAlloc(init.io, args[2], init.gpa, .limited(64 * 1024 * 1024));
+        const after = try aegis.own.readFile(init.io, .cwd(), args[2], init.gpa, run_limit);
         defer init.gpa.free(after);
         var a = try bench.parse(init.gpa, before);
         defer a.deinit();
@@ -27,6 +28,9 @@ pub fn main(init: std.process.Init) !void {
     }
     try stdout.interface.flush();
 }
+
+/// The largest run read: a JSONL file of results, far below this.
+const run_limit: aegis.units.Bytes(u64) = .fromRaw(64 * 1024 * 1024);
 
 fn report(gpa: std.mem.Allocator, writer: *Io.Writer, before: bench.Run, after: bench.Run) !void {
     for (before.rows.items) |a| {

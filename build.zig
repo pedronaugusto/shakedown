@@ -32,7 +32,7 @@ pub fn build(b: *std.Build) void {
         .name = "shakedown-bench-compare",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/bench/compare.zig"),
-            .imports = &.{.{ .name = "measuring", .module = b.createModule(.{ .root_source_file = b.path("src/bench.zig"), .target = target, .optimize = optimize }) }},
+            .imports = &.{ .{ .name = "aegis", .module = aegis.module("aegis") }, .{ .name = "measuring", .module = b.createModule(.{ .root_source_file = b.path("src/bench.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "aegis", .module = aegis.module("aegis") }} }) } },
             .target = target,
             .optimize = optimize,
         }),
@@ -279,11 +279,11 @@ fn benchImports(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.l
     const options = provenance.add("options.zig", "const std = @import(\"std\");\n" ++
         "pub const commit = std.mem.trim(u8, @embedFile(\"revision.txt\"), \"\\r\\n\") ++ (if (@embedFile(\"status.txt\").len != 0) \"-dirty\" else \"\");\n");
     const provenance_module = b.createModule(.{ .root_source_file = options, .target = target, .optimize = optimize });
-    const compare_driver = b.createModule(.{ .root_source_file = p.path("src/bench/compare.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "measuring", .module = b.createModule(.{ .root_source_file = p.path("src/bench.zig"), .target = target, .optimize = optimize }) }} });
+    const compare_driver = b.createModule(.{ .root_source_file = p.path("src/bench/compare.zig"), .target = target, .optimize = optimize, .imports = &.{ .{ .name = "aegis", .module = aegis }, .{ .name = "measuring", .module = b.createModule(.{ .root_source_file = p.path("src/bench.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "aegis", .module = aegis }} }) } } });
     return b.allocator.dupe(std.Build.Module.Import, &.{
         .{ .name = "bench_options", .module = provenance_module },
         .{ .name = "network_model", .module = b.createModule(.{ .root_source_file = p.path("src/sim/net/Model.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "aegis", .module = aegis }} }) },
-        .{ .name = "measuring", .module = b.createModule(.{ .root_source_file = p.path("src/bench.zig"), .target = target, .optimize = optimize }) },
+        .{ .name = "measuring", .module = b.createModule(.{ .root_source_file = p.path("src/bench.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "aegis", .module = aegis }} }) },
         .{ .name = "bench_compare", .module = compare_driver },
     }) catch @panic("OOM");
 }

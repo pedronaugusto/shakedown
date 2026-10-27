@@ -227,11 +227,11 @@ const slots = struct {
         if (fs.root.nodes.items[id].kind != .directory) return error.NotDir;
         return if (created) .created else .existed;
     }
-    pub fn dirCreateDirPathOpen(c: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, permissions: Io.Dir.Permissions, options: Io.Dir.OpenOptions) !Io.Dir {
+    pub fn dirCreateDirPathOpen(c: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, permissions: Io.Dir.Permissions, options: Io.Dir.OpenOptions) !Io.Dir { // aegis: boundary: std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
         _ = try dirCreateDirPath(c, fs, dir, path, permissions);
         return dirOpenDir(c, fs, dir, path, options);
     }
-    pub fn dirOpenDir(_: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, options: Io.Dir.OpenOptions) !Io.Dir {
+    pub fn dirOpenDir(_: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, options: Io.Dir.OpenOptions) !Io.Dir { // aegis: boundary: std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
         const id = try fs.resolve(try fs.directory(dir), path, options.follow_symlinks);
         if (fs.root.nodes.items[id].kind != .directory) return error.NotDir;
         return .{ .handle = (try fs.openHandle(id, true, false, false, options.iterate)).handle };
@@ -246,7 +246,7 @@ const slots = struct {
         const id = try fs.resolve(try fs.directory(dir), path, options.follow_symlinks);
         if (options.write and !canWrite(fs.root.nodes.items[id].meta.permissions)) return error.AccessDenied;
     }
-    pub fn dirCreateFile(c: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, options: Io.Dir.CreateFileOptions) !Io.File {
+    pub fn dirCreateFile(c: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, options: Io.Dir.CreateFileOptions) !Io.File { // aegis: boundary: std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
         const base = try fs.directory(dir);
         // A new file's permissions are for the opens after this one, as
         // POSIX `open` with `O_CREAT` and Windows' `CreateFile` apply them:
@@ -286,7 +286,7 @@ const slots = struct {
         }
         return error.PathAlreadyExists;
     }
-    pub fn dirOpenFile(c: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, options: Io.Dir.OpenFileOptions) !Io.File {
+    pub fn dirOpenFile(c: *Core, fs: *Fs, dir: Io.Dir, path: []const u8, options: Io.Dir.OpenFileOptions) !Io.File { // aegis: boundary: std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
         const id = try fs.resolve(try fs.directory(dir), path, options.follow_symlinks);
         const n = fs.root.nodes.items[id];
         if (n.kind == .sym_link and !options.follow_symlinks and !options.path_only) return error.SymLinkLoop;
