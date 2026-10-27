@@ -14,13 +14,13 @@
     },
     .dependencies = .{
         .aegis = .{
-            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.1.17#58751d5713c134b890d0fe0e65be95c289b84983",
-            .hash = "aegis-0.1.17-rsxouvg5CABaJmNEkRXQIkVJ6JqVOG7NN60ctSBvSzO_",
+            .url = "git+https://github.com/pedronaugusto/aegis?ref=v0.2.0#f58cea578f23a38aaf94dc0d855b97e7164a6d58",
+            .hash = "aegis-0.2.0-rsxouhW3CACsiNW-C1ujVL8HNVQ6iol6C-QfRkkoZ1vo",
         },
 
         .shuttle = .{
-            .url = "git+https://github.com/pedronaugusto/shuttle?ref=v0.3.3#af58ca6d8d0ec70722c3f3cfc4b1efbc41633cb2",
-            .hash = "shuttle-0.3.3-0xOo5tBBAwCB8Kx5t8hClUKU3ALoLIpURjOGPZgTinA5",
+            .url = "git+https://github.com/pedronaugusto/shuttle?ref=aegis-0.2#afd43015df4c99404ca8fd57b3b498a2492ebf62",
+            .hash = "shuttle-0.3.3-0xOo5s5BAwBIM3gjKv2j43uO4tEh1ptxl-i7r0vWfa-d",
         },
     },
     .dev_dependencies = .{
