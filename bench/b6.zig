@@ -28,7 +28,7 @@ pub const Model = struct {
         return if (output == next) next else null;
     }
 };
-const Driver = struct {
+pub const Driver = struct {
     pub const Error = error{};
     state: u32 = 0,
     pub fn run(self: *Driver, _: std.Io, command: Model.Command) Driver.Error!Model.Response {

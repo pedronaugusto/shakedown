@@ -296,7 +296,7 @@ fn batchFaultIo(ctx: *Context, ops: u64) !void {
 
 /// Sixteen allocations, each with a draw from `io.random`: one clean run
 /// and sixteen faulted ones a sweep.
-const Sweep = struct {
+pub const Sweep = struct {
     gpa: std.mem.Allocator = undefined,
     sink: u64 = 0,
 

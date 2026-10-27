@@ -2,7 +2,7 @@ const std = @import("std");
 const leak = @import("leak.zig");
 
 /// Compares slot inputs with a secret of 256 bytes, early-exit or whole.
-const Compare = struct {
+pub const Compare = struct {
     secret: [256]u8 = @splat(0x5a),
     inputs: [1 << 10][256]u8 = undefined,
     whole: bool,

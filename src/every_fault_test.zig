@@ -9,7 +9,7 @@ const shakedown = @import("shakedown.zig");
 const FaultIo = shakedown.FaultIo;
 
 /// Saves "new" over "old" in `dir/save`, one of four ways.
-const Save = struct {
+pub const Save = struct {
     dir: Io.Dir,
     how: How,
     counting: shakedown.alloc.Counting = undefined,
@@ -182,7 +182,7 @@ test "a run whose calls depend on state outside its Io is refused as nondetermin
 const Raw = enum { barrier };
 
 /// A seam that makes one raw call between two `Io` calls.
-const Seam = struct {
+pub const Seam = struct {
     fio: *FaultIo = undefined,
     raw_failures: u32 = 0,
 
@@ -235,7 +235,7 @@ test "a clean run longer than max_steps is refused" {
 
 /// Records the order of its hooks, and frees in `tearDown` what `check`
 /// reads.
-const Ordered = struct {
+pub const Ordered = struct {
     log: [256]u8 = undefined,
     len: usize = 0,
     /// Owned between `setUp` and `tearDown`.
@@ -294,7 +294,7 @@ test "check judges a run before its tearDown, on passing and failing runs" {
 /// Writes a file with cancel protection blocked, as code does that must
 /// not be interrupted halfway, then sleeps where a cancel may land: on a
 /// task of its own, since a task is what has a protection to block.
-const Protected = struct {
+pub const Protected = struct {
     dir: Io.Dir,
     /// Runs whose fault landed, and runs given none.
     faulted: u32 = 0,

@@ -871,7 +871,7 @@ pub const Snapshot = struct {
         return w.h.final();
     }
 
-    const Digest = struct {
+    pub const Digest = struct {
         a: std.hash.Wyhash = .init(0x5348_414b_4544_4f57),
         b: std.hash.Wyhash = .init(0x4352_4153_4853_5441),
         pub fn update(d: *Digest, bytes: []const u8) void {

@@ -28,7 +28,7 @@ const Stack = struct {
         return response == after;
     }
 };
-const StackDriver = struct {
+pub const StackDriver = struct {
     pub const Error = error{DriverFailed};
     state: u8 = 0,
     calls: u32 = 0,
@@ -371,7 +371,7 @@ const Bytes = struct {
         return command.len == response;
     }
 };
-const BytesDriver = struct {
+pub const BytesDriver = struct {
     pub const Error = error{};
     pub fn run(_: *BytesDriver, _: std.Io, command: Bytes.Command) Error!usize {
         return command.len;
@@ -396,7 +396,7 @@ test "B6 Machine generated arguments use explicit arena and finite allocation er
     try t.checkAllAllocationFailures(t.allocator, generatedAllocationWork, .{});
 }
 
-const ExhaustingDriver = struct {
+pub const ExhaustingDriver = struct {
     pub const Error = error{};
     source: *sd.Source,
     pub fn run(self: *ExhaustingDriver, _: std.Io, _: Stack.Command) Error!u8 {

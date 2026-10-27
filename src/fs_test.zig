@@ -262,7 +262,7 @@ test "Fs storage faults, capacity, timestamp rounding and name dialects" {
 }
 
 const shakedown = @import("shakedown.zig");
-const CrashContext = struct {
+pub const CrashContext = struct {
     fs: *Sim.Fs = undefined,
     recovered: u64 = 0,
     pub fn setUp(ctx: *CrashContext, sim: *Sim) !void {
@@ -596,7 +596,7 @@ test "Fs writeout and a later full directory flush persist implicit file timesta
     try t.expectEqual(expected, fs.model.stat(id).mtime.nanoseconds);
 }
 
-const NondeterministicCrash = struct {
+pub const NondeterministicCrash = struct {
     calls: u8 = 0,
     pub fn setUp(ctx: *NondeterministicCrash, sim: *Sim) !void {
         ctx.calls +%= 1;
@@ -614,7 +614,7 @@ test "Fs everyCrash rejects a nondeterministic path even when both opens succeed
     try t.expectError(error.Nondeterministic, shakedown.everyCrash(t.allocator, &ctx, .{ .sim = .{ .watchdog = null } }));
 }
 
-const FailedRecovery = struct {
+pub const FailedRecovery = struct {
     pub fn setUp(_: *FailedRecovery, sim: *Sim) !void {
         try sim.fs().write("dest", "old");
     }
