@@ -9,6 +9,7 @@
 //! randomness. An implementation without some calls skips the checks that
 //! need them.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const files = @import("conformance/files.zig");
@@ -116,7 +117,7 @@ fn futexTimeout(_: Allocator, io: Io) !void {
 // Locks.
 
 const Counter = struct {
-    mutex: Io.Mutex = .init,
+    mutex: Io.Mutex = .init, // aegis: boundary: std's mutex is the subject of the check
     count: u32 = 0,
 
     fn add(c: *Counter, io: Io, times: u32) Io.Cancelable!void {
@@ -140,8 +141,8 @@ fn mutexExcludes(_: Allocator, io: Io) !void {
 }
 
 const Box = struct {
-    mutex: Io.Mutex = .init,
-    cond: Io.Condition = .init,
+    mutex: Io.Mutex = .init, // aegis: boundary: std's mutex is the subject of the check
+    cond: Io.Condition = .init, // aegis: boundary: std's condition is the subject of the check
     items: u32 = 0,
     taken: u32 = 0,
     total: u32 = 20,
@@ -173,8 +174,8 @@ fn conditionHandsOff(_: Allocator, io: Io) !void {
 }
 
 fn conditionTimesOut(_: Allocator, io: Io) !void {
-    var mutex: Io.Mutex = .init;
-    var cond: Io.Condition = .init;
+    var mutex: Io.Mutex = .init; // aegis: boundary: std's mutex is the subject of the check
+    var cond: Io.Condition = .init; // aegis: boundary: std's condition is the subject of the check
     try mutex.lock(io);
     defer mutex.unlock(io);
     const result = cond.waitTimeout(io, &mutex, .{ .duration = .{ .raw = ms(2), .clock = .awake } });
@@ -182,16 +183,16 @@ fn conditionTimesOut(_: Allocator, io: Io) !void {
 }
 
 fn eventWakes(_: Allocator, io: Io) !void {
-    var ready: Io.Event = .unset;
+    var ready: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
     ready.set(io);
     try ready.wait(io);
-    var gate: Io.Event = .unset;
+    var gate: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
     var waiter = try io.concurrent(Io.Event.wait, .{ &gate, io });
     // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer _ = waiter.cancel(io) catch {};
     gate.set(io);
     try waiter.await(io);
-    var never: Io.Event = .unset;
+    var never: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
     if (never.waitTimeout(io, .{ .duration = .{ .raw = ms(2), .clock = .awake } }) != error.Timeout) return error.NoTimeout;
 }
 
@@ -216,7 +217,7 @@ fn postEach(io: Io, s: *Io.Semaphore, n: u32) void {
 }
 
 fn semaphoreCounts(_: Allocator, io: Io) !void {
-    var s: Io.Semaphore = .{};
+    var s: Io.Semaphore = .{}; // aegis: boundary: std's semaphore is the subject of the check
     var poster = try io.concurrent(postEach, .{ io, &s, 10 });
     defer poster.cancel(io);
     for (0..10) |_| try s.wait(io);
@@ -227,19 +228,23 @@ fn semaphoreCounts(_: Allocator, io: Io) !void {
 /// Readers hold the lock together, so what they count is atomic: on a
 /// threaded `Io` they run at once.
 const Shared = struct {
-    lock: Io.RwLock = .init,
-    readers: std.atomic.Value(u32) = .init(0),
-    writing: std.atomic.Value(bool) = .init(false),
-    broken: std.atomic.Value(bool) = .init(false),
+    lock: Io.RwLock = .init, // aegis: boundary: std's read-write lock is the subject of the check
+    readers: aegis.Atomic(Readers) = .init(.fromRaw(0)),
+    writing: aegis.Atomic(Writing) = .init(.idle),
+    broken: aegis.Atomic(Broken) = .init(.held),
+
+    const Readers = aegis.units.Count(Shared, u32);
+    const Writing = enum(u8) { idle, writing };
+    const Broken = enum(u8) { held, broken };
 
     fn read(s: *Shared, io: Io) Io.Cancelable!void {
         for (0..10) |_| {
             try s.lock.lockShared(io);
             defer s.lock.unlockShared(io);
-            _ = s.readers.fetchAdd(1, .acq_rel);
-            if (s.writing.load(.acquire)) s.broken.store(true, .release);
+            _ = s.readers.fetchAddWrapping(.fromRaw(1), .acq_rel);
+            if (s.writing.load(.acquire) == .writing) s.broken.store(.broken, .release);
             try io.sleep(.fromNanoseconds(1), .awake);
-            _ = s.readers.fetchSub(1, .acq_rel);
+            _ = s.readers.fetchSubWrapping(.fromRaw(1), .acq_rel);
         }
     }
 
@@ -247,10 +252,10 @@ const Shared = struct {
         for (0..10) |_| {
             try s.lock.lock(io);
             defer s.lock.unlock(io);
-            if (s.readers.load(.acquire) != 0 or s.writing.load(.acquire)) s.broken.store(true, .release);
-            s.writing.store(true, .release);
+            if (!s.readers.load(.acquire).eql(.fromRaw(0)) or s.writing.load(.acquire) == .writing) s.broken.store(.broken, .release);
+            s.writing.store(.writing, .release);
             try io.sleep(.fromNanoseconds(1), .awake);
-            s.writing.store(false, .release);
+            s.writing.store(.idle, .release);
         }
     }
 };
@@ -262,7 +267,7 @@ fn rwLockExcludes(_: Allocator, io: Io) !void {
     for (0..3) |_| try group.concurrent(io, Shared.read, .{ &s, io });
     for (0..2) |_| try group.concurrent(io, Shared.write, .{ &s, io });
     try group.await(io);
-    if (s.broken.load(.acquire)) return error.NotExcluded;
+    if (s.broken.load(.acquire) == .broken) return error.NotExcluded;
 }
 
 // Tasks.
@@ -278,8 +283,8 @@ fn asyncResult(_: Allocator, io: Io) !void {
 }
 
 const PingPong = struct {
-    ping: Io.Event = .unset,
-    pong: Io.Event = .unset,
+    ping: Io.Event = .unset, // aegis: boundary: std's event is the subject of the check
+    pong: Io.Event = .unset, // aegis: boundary: std's event is the subject of the check
 
     fn answer(p: *PingPong, io: Io) Io.Cancelable!void {
         try p.ping.wait(io);
@@ -312,15 +317,15 @@ fn finishAt(io: Io, gate: *Io.Event) Io.Cancelable!u32 {
 }
 
 fn cancelFinished(_: Allocator, io: Io) !void {
-    var done: Io.Event = .unset;
+    var done: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
     var task = try io.concurrent(finishAt, .{ io, &done });
     try done.wait(io);
     if (try task.cancel(io) != 5) return error.WrongResult;
 }
 
 const Protected = struct {
-    started: Io.Event = .unset,
-    release: Io.Event = .unset,
+    started: Io.Event = .unset, // aegis: boundary: std's event is the subject of the check
+    release: Io.Event = .unset, // aegis: boundary: std's event is the subject of the check
     waited: bool = false,
 
     fn run(p: *Protected, io: Io) Io.Cancelable!void {
@@ -362,7 +367,7 @@ fn twice(io: Io, started: *Io.Event) error{ Canceled, Missed }!void {
 }
 
 fn recancelAgain(_: Allocator, io: Io) !void {
-    var started: Io.Event = .unset;
+    var started: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
     var task = try io.concurrent(twice, .{ io, &started });
     try started.wait(io);
     if (task.cancel(io)) |_| return error.NotCanceled else |err| if (err != error.Canceled) return err;
@@ -383,19 +388,22 @@ fn groupAwaits(_: Allocator, io: Io) !void {
     for (flags) |f| if (!f) return error.MemberNotRun;
 }
 
-fn sleepCounted(io: Io, canceled: *std.atomic.Value(u32)) Io.Cancelable!void {
+/// Members a group cancel reached.
+const Canceled = aegis.units.Count(Io.Group, u32);
+
+fn sleepCounted(io: Io, canceled: *aegis.Atomic(Canceled)) Io.Cancelable!void {
     io.sleep(.fromSeconds(3600), .awake) catch |err| {
-        _ = canceled.fetchAdd(1, .acq_rel);
+        _ = canceled.fetchAddWrapping(.fromRaw(1), .acq_rel);
         return err;
     };
 }
 
 fn groupCancels(_: Allocator, io: Io) !void {
-    var canceled: std.atomic.Value(u32) = .init(0);
+    var canceled: aegis.Atomic(Canceled) = .init(.fromRaw(0));
     var group: Io.Group = .init;
     for (0..4) |_| try group.concurrent(io, sleepCounted, .{ io, &canceled });
     group.cancel(io);
-    if (canceled.load(.acquire) != 4) return error.MemberNotCanceled;
+    if (!canceled.load(.acquire).eql(.fromRaw(4))) return error.MemberNotCanceled;
 }
 
 const Raced = union(enum) { quick: Io.Cancelable!void, slow: Io.Cancelable!void };

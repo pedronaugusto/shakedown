@@ -20,6 +20,7 @@
 //! test's own): a waiter blocks on the base until a timer fires or its
 //! wait is woken. A `Clock` must not move once `io` has been called.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const assert = std.debug.assert;
 const Layer = @import("layer.zig").Layer;
@@ -80,13 +81,26 @@ const L = Layer(State, .{
 /// The clocks a `Clock` moves, as indices into its state.
 const Kept = enum(u2) { awake, boot, real };
 
+/// A reading of one of the kept clocks, which a `Kept` beside it names, in
+/// nanoseconds as the clock keeps them: past ±292 years they saturate.
+const Reading = aegis.units.Instant(Clock, .nanosecond, i64);
+/// How far the kept clocks move, or are from a deadline.
+const Span = aegis.units.Duration(.nanosecond, i64);
+/// A timestamp or duration as std keeps it, before the clock saturates it.
+const WideReading = aegis.units.Instant(Clock, .nanosecond, i96);
+const WideSpan = aegis.units.Duration(.nanosecond, i96);
+/// Timers armed.
+const Armed = aegis.units.Count(Timer, usize);
+
+const still: Span = .fromRaw(0);
+
 const Key = struct {
-    deadline: i64,
+    deadline: Reading,
     /// Arming order: equal deadlines fire in the order they were armed.
     seq: u64,
 
     fn order(a: Key, b: Key) std.math.Order {
-        return switch (std.math.order(a.deadline, b.deadline)) {
+        return switch (a.deadline.compare(b.deadline)) {
             .eq => std.math.order(a.seq, b.seq),
             else => |o| o,
         };
@@ -96,7 +110,7 @@ const Key = struct {
 const Timers = std.Treap(Key, Key.order);
 
 /// A timer lives on the stack of the call that armed it. Firing happens
-/// under the clock's mutex and the waiter takes that mutex before it
+/// under the clock's lock and the waiter takes that lock before it
 /// returns, so nothing touches a timer, or the futex word it names, after
 /// its waiter has gone.
 const Timer = struct {
@@ -104,7 +118,7 @@ const Timer = struct {
     node: Timers.Node = undefined,
     clock: Kept,
     /// Private: 0 while armed, 1 once fired. A sleep waits on it.
-    state: std.atomic.Value(u32) = .init(0),
+    state: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which the base's futexWait waits on as the `u32` itself
     /// A timed futex wait's word, woken when the timer fires.
     futex: ?*const u32 = null,
     /// Private: how many timers the clock had fired before this one.
@@ -113,27 +127,36 @@ const Timer = struct {
 
 const State = struct {
     options: Options,
-    /// Nanoseconds on each kept clock.
-    clocks: [3]std.atomic.Value(i64),
-    mutex: Io.Mutex = .init,
+    /// Each kept clock, moved under the lock and read without it.
+    clocks: [3]aegis.Atomic(Reading),
+    /// The armed timers, behind the lock that guards them.
+    locked: aegis.BlockingGuarded(Timing) = .init(.{}),
+    count: aegis.Atomic(Armed) = .init(.fromRaw(0)),
+    /// Bumped on every arming, so `awaitArmed` can wait on it.
+    arming: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which the base's futexWait waits on as the `u32` itself
+};
+
+/// What the clock's lock guards.
+const Timing = struct {
     timers: [3]Timers = .{ .{}, .{}, .{} },
     seq: u64 = 0,
     fired: u64 = 0,
-    count: std.atomic.Value(usize) = .init(0),
-    /// Bumped on every arming, so `awaitArmed` can wait on it.
-    arming: std.atomic.Value(u32) = .init(0),
 };
 
 pub fn init(base: Io, options: Options) Clock {
     switch (options.advance) {
         .manual => {},
-        .auto => |auto| assert(auto.late.nanoseconds >= 0),
+        .auto => |auto| assert(spanOf(auto.late).compare(still) != .lt),
     }
-    const monotonic = nanoseconds(options.monotonic.nanoseconds);
+    const monotonic = readingOf(options.monotonic);
     return .{ .layer = .init(base, .{
         .options = options,
-        .clocks = .{ .init(monotonic), .init(monotonic), .init(nanoseconds(options.real.nanoseconds)) },
+        .clocks = .{ .init(monotonic), .init(monotonic), .init(readingOf(options.real)) },
     }) };
+}
+
+fn acquire(l: *L) @TypeOf(l.state.locked).Guard {
+    return l.state.locked.acquireUncancelable(l.base);
 }
 
 /// The `Io` to hand the code under test. The clock must not move after this.
@@ -149,15 +172,15 @@ pub fn read(c: *const Clock, which: Io.Clock) Io.Timestamp {
 /// Move awake, boot and real forward by `by`, then fire every timer whose
 /// deadline is reached, in (deadline, arming order) order.
 pub fn advance(c: *Clock, by: Io.Duration) void {
-    assert(by.nanoseconds >= 0);
-    const d = nanoseconds(by.nanoseconds);
+    const d = spanOf(by);
+    assert(d.compare(still) != .lt);
     move(&c.layer, .{ d, d, d });
 }
 
 /// Move awake to `awake`, and boot and real by as much. Never backwards.
 pub fn advanceTo(c: *Clock, awake: Io.Timestamp) void {
-    const by = nanoseconds(awake.nanoseconds) -| c.layer.state.clocks[@backingInt(Kept.awake)].load(.acquire);
-    assert(by >= 0);
+    const by = c.layer.state.clocks[@backingInt(Kept.awake)].load(.acquire).saturatingDurationTo(readingOf(awake));
+    assert(by.compare(still) != .lt);
     move(&c.layer, .{ by, by, by });
 }
 
@@ -165,45 +188,45 @@ pub fn advanceTo(c: *Clock, awake: Io.Timestamp) void {
 /// how far the clocks moved, or null when no timer is armed.
 pub fn advanceToNext(c: *Clock) ?Io.Duration {
     const l = &c.layer;
-    l.state.mutex.lockUncancelable(l.base);
-    defer l.state.mutex.unlock(l.base);
-    const next = earliest(&l.state) orelse return null;
+    var held = acquire(l);
+    defer held.deinit(l.base);
+    const next = earliest(&l.state, held.value()) orelse return null;
     const by = next.remaining;
-    moveLocked(l, .{ by, by, by });
-    return .fromNanoseconds(by);
+    moveLocked(l, held.value(), .{ by, by, by });
+    return by.toIoDuration();
 }
 
 /// The machine sleeps for `d`: boot and real move, awake does not. Timers
 /// on boot or real time may fire.
 pub fn suspendFor(c: *Clock, d: Io.Duration) void {
-    assert(d.nanoseconds >= 0);
-    const by = nanoseconds(d.nanoseconds);
-    move(&c.layer, .{ 0, by, by });
+    const by = spanOf(d);
+    assert(by.compare(still) != .lt);
+    move(&c.layer, .{ still, by, by });
 }
 
 /// A wall-clock step, as NTP or an operator makes it, backwards too. Only
 /// `.real` changes; a forward step fires the real-time timers it reaches.
 pub fn stepReal(c: *Clock, to: Io.Timestamp) void {
     const l = &c.layer;
-    l.state.mutex.lockUncancelable(l.base);
-    defer l.state.mutex.unlock(l.base);
+    var held = acquire(l);
+    defer held.deinit(l.base);
     const from = l.state.clocks[@backingInt(Kept.real)].load(.acquire);
-    moveLocked(l, .{ 0, 0, nanoseconds(to.nanoseconds) -| from });
+    moveLocked(l, held.value(), .{ still, still, from.saturatingDurationTo(readingOf(to)) });
 }
 
 /// How many timers are armed: sleeps and timed waits not yet fired,
 /// returned or canceled.
 pub fn armed(c: *const Clock) usize {
-    return c.layer.state.count.load(.acquire);
+    return c.layer.state.count.load(.acquire).raw();
 }
 
 /// The armed deadline the clocks reach first, on its own clock.
 pub fn nextDeadline(c: *Clock) ?Io.Clock.Timestamp {
     const l = &c.layer;
-    l.state.mutex.lockUncancelable(l.base);
-    defer l.state.mutex.unlock(l.base);
-    const next = earliest(&l.state) orelse return null;
-    return .{ .raw = .fromNanoseconds(next.node.key.deadline), .clock = clockOf(next.clock) };
+    var held = acquire(l);
+    defer held.deinit(l.base);
+    const next = earliest(&l.state, held.value()) orelse return null;
+    return .{ .raw = next.node.key.deadline.toTimestamp(), .clock = clockOf(next.clock) };
 }
 
 /// Block, in real time on the base, until at least `n` timers are armed:
@@ -217,7 +240,7 @@ pub fn awaitArmed(c: *Clock, n: usize, timeout: Io.Timeout) AwaitArmedError!void
     const deadline = timeout.toDeadline(base);
     while (true) {
         const seen = s.arming.load(.acquire);
-        if (s.count.load(.acquire) >= n) return;
+        if (s.count.load(.acquire).compare(.fromRaw(n)) != .lt) return;
         switch (deadline) {
             .deadline => |at| if (at.compare(.lte, .now(base, at.clock))) return error.Timeout,
             .none, .duration => {},
@@ -271,7 +294,7 @@ fn futexWait(userdata: ?*anyopaque, ptr: *const u32, expected: u32, timeout: Io.
             // A wake that leaves the word at `expected` is taken for a
             // spurious one and waited through; returning would read as a
             // timeout to a caller such as `Event.waitTimeout`.
-            while (timer.state.load(.acquire) == 0 and @atomicLoad(u32, ptr, .acquire) == expected) {
+            while (timer.state.load(.acquire) == 0 and @atomicLoad(u32, ptr, .acquire) == expected) { // aegis: boundary: the futex word is std's, a `*const u32` the vtable hands in
                 try l.base.vtable.futexWait(l.base.userdata, ptr, expected, slice);
             }
         },
@@ -315,8 +338,9 @@ fn netConnectIp(
         .never => .none,
         .due => zero,
         .at => |at| left: {
-            const left = at.deadline -| l.state.clocks[@backingInt(at.clock)].load(.acquire);
-            break :left .{ .duration = .{ .raw = .fromNanoseconds(@max(left, 0)), .clock = .awake } };
+            const left = l.state.clocks[@backingInt(at.clock)].load(.acquire).saturatingDurationTo(at.deadline);
+            const ahead = if (left.compare(still) == .lt) still else left;
+            break :left .{ .duration = .{ .raw = ahead.toIoDuration(), .clock = .awake } };
         },
     };
     return l.base.vtable.netConnectIp(l.base.userdata, address, forwarded);
@@ -333,27 +357,34 @@ const When = union(enum) {
     never,
     /// The deadline is already reached.
     due,
-    at: struct { clock: Kept, deadline: i64 },
+    at: struct { clock: Kept, deadline: Reading },
+};
+
+/// Where a timeout ends: a span from the clock's reading, or a reading.
+const End = union(enum) {
+    after: Span,
+    at: Reading,
+
+    fn from(e: End, current: Reading) Reading {
+        return switch (e) {
+            .after => |span| current.saturatingAdd(span),
+            .at => |deadline| deadline,
+        };
+    }
 };
 
 fn when(l: *L, timeout: Io.Timeout) When {
-    const which, const raw = switch (timeout) {
+    const which, const end: End = switch (timeout) {
         .none => return .base,
-        .duration => |d| .{ d.clock, d.raw.nanoseconds },
-        .deadline => |d| .{ d.clock, d.raw.nanoseconds },
+        .duration => |d| .{ d.clock, .{ .after = spanOf(d.raw) } },
+        .deadline => |d| .{ d.clock, .{ .at = readingOf(d.raw) } },
     };
-    const relative = timeout == .duration;
     const kept = keptOf(which) orelse {
         if (l.state.options.cpu == .base) return .base;
-        const frozen = nanoseconds(l.state.options.monotonic.nanoseconds);
-        const deadline = if (relative) frozen +| nanoseconds(raw) else nanoseconds(raw);
-        return if (deadline <= frozen) .due else .never;
+        const frozen = readingOf(l.state.options.monotonic);
+        return if (end.from(frozen).compare(frozen) != .gt) .due else .never;
     };
-    const deadline = if (relative)
-        l.state.clocks[@backingInt(kept)].load(.acquire) +| nanoseconds(raw)
-    else
-        nanoseconds(raw);
-    return .{ .at = .{ .clock = kept, .deadline = deadline } };
+    return .{ .at = .{ .clock = kept, .deadline = end.from(l.state.clocks[@backingInt(kept)].load(.acquire)) } };
 }
 
 fn recheck(l: *L) Io.Timeout {
@@ -362,24 +393,25 @@ fn recheck(l: *L) Io.Timeout {
 
 /// Arms `timer` unless its deadline is already reached; returns whether it
 /// did. Under `.auto` the clocks then move until it fires.
-fn arm(l: *L, timer: *Timer, deadline: i64) bool {
+fn arm(l: *L, timer: *Timer, deadline: Reading) bool {
     const s = &l.state;
-    s.mutex.lockUncancelable(l.base);
-    defer s.mutex.unlock(l.base);
+    var held = acquire(l);
+    defer held.deinit(l.base);
+    const t = held.value();
     const kept = @backingInt(timer.clock);
     const current = s.clocks[kept].load(.acquire);
-    if (deadline <= current) return false;
-    s.seq += 1;
-    var entry = s.timers[kept].getEntryFor(.{ .deadline = deadline, .seq = s.seq });
+    if (deadline.compare(current) != .gt) return false;
+    t.seq += 1;
+    var entry = t.timers[kept].getEntryFor(.{ .deadline = deadline, .seq = t.seq });
     entry.set(&timer.node);
-    _ = s.count.fetchAdd(1, .release);
+    _ = s.count.fetchAddWrapping(.fromRaw(1), .release);
     _ = s.arming.fetchAdd(1, .release);
     l.base.futexWake(u32, &s.arming.raw, std.math.maxInt(u32));
     switch (s.options.advance) {
         .manual => {},
         .auto => |auto| {
-            const by = (deadline -| current) +| nanoseconds(auto.late.nanoseconds);
-            moveLocked(l, .{ by, by, by });
+            const by = current.saturatingDurationTo(deadline).saturatingAdd(spanOf(auto.late));
+            moveLocked(l, t, .{ by, by, by });
         },
     }
     return true;
@@ -388,41 +420,39 @@ fn arm(l: *L, timer: *Timer, deadline: i64) bool {
 /// Takes the timer out unless it fired. Either way, once this returns the
 /// clock is done with it.
 fn disarm(l: *L, timer: *Timer) void {
-    const s = &l.state;
-    s.mutex.lockUncancelable(l.base);
-    defer s.mutex.unlock(l.base);
+    var held = acquire(l);
+    defer held.deinit(l.base);
     if (timer.state.load(.acquire) != 0) return;
-    var entry = s.timers[@backingInt(timer.clock)].getEntryForExisting(&timer.node);
+    var entry = held.value().timers[@backingInt(timer.clock)].getEntryForExisting(&timer.node);
     entry.set(null);
-    _ = s.count.fetchSub(1, .release);
+    _ = l.state.count.fetchSubWrapping(.fromRaw(1), .release);
 }
 
-fn move(l: *L, by: [3]i64) void {
-    l.state.mutex.lockUncancelable(l.base);
-    defer l.state.mutex.unlock(l.base);
-    moveLocked(l, by);
+fn move(l: *L, by: [3]Span) void {
+    var held = acquire(l);
+    defer held.deinit(l.base);
+    moveLocked(l, held.value(), by);
 }
 
 /// Moves each kept clock by its amount, then fires what became due: the
 /// timer the clocks reached first goes first, equal ones in arming order.
-fn moveLocked(l: *L, by: [3]i64) void {
-    const s = &l.state;
-    var before: [3]i64 = undefined;
-    var after: [3]i64 = undefined;
-    for (&s.clocks, &before, &after, by) |*clock, *b, *a, d| {
+fn moveLocked(l: *L, t: *Timing, by: [3]Span) void {
+    var before: [3]Reading = undefined;
+    var after: [3]Reading = undefined;
+    for (&l.state.clocks, &before, &after, by) |*clock, *b, *a, d| {
         b.* = clock.load(.acquire);
-        a.* = b.* +| d;
+        a.* = b.saturatingAdd(d);
         clock.store(a.*, .release);
     }
     while (true) {
         var first: ?Pick = null;
-        for (&s.timers, 0..) |*timers, i| {
+        for (&t.timers, 0..) |*timers, i| {
             const node = timers.getMin() orelse continue;
-            if (node.key.deadline > after[i]) continue;
-            const pick: Pick = .{ .clock = @fromBackingInt(@intCast(i)), .node = node, .remaining = node.key.deadline -| before[i] };
+            if (node.key.deadline.compare(after[i]) == .gt) continue;
+            const pick: Pick = .{ .clock = @fromBackingInt(@intCast(i)), .node = node, .remaining = before[i].saturatingDurationTo(node.key.deadline) };
             if (first == null or pick.before(first.?)) first = pick;
         }
-        fire(l, first orelse return);
+        fire(l, t, first orelse return);
     }
 }
 
@@ -430,37 +460,39 @@ const Pick = struct {
     clock: Kept,
     node: *Timers.Node,
     /// How far the clocks had to move to reach it.
-    remaining: i64,
+    remaining: Span,
 
     fn before(a: Pick, b: Pick) bool {
-        if (a.remaining != b.remaining) return a.remaining < b.remaining;
-        return a.node.key.seq < b.node.key.seq;
+        return switch (a.remaining.compare(b.remaining)) {
+            .lt => true,
+            .gt => false,
+            .eq => a.node.key.seq < b.node.key.seq,
+        };
     }
 };
 
 /// The armed timer the clocks reach first.
-fn earliest(s: *State) ?Pick {
+fn earliest(s: *State, t: *Timing) ?Pick {
     var first: ?Pick = null;
-    for (&s.timers, 0..) |*timers, i| {
+    for (&t.timers, 0..) |*timers, i| {
         const node = timers.getMin() orelse continue;
         const pick: Pick = .{
             .clock = @fromBackingInt(@intCast(i)),
             .node = node,
-            .remaining = node.key.deadline -| s.clocks[i].load(.acquire),
+            .remaining = s.clocks[i].load(.acquire).saturatingDurationTo(node.key.deadline),
         };
         if (first == null or pick.before(first.?)) first = pick;
     }
     return first;
 }
 
-fn fire(l: *L, pick: Pick) void {
-    const s = &l.state;
+fn fire(l: *L, t: *Timing, pick: Pick) void {
     const timer: *Timer = @fieldParentPtr("node", pick.node);
-    var entry = s.timers[@backingInt(pick.clock)].getEntryForExisting(pick.node);
+    var entry = t.timers[@backingInt(pick.clock)].getEntryForExisting(pick.node);
     entry.set(null);
-    _ = s.count.fetchSub(1, .release);
-    timer.rank = s.fired;
-    s.fired += 1;
+    _ = l.state.count.fetchSubWrapping(.fromRaw(1), .release);
+    timer.rank = t.fired;
+    t.fired += 1;
     timer.state.store(1, .release);
     if (timer.futex) |word| {
         l.base.vtable.futexWake(l.base.userdata, word, std.math.maxInt(u32));
@@ -470,7 +502,7 @@ fn fire(l: *L, pick: Pick) void {
 }
 
 fn readState(l: *const L, which: Io.Clock) Io.Timestamp {
-    if (keptOf(which)) |kept| return .fromNanoseconds(l.state.clocks[@backingInt(kept)].load(.acquire));
+    if (keptOf(which)) |kept| return l.state.clocks[@backingInt(kept)].load(.acquire).toTimestamp();
     return switch (l.state.options.cpu) {
         .frozen => l.state.options.monotonic,
         .base => l.base.vtable.now(l.base.userdata, which),
@@ -494,9 +526,18 @@ fn clockOf(kept: Kept) Io.Clock {
     };
 }
 
-/// Nanoseconds as the clock keeps them: past ±292 years they saturate.
-fn nanoseconds(n: i96) i64 {
-    return std.math.lossyCast(i64, n);
+/// A timestamp as the clock keeps it: past ±292 years it saturates.
+fn readingOf(t: Io.Timestamp) Reading {
+    const wide = WideReading.fromTimestamp(t, .exact);
+    return wide.convert(.nanosecond, i64, .exact) catch
+        if (wide.compare(.fromRaw(0)) == .lt) .fromRaw(std.math.minInt(i64)) else .fromRaw(std.math.maxInt(i64));
+}
+
+/// A duration as the clock keeps it: past ±292 years it saturates.
+fn spanOf(d: Io.Duration) Span {
+    const wide = WideSpan.fromIoDuration(d, .exact);
+    return wide.convert(.nanosecond, i64, .exact) catch
+        if (wide.compare(.fromRaw(0)) == .lt) .fromRaw(std.math.minInt(i64)) else .fromRaw(std.math.maxInt(i64));
 }
 
 test "a fired timer is out of the set, and an expired one is never armed" {
@@ -505,7 +546,7 @@ test "a fired timer is out of the set, and an expired one is never armed" {
     var t: Timer = .{ .clock = .awake };
     const start = l.state.clocks[0].load(.acquire);
     try std.testing.expect(!arm(l, &t, start));
-    try std.testing.expect(arm(l, &t, start + 5));
+    try std.testing.expect(arm(l, &t, start.saturatingAdd(.fromRaw(5))));
     try std.testing.expectEqual(@as(usize, 1), clock.armed());
     clock.advance(.fromNanoseconds(4));
     try std.testing.expectEqual(@as(u32, 0), t.state.load(.acquire));
@@ -524,13 +565,13 @@ test "timers fire in the order the clocks reach them, ties in arming order" {
     var timers: [6]Timer = undefined;
     const awake = l.state.clocks[@backingInt(Kept.awake)].load(.acquire);
     const real = l.state.clocks[@backingInt(Kept.real)].load(.acquire);
-    const plan = [_]struct { clock: Kept, deadline: i64 }{
-        .{ .clock = .awake, .deadline = awake + 30 },
-        .{ .clock = .real, .deadline = real + 10 },
-        .{ .clock = .awake, .deadline = awake + 10 }, // ties with 1, armed after it
-        .{ .clock = .boot, .deadline = awake + 20 },
-        .{ .clock = .awake, .deadline = awake + 50 }, // not reached
-        .{ .clock = .real, .deadline = real + 30 }, // ties with 0, armed after it
+    const plan = [_]struct { clock: Kept, deadline: Reading }{
+        .{ .clock = .awake, .deadline = awake.saturatingAdd(.fromRaw(30)) },
+        .{ .clock = .real, .deadline = real.saturatingAdd(.fromRaw(10)) },
+        .{ .clock = .awake, .deadline = awake.saturatingAdd(.fromRaw(10)) }, // ties with 1, armed after it
+        .{ .clock = .boot, .deadline = awake.saturatingAdd(.fromRaw(20)) },
+        .{ .clock = .awake, .deadline = awake.saturatingAdd(.fromRaw(50)) }, // not reached
+        .{ .clock = .real, .deadline = real.saturatingAdd(.fromRaw(30)) }, // ties with 0, armed after it
     };
     for (&timers, plan) |*t, p| {
         t.* = .{ .clock = p.clock };

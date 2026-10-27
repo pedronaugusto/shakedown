@@ -29,15 +29,20 @@ const os_thread = @import("os_thread.zig");
 
 const Watchdog = @This();
 
-/// Private: the thread, once started.
-thread: ?std.Thread = null,
+/// Private: the thread, whether it is to stop and the simulations linked
+/// here, behind the lock that guards them and every `Watched` linked.
+locked: aegis.BlockingGuarded(Watching) = .init(.{}),
 /// Private: bumped to wake the thread, when a simulation comes or goes and
 /// when it is to stop.
-signal: std.atomic.Value(u32) = .init(0),
-/// Private: under the mutex, as is every `Watched` linked here.
-stopping: bool = false,
-mutex: Io.Mutex = .init,
-first: ?*Watched = null,
+signal: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which futexWait waits on as the `u32` itself
+
+/// What the lock guards.
+const Watching = struct {
+    /// The thread, once started.
+    thread: ?std.Thread = null,
+    stopping: bool = false,
+    first: ?*Watched = null,
+};
 
 /// The Io calls a simulation has made: the watchdog's sign of life.
 pub const Calls = aegis.units.Count(struct {}, u64);
@@ -79,13 +84,17 @@ pub fn init() Watchdog {
 
 /// Stops the thread. Every simulation it watched must be torn down first.
 pub fn deinit(w: *Watchdog) void {
-    std.debug.assert(w.first == null); // a simulation it watches outlives it
-    if (w.thread) |thread| {
-        w.mutex.lockUncancelable(real());
-        w.stopping = true;
-        w.mutex.unlock(real());
+    const thread = stop: {
+        var held = w.locked.acquireUncancelable(real());
+        defer held.deinit(real());
+        const s = held.value();
+        std.debug.assert(s.first == null); // a simulation it watches outlives it
+        s.stopping = true;
+        break :stop s.thread;
+    };
+    if (thread) |t| {
         w.wake();
-        thread.join();
+        t.join();
     }
     w.* = undefined;
 }
@@ -94,17 +103,25 @@ pub fn deinit(w: *Watchdog) void {
 /// false when no thread can be had: the run is then unwatched and
 /// otherwise the same. `watched` must not move until `remove`.
 pub fn add(w: *Watchdog, watched: *Watched) bool {
-    w.mutex.lockUncancelable(real());
-    defer w.mutex.unlock(real());
-    if (w.thread == null) {
-        w.thread = std.Thread.spawn(spawn, run, .{w}) catch return false;
+    var held = w.locked.acquireUncancelable(real());
+    defer held.deinit(real());
+    const s = held.value();
+    if (s.thread == null) {
+        s.thread = std.Thread.spawn(spawn, run, .{w}) catch return false;
     }
-    watched.next = w.first;
+    watched.next = s.first;
     watched.previous = null;
-    if (w.first) |first| first.previous = watched;
-    w.first = watched;
+    if (s.first) |first| first.previous = watched;
+    s.first = watched;
     w.wake();
     return true;
+}
+
+/// The thread, once started: for tests that check who watches.
+pub fn started(w: *Watchdog) ?std.Thread {
+    var held = w.locked.acquireUncancelable(real());
+    defer held.deinit(real());
+    return held.value().thread;
 }
 
 /// How the thread is started: with the stack std gives a thread, reserved and
@@ -116,9 +133,9 @@ pub const spawn: std.Thread.SpawnConfig = .{};
 
 /// Stops watching `watched`.
 pub fn remove(w: *Watchdog, watched: *Watched) void {
-    w.mutex.lockUncancelable(real());
-    defer w.mutex.unlock(real());
-    if (watched.previous) |p| p.next = watched.next else w.first = watched.next;
+    var held = w.locked.acquireUncancelable(real());
+    defer held.deinit(real());
+    if (watched.previous) |p| p.next = watched.next else held.value().first = watched.next;
     if (watched.next) |n| n.previous = watched.previous;
     watched.next = null;
     watched.previous = null;
@@ -149,12 +166,13 @@ const Next = struct { slice: ?i64 };
 
 /// Samples every simulation watched. Null once the watchdog is stopping.
 fn sample(w: *Watchdog) ?Next {
-    w.mutex.lockUncancelable(real());
-    defer w.mutex.unlock(real());
-    if (w.stopping) return null;
+    var held = w.locked.acquireUncancelable(real());
+    defer held.deinit(real());
+    const s = held.value();
+    if (s.stopping) return null;
     const now = std.math.lossyCast(i64, Io.Timestamp.now(real(), .awake).nanoseconds);
     var slice: ?i64 = null;
-    var it = w.first;
+    var it = s.first;
     while (it) |watched| : (it = watched.next) {
         look(watched, now);
         const own = @max(@divTrunc(watched.limit, 8), std.time.ns_per_ms);

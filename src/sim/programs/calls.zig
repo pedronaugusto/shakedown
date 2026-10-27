@@ -14,6 +14,7 @@
 //! streaming read or write waits until it can move a byte.
 const std = @import("std");
 const builtin = @import("builtin");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Core = @import("../Core.zig");
 const Processes = @import("Model.zig");
@@ -53,8 +54,8 @@ pub fn slot(comptime name: []const u8) @FieldType(Io.VTable, name) {
 /// changes nothing. POSIX's are 0, 1 and 2 already.
 pub fn distinctStandardHandles() void {
     if (builtin.target.os.tag != .windows) return;
-    while (standard_handles.swap(true, .acquire)) std.atomic.spinLoopHint();
-    defer standard_handles.store(false, .release);
+    var held = standard_handles.acquire();
+    defer held.deinit();
     const windows = std.os.windows;
     const params = windows.peb().ProcessParameters;
     const handles = [_]*windows.HANDLE{ &params.hStdInput, &params.hStdOutput, &params.hStdError };
@@ -73,8 +74,9 @@ pub fn distinctStandardHandles() void {
     }
 }
 
-/// Held while `distinctStandardHandles` looks and changes them.
-var standard_handles: std.atomic.Value(bool) = .init(false);
+/// Held while `distinctStandardHandles` looks and changes them: the
+/// handles are the process's, so the lock guards no value of its own.
+var standard_handles: aegis.Guarded(void) = .init({});
 pub const std_input_handle: u32 = @bitCast(@as(i32, -10));
 pub const std_output_handle: u32 = @bitCast(@as(i32, -11));
 pub const std_error_handle: u32 = @bitCast(@as(i32, -12));

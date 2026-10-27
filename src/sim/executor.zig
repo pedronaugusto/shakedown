@@ -52,7 +52,7 @@ pub const Context = struct {
 
 const Baton = struct {
     /// 1 when this context may run.
-    turn: std.atomic.Value(u32) = .init(0),
+    turn: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which futexWait waits on as the `u32` itself
     /// Set to make the thread exit when it next gets the baton.
     exit: bool = false,
     handle: ?Thread = null,
@@ -61,7 +61,7 @@ const Baton = struct {
     /// The thread the context runs on, as the watchdog reads it: the driver's
     /// own, or a task's, which names itself before `start` returns.
     os: os_thread.Thread = .none,
-    named: std.atomic.Value(u32) = .init(0),
+    named: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which futexWait waits on as the `u32` itself
 };
 
 /// A task's thread. On Windows a thread of our own: std's `Thread.join`

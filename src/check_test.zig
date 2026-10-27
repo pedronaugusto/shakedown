@@ -142,7 +142,7 @@ const SimCases = struct {
         const sim = try c.sim(.{});
         try testing.expectEqual(shakedown.Sim.Outcome.finished, sim.run(nothing, .{sim.io()}));
         // The run's watchdog watches it: it started no thread of its own.
-        try testing.expect(sim.own_watchdog.thread == null);
+        try testing.expect(sim.own_watchdog.started() == null);
         try testing.expect(sim.watched_by != null);
         self.cases += 1;
     }

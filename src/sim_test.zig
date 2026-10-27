@@ -391,14 +391,14 @@ test "simulations share one watchdog, which finds each stuck run" {
     for (0..2) |_| {
         const sim = try Sim.init(testing.allocator, .{ .watchdog = .fromMilliseconds(50), .watched_by = &watchdog });
         defer sim.deinit();
-        const thread = watchdog.thread;
+        const thread = watchdog.started();
         switch (sim.run(Spinner.spin, .{ sim.io(), sim })) {
             .stuck => {},
             else => return error.TestUnexpectedResult,
         }
         // One thread watched both; the simulation started none of its own.
-        if (thread) |t| try testing.expectEqual(t.getHandle(), watchdog.thread.?.getHandle());
-        try testing.expect(sim.own_watchdog.thread == null);
+        if (thread) |t| try testing.expectEqual(t.getHandle(), watchdog.started().?.getHandle());
+        try testing.expect(sim.own_watchdog.started() == null);
     }
 }
 
