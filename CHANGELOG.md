@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- `Sim.Watchdog.Watched` reads aegis cells: `running` an `aegis.Atomic(TaskId)`, `calls` an `aegis.Atomic(Sim.Watchdog.Calls)`, `stuck` an `aegis.Atomic(Sim.Watchdog.Stuck)` (`running` or `stuck`, no longer a bool), `runner` an `aegis.Atomic` of the thread. `Sim.Watchdog`'s thread is `started()`, no longer a field.
+- `FaultIo`'s fields are its own: the plan, trace, path table, seed, cancels held and batch states sit behind its lock, and its counts are aegis cells. Read them through `trace()`, `fired()`, `count()` and `steps()`, as before; `fired` takes a `*FaultIo`.
+- The allocators' and `Steps`' counters are aegis `Atomic` cells (`Erased.unerased_count` and `unseen_count`, `Unwiped.count` and `unseen_count`, `LockProbe`'s, `Steps`'); read them through their functions.
+
+### Changed
+
+- Pins aegis 0.2.1.
+- Every lock holds what it guards (aegis `BlockingGuarded`: `FaultIo`'s, `Clock`'s, the watchdog's), and time from std enters as aegis's checked nanoseconds, saturating past ±292 years as before, in one conversion that `Clock` and the simulation share.
+- A simulated task's life is an aegis `state.Machine`: a move it does not allow stops the run instead of leaving the scheduler in a state no edge reaches.
+- The conformance files check reads its file back with `aegis.own.readFile`, which states the file's length before it reads, so a simulation's trace of the conformance workload changes.
+
 ## [0.4.18] - 2026-10-25
 
 ### Added
