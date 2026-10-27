@@ -40,7 +40,7 @@ pub const Statistics = struct { best: f64, median: f64, p99: f64, radius: f64 };
 pub const StatisticsError = error{ OutOfMemory, InvalidSamples };
 pub fn statistics(gpa: std.mem.Allocator, samples: []const f64) StatisticsError!Statistics {
     if (samples.len == 0) return error.InvalidSamples;
-    for (samples) |s| if (!std.math.isFinite(s) or s <= 0 or !std.math.isFinite(1e9 / s)) return error.InvalidSamples; // aegis: no-danger: a float division, by a sample the test before it found positive; a zero would give an infinity, never a stop
+    for (samples) |s| if (!std.math.isFinite(s) or s <= 0 or !std.math.isFinite(1e9 / s)) return error.InvalidSamples;
     const sorted = try gpa.dupe(f64, samples);
     defer gpa.free(sorted);
     std.mem.sort(f64, sorted, {}, std.sort.asc(f64));
