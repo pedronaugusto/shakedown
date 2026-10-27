@@ -19,6 +19,9 @@
 //! Thread-safe.
 const std = @import("std");
 const aegis = @import("aegis");
+/// Frees counted by kind.
+const Tally = aegis.units.Count(struct {}, usize);
+
 const Allocator = std.mem.Allocator;
 const Alignment = std.mem.Alignment;
 
@@ -30,8 +33,8 @@ pub const fresh: u8 = 0xd7;
 /// Private: where the memory comes from and goes back to.
 child: Allocator,
 /// Private: blocks freed with a nonzero byte, and blocks freed unseen.
-unerased_count: std.atomic.Value(usize) = .init(0),
-unseen_count: std.atomic.Value(usize) = .init(0),
+unerased_count: aegis.Atomic(Tally) = .init(.fromRaw(0)),
+unseen_count: aegis.Atomic(Tally) = .init(.fromRaw(0)),
 /// Private: the first block freed with a nonzero byte.
 first: aegis.Guarded(?Hit) = .init(null),
 
@@ -67,12 +70,12 @@ pub fn allocator(e: *Erased) Allocator {
 
 /// Blocks freed with a byte that is not zero.
 pub fn unerased(e: *const Erased) usize {
-    return e.unerased_count.load(.acquire);
+    return e.unerased_count.load(.acquire).raw();
 }
 
 /// Blocks `Allocator.free` overwrote before this allocator could look.
 pub fn unseen(e: *const Erased) usize {
-    return e.unseen_count.load(.acquire);
+    return e.unseen_count.load(.acquire).raw();
 }
 
 /// The first block freed before it was erased.
@@ -133,7 +136,7 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*
 fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) void {
     const e = of(ptr);
     if (overwritten(memory)) {
-        _ = e.unseen_count.fetchAdd(1, .release);
+        _ = e.unseen_count.fetchAddWrapping(.fromRaw(1), .release);
     } else if (std.mem.findNone(u8, memory, &.{0})) |offset| {
         var hit: Hit = .{ .offset = offset, .byte = memory[offset], .len = memory.len };
         const trace = std.debug.captureCurrentStackTrace(.{ .first_address = ret_addr }, &hit.stack);
@@ -144,7 +147,7 @@ fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) vo
             if (held.value().* == null) held.value().* = hit;
         }
         // After the hit is kept, so a reader that sees the count finds it.
-        _ = e.unerased_count.fetchAdd(1, .release);
+        _ = e.unerased_count.fetchAddWrapping(.fromRaw(1), .release);
     }
     e.child.rawFree(memory, alignment, ret_addr);
 }

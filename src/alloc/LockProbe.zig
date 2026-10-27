@@ -17,6 +17,9 @@
 //! Thread-safe.
 const std = @import("std");
 const aegis = @import("aegis");
+/// Calls counted.
+const Tally = aegis.units.Count(struct {}, usize);
+
 const Allocator = std.mem.Allocator;
 const Alignment = std.mem.Alignment;
 
@@ -27,8 +30,8 @@ child: Allocator,
 /// Private: what says whether the lock is held.
 held: Held,
 /// Private: every call, and those made with the lock held.
-total: std.atomic.Value(usize) = .init(0),
-locked: std.atomic.Value(usize) = .init(0),
+total: aegis.Atomic(Tally) = .init(.fromRaw(0)),
+locked: aegis.Atomic(Tally) = .init(.fromRaw(0)),
 /// Private: the first call made with the lock held.
 first: aegis.Guarded(?Offender) = .init(null),
 
@@ -123,12 +126,12 @@ pub fn allocator(p: *LockProbe) Allocator {
 
 /// Every call made through the allocator.
 pub fn calls(p: *const LockProbe) usize {
-    return p.total.load(.acquire);
+    return p.total.load(.acquire).raw();
 }
 
 /// The calls made with the lock held.
 pub fn underLock(p: *const LockProbe) usize {
-    return p.locked.load(.acquire);
+    return p.locked.load(.acquire).raw();
 }
 
 /// The first call made with the lock held.
@@ -173,7 +176,7 @@ fn of(ptr: *anyopaque) *LockProbe {
 }
 
 fn note(p: *LockProbe, call: Call, len: usize, ret_addr: usize) void {
-    _ = p.total.fetchAdd(1, .monotonic);
+    _ = p.total.fetchAddWrapping(.fromRaw(1), .monotonic);
     if (!p.held.isHeld(p.held.context)) return;
     var offender: Offender = .{ .call = call, .len = len };
     const trace = std.debug.captureCurrentStackTrace(.{ .first_address = ret_addr }, &offender.stack);
@@ -184,7 +187,7 @@ fn note(p: *LockProbe, call: Call, len: usize, ret_addr: usize) void {
         if (held.value().* == null) held.value().* = offender;
     }
     // After the offender is kept, so a reader that sees the count finds it.
-    _ = p.locked.fetchAdd(1, .release);
+    _ = p.locked.fetchAddWrapping(.fromRaw(1), .release);
 }
 
 fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {

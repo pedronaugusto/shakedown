@@ -7,11 +7,15 @@
 //! on a threaded base may share a counter; the order they take steps in is
 //! then the order the base ran them in.
 const std = @import("std");
+const aegis = @import("aegis");
 
 const Steps = @This();
 
 /// Private: the next step.
-next: std.atomic.Value(u64) = .init(0),
+next: aegis.Atomic(Count) = .init(.fromRaw(0)),
+
+/// Steps taken.
+const Count = aegis.units.Count(Steps, u64);
 
 pub fn init() Steps {
     return .{};
@@ -19,17 +23,17 @@ pub fn init() Steps {
 
 /// Takes the next step and returns its number.
 pub fn take(s: *Steps) u64 {
-    return s.next.fetchAdd(1, .monotonic);
+    return s.next.fetchAddWrapping(.fromRaw(1), .monotonic).raw();
 }
 
 /// How many steps have been taken: the number the next one gets.
 pub fn peek(s: *const Steps) u64 {
-    return s.next.load(.monotonic);
+    return s.next.load(.monotonic).raw();
 }
 
 /// Starts again from step 0.
 pub fn reset(s: *Steps) void {
-    s.next.store(0, .monotonic);
+    s.next.store(.fromRaw(0), .monotonic);
 }
 
 test "steps count from zero, and peeking takes none" {

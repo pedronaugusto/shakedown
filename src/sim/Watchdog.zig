@@ -22,6 +22,7 @@
 //! (the watchdog's own thread descheduled) leaves the task the whole time
 //! to reach its call.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const ids = @import("../ids.zig");
 const os_thread = @import("os_thread.zig");
@@ -38,19 +39,24 @@ stopping: bool = false,
 mutex: Io.Mutex = .init,
 first: ?*Watched = null,
 
+/// The Io calls a simulation has made: the watchdog's sign of life.
+pub const Calls = aegis.units.Count(struct {}, u64);
+/// The watchdog's verdict on a simulation, which it reads at its next call.
+pub const Stuck = enum(u8) { running, stuck };
+
 /// What the watchdog reads of one simulation, and keeps of it between
 /// samples. The simulation owns it, and it links it in with `add`.
 pub const Watched = struct {
     /// The running task's id, `outside` when none; the calls made so far;
     /// and the verdict the simulation reads at its next call.
-    running: *const std.atomic.Value(ids.TaskId),
-    calls: *const std.atomic.Value(u64),
-    stuck: *std.atomic.Value(bool),
+    running: *const aegis.Atomic(ids.TaskId),
+    calls: *const aegis.Atomic(Calls),
+    stuck: *aegis.Atomic(Stuck),
     /// Time, in nanoseconds, a task may run without a call.
     limit: i64,
     /// The thread the running task runs on, as the simulation names it; null
     /// when it names none, and real time counts.
-    runner: ?*const std.atomic.Value(u64) = null,
+    runner: ?*const aegis.Atomic(os_thread.Thread) = null,
     /// Private: the watchdog's.
     next: ?*Watched = null,
     previous: ?*Watched = null,
@@ -159,8 +165,8 @@ fn sample(w: *Watchdog) ?Next {
 
 fn look(watched: *Watched, now: i64) void {
     const task = watched.running.load(.monotonic);
-    const calls = watched.calls.load(.monotonic);
-    const runner: os_thread.Thread = if (watched.runner) |r| @fromBackingInt(@intCast(r.load(.monotonic))) else .none;
+    const calls = watched.calls.load(.monotonic).raw();
+    const runner: os_thread.Thread = if (watched.runner) |r| r.load(.monotonic) else .none;
     const reading = if (task == ids.outside) null else os_thread.read(runner);
     switch (verdict(watched, task, calls, runner, now, reading)) {
         .running => {},
@@ -203,15 +209,15 @@ fn verdict(watched: *Watched, task: ids.TaskId, calls: u64, runner: os_thread.Th
     if (watched.marked != null) return .{ .unstoppable = idle };
     watched.marked = now;
     watched.ran = 0;
-    watched.stuck.store(true, .monotonic);
+    watched.stuck.store(.stuck, .monotonic);
     return .{ .marked = idle };
 }
 
 const Fixture = struct {
-    running: std.atomic.Value(ids.TaskId) = .init(.fromRaw(1)),
-    calls: std.atomic.Value(u64) = .init(0),
-    stuck: std.atomic.Value(bool) = .init(false),
-    runner: std.atomic.Value(u64) = .init(7),
+    running: aegis.Atomic(ids.TaskId) = .init(.fromRaw(1)),
+    calls: aegis.Atomic(Calls) = .init(.fromRaw(0)),
+    stuck: aegis.Atomic(Stuck) = .init(.running),
+    runner: aegis.Atomic(os_thread.Thread) = .init(@fromBackingInt(7)),
     watched: Watched = undefined,
 
     const ms = std.time.ns_per_ms;
@@ -236,7 +242,7 @@ test "a task marked stuck has a whole watchdog time from the mark to reach its c
     try std.testing.expectEqual(Verdict.running, f.at(0, 0, 0, false));
     // A late sample marks it at 95 ms; the next, at 101 ms, is not past the grace.
     try std.testing.expectEqual(Verdict{ .marked = 95 * ms }, f.at(0, 95, 95, false));
-    try std.testing.expect(f.stuck.load(.monotonic));
+    try std.testing.expect(f.stuck.load(.monotonic) == .stuck);
     try std.testing.expectEqual(Verdict.running, f.at(0, 101, 101, false));
     try std.testing.expectEqual(Verdict{ .unstoppable = 145 * ms }, f.at(0, 145, 145, false));
     // A call clears the mark.

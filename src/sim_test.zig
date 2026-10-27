@@ -295,7 +295,7 @@ const Spinner = struct {
     fn spin(io: Io, sim: *Sim) Io.Cancelable!void {
         // Runs without an Io call until the watchdog has seen it, then
         // makes one, where the run ends.
-        while (!sim.core.stuck.load(.monotonic)) std.atomic.spinLoopHint();
+        while (sim.core.stuck.load(.monotonic) != .stuck) std.atomic.spinLoopHint();
         try io.checkCancel();
     }
 };

@@ -21,6 +21,8 @@ const ids = @import("../ids.zig");
 const Trace = @import("../trace.zig").Trace;
 const IoCall = @import("../io_call.zig").IoCall;
 const executor = @import("executor.zig");
+const os_thread = @import("os_thread.zig");
+const Watchdog = @import("Watchdog.zig");
 const options_mod = @import("options.zig");
 const Options = options_mod.Options;
 const Event = options_mod.Event;
@@ -123,10 +125,10 @@ reports: std.ArrayList(TaskReport) = .empty,
 /// Shared with the watchdog thread: the step count, the running task's id (0
 /// when none), the thread it runs on, and whether the watchdog found the
 /// run stuck.
-calls: std.atomic.Value(u64) = .init(0),
-running: std.atomic.Value(ids.TaskId) = .init(ids.outside),
-runner: std.atomic.Value(u64) = .init(0),
-stuck: std.atomic.Value(bool) = .init(false),
+calls: aegis.Atomic(Watchdog.Calls) = .init(.fromRaw(0)),
+running: aegis.Atomic(ids.TaskId) = .init(ids.outside),
+runner: aegis.Atomic(os_thread.Thread) = .init(.none),
+stuck: aegis.Atomic(Watchdog.Stuck) = .init(.running),
 
 const max_depth = 16;
 const bucket_count = 256;
@@ -745,7 +747,7 @@ pub fn dispatch(c: *Core, from: *executor.Context) void {
         c.current = n;
         n.state = .running;
         // Fibers all run on the driver's thread, named once in `drive`.
-        if (c.kind == .threads) c.runner.store(@backingInt(n.ctx.thread.os), .monotonic);
+        if (c.kind == .threads) c.runner.store(n.ctx.thread.os, .monotonic);
         c.running.store(n.id, .monotonic);
         if (c.searched) c.source.step(c.actorOf(n));
         break :to &n.ctx;
@@ -946,7 +948,7 @@ pub fn drive(c: *Core, mode: Mode, until: i64) executor.CreateError!?Outcome {
     c.until = until;
     c.step_taken = false;
     c.driver = executor.initDriver(c.kind);
-    c.runner.store(@backingInt(c.driver.thread.os), .monotonic);
+    c.runner.store(c.driver.thread.os, .monotonic);
     const previous = running_core;
     running_core = c;
     defer running_core = previous;
@@ -1153,7 +1155,7 @@ pub const Call = struct { task: ?*Task, step: u64, node: NodeId };
 pub fn enter(c: *Core, call_site: usize, yields: bool) Call {
     c.steps += 1;
     // One writer at a time, the running task: a store, not an increment.
-    c.calls.store(c.steps, .monotonic);
+    c.calls.store(.fromRaw(c.steps), .monotonic);
     c.decision = null;
     const step = c.steps;
     const node = c.nodeId();
@@ -1166,7 +1168,7 @@ pub fn enter(c: *Core, call_site: usize, yields: bool) Call {
     };
     t.call_site = call_site;
     limit.check(c.steps) catch c.abandon(t, .step_limit);
-    if (c.stuck.load(.monotonic)) {
+    if (c.stuck.load(.monotonic) == .stuck) {
         c.capture(t);
         c.abandon(t, .{ .stuck = t.report });
     }

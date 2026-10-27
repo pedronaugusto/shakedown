@@ -19,6 +19,9 @@
 //! Thread-safe.
 const std = @import("std");
 const aegis = @import("aegis");
+/// Frees counted by kind.
+const Tally = aegis.units.Count(struct {}, usize);
+
 const Allocator = std.mem.Allocator;
 const Erased = @import("Erased.zig");
 const Alignment = std.mem.Alignment;
@@ -36,8 +39,8 @@ child: Allocator,
 /// each: an empty needle is in every block.
 needles: []const []const u8,
 /// Private: blocks freed with a needle in them, and blocks freed unseen.
-count: std.atomic.Value(usize) = .init(0),
-unseen_count: std.atomic.Value(usize) = .init(0),
+count: aegis.Atomic(Tally) = .init(.fromRaw(0)),
+unseen_count: aegis.Atomic(Tally) = .init(.fromRaw(0)),
 /// Private: the first of those.
 first: aegis.Guarded(?Hit) = .init(null),
 
@@ -74,12 +77,12 @@ pub fn allocator(u: *Unwiped) Allocator {
 
 /// How many blocks were freed with a needle in them.
 pub fn found(u: *const Unwiped) usize {
-    return u.count.load(.acquire);
+    return u.count.load(.acquire).raw();
 }
 
 /// Blocks `Allocator.free` overwrote before this allocator could look.
 pub fn unseen(u: *const Unwiped) usize {
-    return u.unseen_count.load(.acquire);
+    return u.unseen_count.load(.acquire).raw();
 }
 
 /// The first block freed with a needle in it.
@@ -132,7 +135,7 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*
 fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) void {
     const u = of(ptr);
     if (Erased.overwritten(memory)) {
-        _ = u.unseen_count.fetchAdd(1, .release);
+        _ = u.unseen_count.fetchAddWrapping(.fromRaw(1), .release);
         return u.child.rawFree(memory, alignment, ret_addr);
     }
     for (u.needles, 0..) |needle, which| {
@@ -153,5 +156,5 @@ fn note(u: *Unwiped, found_hit: Hit, ret_addr: usize) void {
         if (held.value().* == null) held.value().* = hit;
     }
     // After the hit is kept, so a reader that sees the count finds it.
-    _ = u.count.fetchAdd(1, .release);
+    _ = u.count.fetchAddWrapping(.fromRaw(1), .release);
 }
