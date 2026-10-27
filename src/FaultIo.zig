@@ -416,7 +416,7 @@ const allocator_vtable: Allocator.VTable = .{
 };
 
 fn shimOf(ptr: *anyopaque) *AllocatorShim {
-    return @ptrCast(@alignCast(ptr)); // safe: the vtable is only ever paired with an AllocatorShim
+    return @ptrCast(@alignCast(ptr)); // aegis: no-danger: the vtable is only ever paired with an AllocatorShim
 }
 
 fn shimAlloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
@@ -619,7 +619,7 @@ fn Return(comptime name: []const u8) type {
 }
 
 fn of(userdata: ?*anyopaque) *FaultIo {
-    return @ptrCast(@alignCast(userdata.?)); // safe: every Io a FaultIo hands out carries the FaultIo itself
+    return @ptrCast(@alignCast(userdata.?)); // aegis: no-danger: every Io a FaultIo hands out carries the FaultIo itself
 }
 
 fn forward(f: *FaultIo, comptime name: []const u8, args: anytype) Return(name) {

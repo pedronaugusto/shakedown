@@ -81,7 +81,7 @@ const slots = struct {
             if (c.spawn(.{ .future = start }, context, context_alignment, result.len, result_alignment, .ready)) |t| {
                 t.spawned_at = @returnAddress();
                 c.record(.async, e, t.id.raw());
-                return @ptrCast(t); // safe: a future of this simulation is its task, cast back by await and cancel
+                return @ptrCast(t); // aegis: no-danger: a future of this simulation is its task, cast back by await and cancel
             } else |_| {}
         }
         c.record(.async, e, 0);
@@ -105,14 +105,14 @@ const slots = struct {
         };
         t.spawned_at = @returnAddress();
         c.record(.concurrent, e, t.id.raw());
-        return @ptrCast(t); // safe: a future of this simulation is its task, cast back by await and cancel
+        return @ptrCast(t); // aegis: no-danger: a future of this simulation is its task, cast back by await and cancel
     }
 
     pub fn await(userdata: ?*anyopaque, any_future: *Io.AnyFuture, result: []u8, _: std.mem.Alignment) void {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("await");
-        const target: *Task = @ptrCast(@alignCast(any_future)); // safe: a future of this simulation is its task
+        const target: *Task = @ptrCast(@alignCast(any_future)); // aegis: no-danger: a future of this simulation is its task
         c.touch(Core.Object.task(c.actorOf(target)), true);
         if (target.state != .done) {
             target.awaiter = t;
@@ -134,7 +134,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("cancel");
-        const target: *Task = @ptrCast(@alignCast(any_future)); // safe: a future of this simulation is its task
+        const target: *Task = @ptrCast(@alignCast(any_future)); // aegis: no-danger: a future of this simulation is its task
         c.touch(Core.Object.task(c.actorOf(target)), true);
         c.requestCancel(target);
         target.awaiter = t;

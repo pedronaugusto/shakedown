@@ -38,8 +38,8 @@ pub fn restart(n: *Node, comptime f: anytype, args: std.meta.ArgsTuple(@TypeOf(f
     const Args = @TypeOf(args);
     const Start = struct {
         fn start(context: *const anyopaque, result: *anyopaque) void {
-            const a: *const Args = @ptrCast(@alignCast(context)); // safe: copied by Core.spawn
-            const err: *?anyerror = @ptrCast(@alignCast(result)); // safe: allocated as optional error below
+            const a: *const Args = @ptrCast(@alignCast(context)); // aegis: no-danger: copied by Core.spawn
+            const err: *?anyerror = @ptrCast(@alignCast(result)); // aegis: no-danger: allocated as optional error below
             const value = @call(.auto, f, a.*);
             err.* = switch (@typeInfo(@TypeOf(value))) {
                 .error_union => if (value) |_| null else |e| e,

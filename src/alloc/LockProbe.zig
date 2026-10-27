@@ -43,7 +43,7 @@ pub const Held = struct {
             .context = lock,
             .isHeld = struct {
                 fn is(context: *const anyopaque) bool {
-                    const l: *const std.atomic.Value(bool) = @ptrCast(@alignCast(context)); // safe: made from a flag in `flag`
+                    const l: *const std.atomic.Value(bool) = @ptrCast(@alignCast(context)); // aegis: no-danger: made from a flag in `flag`
                     return l.load(.acquire);
                 }
             }.is,
@@ -58,7 +58,7 @@ pub const Held = struct {
             .context = owner,
             .isHeld = struct {
                 fn is(context: *const anyopaque) bool {
-                    const l: *const Lock = @ptrCast(@alignCast(context)); // safe: made from a pointer to a `Lock` in `guarded`
+                    const l: *const Lock = @ptrCast(@alignCast(context)); // aegis: no-danger: made from a pointer to a `Lock` in `guarded`
                     return l.isHeld();
                 }
             }.is,
@@ -71,7 +71,7 @@ pub const Held = struct {
             .context = lock,
             .isHeld = struct {
                 fn is(context: *const anyopaque) bool {
-                    const l: *const std.Io.Mutex = @ptrCast(@alignCast(context)); // safe: made from a mutex in `mutex`
+                    const l: *const std.Io.Mutex = @ptrCast(@alignCast(context)); // aegis: no-danger: made from a mutex in `mutex`
                     return l.state.load(.acquire) != .unlocked;
                 }
             }.is,
@@ -84,7 +84,7 @@ pub const Held = struct {
             .context = lock,
             .isHeld = struct {
                 fn is(context: *const anyopaque) bool {
-                    const l: *const std.atomic.Mutex = @ptrCast(@alignCast(context)); // safe: made from a spin mutex in `spinMutex`
+                    const l: *const std.atomic.Mutex = @ptrCast(@alignCast(context)); // aegis: no-danger: made from a spin mutex in `spinMutex`
                     return @atomicLoad(std.atomic.Mutex, l, .acquire) == .locked;
                 }
             }.is,
@@ -169,7 +169,7 @@ const vtable: Allocator.VTable = .{
 };
 
 fn of(ptr: *anyopaque) *LockProbe {
-    return @ptrCast(@alignCast(ptr)); // safe: the vtable is only ever paired with a *LockProbe
+    return @ptrCast(@alignCast(ptr)); // aegis: no-danger: the vtable is only ever paired with a *LockProbe
 }
 
 fn note(p: *LockProbe, call: Call, len: usize, ret_addr: usize) void {

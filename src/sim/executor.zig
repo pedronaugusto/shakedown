@@ -167,20 +167,20 @@ pub fn fiberTrace(c: *const Context, first_address: usize, out: []usize) []usize
 }
 
 fn fiberStart(arg: ?*anyopaque, _: ?*anyopaque) callconv(.c) noreturn {
-    const b: *Baton = @ptrCast(@alignCast(arg.?)); // safe: `start` passes the context's baton, which holds the entry
+    const b: *Baton = @ptrCast(@alignCast(arg.?)); // aegis: no-danger: `start` passes the context's baton, which holds the entry
     b.entry.?(b.arg.?);
 }
 
 // Threads.
 
 const win32 = struct {
-    extern "kernel32" fn ExitThread(code: u32) callconv(.winapi) noreturn;
+    extern "kernel32" fn ExitThread(code: u32) callconv(.winapi) noreturn; // aegis: boundary: kernel32 thread exit, which std does not bind
     const stack_size_param_is_a_reservation: u32 = 0x10000;
-    extern "kernel32" fn CreateThread(attributes: ?*anyopaque, stack_size: usize, start: *const fn (?*anyopaque) callconv(.winapi) u32, param: ?*anyopaque, flags: u32, id: ?*u32) callconv(.winapi) ?windows.HANDLE;
+    extern "kernel32" fn CreateThread(attributes: ?*anyopaque, stack_size: usize, start: *const fn (?*anyopaque) callconv(.winapi) u32, param: ?*anyopaque, flags: u32, id: ?*u32) callconv(.winapi) ?windows.HANDLE; // aegis: boundary: kernel32 thread creation with a caller stack size, which std does not bind
 };
 
 fn win32ThreadStart(param: ?*anyopaque) callconv(.winapi) u32 {
-    threadMain(@ptrCast(@alignCast(param.?))); // safe: `start` passes the context's baton
+    threadMain(@ptrCast(@alignCast(param.?))); // aegis: no-danger: `start` passes the context's baton
     return 0;
 }
 

@@ -265,7 +265,7 @@ const Search = struct {
     const vtable: Source.Chooser.VTable = .{ .choose = choose, .pick = pick, .step = step, .touch = touch, .spawned = spawned };
 
     fn of(ctx: *anyopaque) *Search {
-        return @ptrCast(@alignCast(ctx)); // safe: every chooser of this vtable is made by `chooser` over a Search
+        return @ptrCast(@alignCast(ctx)); // aegis: no-danger: every chooser of this vtable is made by `chooser` over a Search
     }
 
     fn marks(s: *const Search) Marks {

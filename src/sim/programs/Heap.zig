@@ -21,7 +21,7 @@ pub fn deinit(h: *Heap) void {
     var it = h.live.iterator();
     while (it.next()) |entry| {
         const block = entry.value_ptr.*;
-        const memory: [*]u8 = @ptrFromInt(entry.key_ptr.*); // safe: the key is the address this heap handed out
+        const memory: [*]u8 = @ptrFromInt(entry.key_ptr.*); // aegis: no-danger: the key is the address this heap handed out
         h.child.rawFree(memory[0..block.len], block.alignment, @returnAddress());
     }
     h.live.deinit(h.child);
@@ -40,7 +40,7 @@ pub fn allocator(h: *Heap) Allocator {
 const vtable: Allocator.VTable = .{ .alloc = alloc, .resize = resize, .remap = remap, .free = free };
 
 fn of(context: *anyopaque) *Heap {
-    return @ptrCast(@alignCast(context)); // safe: every allocator of this vtable is made by `allocator` over a Heap
+    return @ptrCast(@alignCast(context)); // aegis: no-danger: every allocator of this vtable is made by `allocator` over a Heap
 }
 
 fn alloc(context: *anyopaque, len: usize, alignment: std.mem.Alignment, ret: usize) ?[*]u8 {

@@ -116,7 +116,7 @@ fn newNode(fs: *Model, kind: Io.File.Kind, permissions: Io.File.Permissions, tar
     return id;
 }
 pub fn encode(id: u32) Io.File.Handle {
-    if (builtin.os.tag == .windows) return @ptrFromInt(std.math.maxInt(usize) - 0x7fff_ffff + @as(usize, id) * 4); // safe: negative NT kernel handles; user-mode calls cannot resolve them
+    if (builtin.os.tag == .windows) return @ptrFromInt(std.math.maxInt(usize) - 0x7fff_ffff + @as(usize, id) * 4); // aegis: no-danger: negative NT kernel handles; user-mode calls cannot resolve them
     return -1_048_576 - @as(i32, @intCast(id));
 }
 fn decode(raw: Io.File.Handle) ?u32 {

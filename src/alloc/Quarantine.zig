@@ -97,7 +97,7 @@ const vtable: std.mem.Allocator.VTable = .{
 };
 
 fn of(ptr: *anyopaque) *Quarantine {
-    return @ptrCast(@alignCast(ptr)); // safe: the vtable is only ever paired with a *Quarantine
+    return @ptrCast(@alignCast(ptr)); // aegis: no-danger: the vtable is only ever paired with a *Quarantine
 }
 
 fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
@@ -122,7 +122,7 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*
     // With a guard the block ends where the guard begins.
     const start = if (guard == 0) at else alignment.backward(at + data - @max(len, 1));
     assert.invariant(start >= at, "a guarded block starts inside its mapping");
-    return @ptrFromInt(start);
+    return @ptrFromInt(start); // aegis: boundary: the address of a block inside a mapping this allocator made, as the OS returned it
 }
 
 /// In place, a shrink would leave the tail open and a growth could move
@@ -182,12 +182,12 @@ fn exceeds(limit: aegis.bounded.Limit(usize), amount: usize) bool {
 /// Makes `[at, at + len)` inaccessible, keeping it reserved and resident.
 fn close(at: usize, len: usize) bool {
     if (builtin.target.os.tag == .windows) {
-        var address: ?windows.PVOID = @ptrFromInt(at);
+        var address: ?windows.PVOID = @ptrFromInt(at); // aegis: boundary: the system call takes the address of the range this allocator mapped
         var size: windows.SIZE_T = len;
         var old: windows.PAGE = undefined;
         return windows.ntdll.NtProtectVirtualMemory(windows.GetCurrentProcess(), &address, &size, .{ .NOACCESS = true }, &old) == .SUCCESS;
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // safe: `at` is a page boundary inside a mapping this allocator made
+    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // aegis: no-danger: `at` is a page boundary inside a mapping this allocator made
     return std.posix.errno(std.posix.system.mprotect(start, len, std.mem.zeroes(std.posix.PROT))) == .SUCCESS;
 }
 
@@ -195,11 +195,11 @@ fn close(at: usize, len: usize) bool {
 /// and reserved, so no later mapping lands there.
 fn decommit(at: usize, len: usize) bool {
     if (builtin.target.os.tag == .windows) {
-        var address: ?windows.PVOID = @ptrFromInt(at);
+        var address: ?windows.PVOID = @ptrFromInt(at); // aegis: boundary: the system call takes the address of the range this allocator mapped
         var size: windows.SIZE_T = len;
-        return windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), &size, .{ .DECOMMIT = true }) == .SUCCESS; // safe: the binding takes the base address as `*?*anyopaque`
+        return windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), &size, .{ .DECOMMIT = true }) == .SUCCESS; // aegis: boundary: the binding takes the base address as `*?*anyopaque`
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // safe: `at` is a page boundary inside a mapping this allocator made
+    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // aegis: no-danger: `at` is a page boundary inside a mapping this allocator made
     const advice = if (builtin.target.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
     // glint-ignore: Z026 -- pages not given back stay resident; the range is still closed below
     std.posix.madvise(start, len, advice) catch {};
@@ -207,6 +207,6 @@ fn decommit(at: usize, len: usize) bool {
 }
 
 fn release(range: Range) void {
-    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(range.base); // safe: every range here is a whole mapping this allocator made, page-aligned
+    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(range.base); // aegis: no-danger: every range here is a whole mapping this allocator made, page-aligned
     std.heap.PageAllocator.unmap(start[0..range.len]);
 }

@@ -79,8 +79,8 @@ pub const std_input_handle: u32 = @bitCast(@as(i32, -10));
 pub const std_output_handle: u32 = @bitCast(@as(i32, -11));
 pub const std_error_handle: u32 = @bitCast(@as(i32, -12));
 const duplicate_same_access: u32 = 0x2;
-extern "kernel32" fn DuplicateHandle(source_process: std.os.windows.HANDLE, source: std.os.windows.HANDLE, target_process: std.os.windows.HANDLE, target: *std.os.windows.HANDLE, access: u32, inherit: std.os.windows.BOOL, options: u32) callconv(.winapi) std.os.windows.BOOL;
-pub extern "kernel32" fn SetStdHandle(which: u32, handle: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL;
+extern "kernel32" fn DuplicateHandle(source_process: std.os.windows.HANDLE, source: std.os.windows.HANDLE, target_process: std.os.windows.HANDLE, target: *std.os.windows.HANDLE, access: u32, inherit: std.os.windows.BOOL, options: u32) callconv(.winapi) std.os.windows.BOOL; // aegis: boundary: kernel32 handle duplication, which std does not bind
+pub extern "kernel32" fn SetStdHandle(which: u32, handle: std.os.windows.HANDLE) callconv(.winapi) std.os.windows.BOOL; // aegis: boundary: kernel32 standard handle redirection, which std does not bind
 
 /// Which standard stream `handle` is: 0, 1 or 2.
 fn standardIndex(handle: Io.File.Handle) ?usize {

@@ -32,7 +32,7 @@ const vtable: std.mem.Allocator.VTable = .{
 };
 
 fn of(ptr: *anyopaque) *NoResize {
-    return @ptrCast(@alignCast(ptr)); // safe: the vtable is only ever paired with a *NoResize
+    return @ptrCast(@alignCast(ptr)); // aegis: no-danger: the vtable is only ever paired with a *NoResize
 }
 
 fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {

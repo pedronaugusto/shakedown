@@ -122,7 +122,7 @@ const vtable: Allocator.VTable = .{
 };
 
 fn of(ptr: *anyopaque) *Unwiped {
-    return @ptrCast(@alignCast(ptr)); // safe: the vtable is only ever paired with an *Unwiped
+    return @ptrCast(@alignCast(ptr)); // aegis: no-danger: the vtable is only ever paired with an *Unwiped
 }
 
 fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {

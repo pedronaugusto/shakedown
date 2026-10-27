@@ -311,7 +311,7 @@ pub fn id(handle: Io.File.Handle) ?u32 {
 const posix_base: i32 = -524_288;
 
 pub fn encode(end_id: u32) Io.File.Handle {
-    if (builtin.os.tag == .windows) return @ptrFromInt(windows_base + @as(usize, end_id) * 4); // safe: kernel-mode values user-mode calls cannot resolve, never dereferenced
+    if (builtin.os.tag == .windows) return @ptrFromInt(windows_base + @as(usize, end_id) * 4); // aegis: no-danger: kernel-mode values user-mode calls cannot resolve, never dereferenced
     return posix_base - @as(i32, @intCast(end_id));
 }
 

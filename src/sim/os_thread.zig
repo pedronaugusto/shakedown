@@ -29,7 +29,7 @@ pub fn current() Thread {
 
 threadlocal var own: Thread = .none;
 
-extern "c" fn pthread_mach_thread_np(thread: std.c.pthread_t) std.c.mach_port_t;
+extern "c" fn pthread_mach_thread_np(thread: std.c.pthread_t) std.c.mach_port_t; // aegis: boundary: the Mach port of a pthread, for thread_info, which std does not bind
 
 /// One reading of a thread.
 pub const Reading = struct {
@@ -97,7 +97,7 @@ fn blockedState(line: []const u8) ?bool {
 fn readMach(port: std.c.mach_port_t) ?Reading {
     var info: std.c.thread_basic_info = undefined;
     var count: std.c.mach_msg_type_number_t = std.c.THREAD.BASIC.INFO_COUNT;
-    if (std.c.thread_info(port, std.c.THREAD.BASIC.INFO, @ptrCast(&info), &count) != 0) return null; // safe: thread_info fills a thread_basic_info, as count says
+    if (std.c.thread_info(port, std.c.THREAD.BASIC.INFO, @ptrCast(&info), &count) != 0) return null; // aegis: boundary: thread_info fills a thread_basic_info, as count says
     const us = @as(i64, info.user_time.seconds + info.system_time.seconds) * std.time.us_per_s + info.user_time.microseconds + info.system_time.microseconds;
     // TH_STATE_WAITING, TH_STATE_UNINTERRUPTIBLE; TH_STATE_RUNNING is running or runnable.
     return .{ .cpu = us * std.time.ns_per_us, .blocked = info.run_state == 3 or info.run_state == 4 };
@@ -167,9 +167,9 @@ fn findThread(snapshot: []align(@alignOf(ProcessInformation)) const u8, id: u32)
     const pid = windows.GetCurrentProcessId();
     var at: usize = 0;
     while (at + @sizeOf(ProcessInformation) <= snapshot.len) {
-        const process: *const ProcessInformation = @ptrCast(@alignCast(snapshot[at..].ptr)); // safe: entries start 8-aligned, as the system lays them
+        const process: *const ProcessInformation = @ptrCast(@alignCast(snapshot[at..].ptr)); // aegis: boundary: entries start 8-aligned, as the system lays them
         if (process.unique_process_id == pid) {
-            const threads: [*]const ThreadInformation = @ptrCast(@alignCast(snapshot[at + @sizeOf(ProcessInformation) ..].ptr)); // safe: the threads follow their process
+            const threads: [*]const ThreadInformation = @ptrCast(@alignCast(snapshot[at + @sizeOf(ProcessInformation) ..].ptr)); // aegis: boundary: the threads follow their process
             for (threads[0..process.number_of_threads]) |t| {
                 if (@intFromPtr(t.client_id.UniqueThread) != id) continue; // safe: the system keeps a thread id in the handle's place
                 // KTHREAD_STATE's Waiting; times count 100 ns.
