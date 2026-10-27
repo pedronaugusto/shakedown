@@ -68,7 +68,7 @@ tasks: Tasks = .{},
 /// Private: how many batches have a state, read without the lock.
 batch_count: aegis.Atomic(BatchCount) = .init(.fromRaw(0)),
 /// Private: the state the last batch lookup found, read without the lock.
-last_batch: std.atomic.Value(?*Batched) = .init(null), // aegis: design: a pointer published lock-free, which aegis Atomic, a cell of one scalar of a domain, does not hold
+last_batch: aegis.Atomic(?*Batched) = .init(null),
 
 /// Times a call was made.
 const CallCount = aegis.units.Count(IoCall, u64);
@@ -1069,7 +1069,7 @@ const kept_batches = 16;
 /// that finds it through `last` may read which batch it is for at any time.
 const Batched = struct {
     /// The batch it is for, null while it is spare. Set under the lock.
-    batch: std.atomic.Value(?*Io.Batch) = .init(null), // aegis: design: a pointer published lock-free, which aegis Atomic, a cell of one scalar of a domain, does not hold
+    batch: aegis.Atomic(?*Io.Batch) = .init(null),
     storage: []Io.Operation.Storage,
     ops: []Op,
     /// A short operation's cut buffers, alive until it completes: made the

@@ -92,13 +92,13 @@ test "a tape as fuzz input draws the same choices under Smith" {
     var recording: Source = try .initRecording(testing.allocator, .{ .prng = 11 }, .{});
     defer recording.deinit();
     var drawn: [32]u64 = undefined;
-    for (&drawn, 0..) |*d, i| d.* = recording.below(@as(u64, 1) << @intCast(i * 2 % 64));
+    for (&drawn, 0..) |*d, i| d.* = recording.below(@as(u64, 1) << @intCast((i * 2) % 64));
     const input = try shakedown.corpus.fromTape(testing.allocator, recording.tape().choices);
     defer testing.allocator.free(input);
     var smith: std.testing.Smith = .{ .in = input };
     var fuzzed: Source = try .init(testing.allocator, .{ .smith = &smith });
     defer fuzzed.deinit();
-    for (drawn, 0..) |d, i| try testing.expectEqual(d, fuzzed.below(@as(u64, 1) << @intCast(i * 2 % 64)));
+    for (drawn, 0..) |d, i| try testing.expectEqual(d, fuzzed.below(@as(u64, 1) << @intCast((i * 2) % 64)));
 }
 
 test "integers lean on their edges, and every width shows up" {

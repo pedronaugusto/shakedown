@@ -879,7 +879,7 @@ pub const Snapshot = struct {
             d.b.update(bytes);
         }
         fn final(d: *Digest) u128 {
-            return @as(u128, d.a.final()) << 64 | d.b.final();
+            return (@as(u128, d.a.final()) << 64) | d.b.final();
         }
     };
 

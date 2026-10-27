@@ -71,7 +71,7 @@ pub fn main(init: std.process.Init) !void {
     const run = try std.process.run(arena, init.io, .{ .argv = &.{ self, "panic" } });
     const said = std.mem.find(u8, run.stderr, "shakedown: a task panicked in a simulation") != null and
         std.mem.find(u8, run.stderr, "seed 0x2a") != null;
-    if (run.term == .exited and run.term.exited == 0 or !said) {
+    if ((run.term == .exited and run.term.exited == 0) or !said) {
         std.debug.print("the panicking child {f}, and wrote:\n{s}\n", .{ run.term, run.stderr });
         return error.PanicNotReported;
     }
