@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-28
+
 ### Breaking
 
 - `FaultIo.last_batch` (private, though declared `pub`) and a batch's `batch` are aegis pointer cells (`aegis.Atomic(?*T)`, aegis 0.2.3), where they were `std.atomic.Value`: same orderings, no escape.
