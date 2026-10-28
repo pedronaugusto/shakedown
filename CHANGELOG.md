@@ -14,6 +14,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Pins aegis 0.2.3 and preflight 0.18.4.
 - Pins shuttle 0.5: the simulation's fibers are typed contexts, each started with its baton and switched with no message, so the start no longer casts its argument back.
+- Pins shuttle 0.5.0.
 
 ## [0.5.0] - 2026-10-27
 
