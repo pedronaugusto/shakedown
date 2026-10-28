@@ -893,7 +893,7 @@ pub fn abandon(c: *Core, t: *Task, outcome: Outcome) noreturn {
 /// threads end: it never runs again and nothing of it unwinds. A task that
 /// had ended and was not yet awaited is put back for reuse.
 pub fn drop(c: *Core, t: *Task) void {
-    aegis.assert.pre(t != c.current, "a task drops others, never itself");
+    aegis.assert.invariant(t != c.current, "a task drops others, never itself");
     switch (t.state.current()) {
         .idle, .abandoned => return,
         .done => return c.release(t),
@@ -912,7 +912,7 @@ pub fn drop(c: *Core, t: *Task) void {
 /// Ends the running task where it stands, the run going on without it:
 /// a task whose process replaced its image. It never runs again.
 pub fn retire(c: *Core, t: *Task) noreturn {
-    aegis.assert.pre(t == c.current, "a task retires itself");
+    aegis.assert.invariant(t == c.current, "a task retires itself");
     if (t.timer_armed) c.disarm(t);
     t.step(.abandon);
     c.live -= 1;
