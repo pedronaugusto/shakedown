@@ -66,7 +66,7 @@ pub const Hit = struct {
 };
 
 pub fn init(child: Allocator, needles: []const []const u8) Unwiped {
-    for (needles) |needle| aegis.assert.pre(needle.len > 0, "an Unwiped needle is not empty");
+    for (needles) |needle| aegis.assert.invariant(needle.len > 0, "an Unwiped needle is not empty");
     return .{ .child = child, .needles = needles };
 }
 
