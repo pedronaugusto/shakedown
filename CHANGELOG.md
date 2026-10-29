@@ -10,6 +10,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - A fault's callback and a simulation's timed event recover their caller's state by type: `shakedown.Hook` is a struct of one function, `run(hook: *Hook, io)`, which the caller embeds as a field of its own state and recovers with `@fieldParentPtr("hook", hook)`. `IoFault.Callback` is `{ .hook = &state.hook, .then = ... }`, where it was `{ .ctx = &state, .f = f }`; `Sim.at(t, &state.hook)` takes the hook, where it took `ctx` and `f`. No context passes through `*anyopaque`, so no cast back to it is the caller's to get right (review-1028 §12). Migration: give the state a `hook: shakedown.Hook = .{ .run = f }` field, make `f` take `(hook: *shakedown.Hook, io: Io)` and recover the state by `@fieldParentPtr`.
 
+### Added
+
+- `shakedown.tasks`: `reap(T, io, &future)` cancels a task a test started and reads its outcome, a cancel being the reaping itself and any other failure printed beside the test's own; `Result(function)` names what `io.concurrent(function, ...)` returns, for a future kept in a field. From cloak's tests, for every package's.
+
 ### Changed
 
 - `assert.invariant` where `assert.pre` was, as aegis 0.3.0 keeps one name for the always-on contract; it builds on aegis 0.2 too.
