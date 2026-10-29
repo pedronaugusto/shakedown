@@ -23,6 +23,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const Source = @import("Source.zig");
 const FaultIo = @import("FaultIo.zig");
+const Hook = @import("io_call.zig").Hook;
 const Trace = @import("trace.zig").Trace;
 const Core = @import("sim/Core.zig");
 const nanoseconds = @import("nanoseconds.zig");
@@ -244,11 +245,12 @@ fn drive(s: *Sim, mode: Core.Mode, until: i64) ?Outcome {
     return s.core.drive(mode, until) catch |err| .{ .failed = err };
 }
 
-/// Calls `f(io, ctx)` on a task of its own once `.awake` reaches `t`: input
-/// replay, an event at a set time.
-pub fn at(s: *Sim, t: Io.Timestamp, ctx: *anyopaque, f: *const fn (io: Io, ctx: *anyopaque) void) error{ OutOfMemory, SystemResources }!void {
+/// Runs `hook` on a task of its own once `.awake` reaches `t`: input replay,
+/// an event at a set time. The hook is a field of the caller's state, which
+/// its `run` recovers by `@fieldParentPtr` (`shakedown.Hook`).
+pub fn at(s: *Sim, t: Io.Timestamp, hook: *Hook) error{ OutOfMemory, SystemResources }!void {
     const when = nanoseconds.reading(Core, t).raw();
-    const task = try s.core.spawn(.{ .at = .{ .ctx = ctx, .f = f } }, &.{}, .@"1", 0, .@"1", .parked);
+    const task = try s.core.spawn(.{ .at = hook }, &.{}, .@"1", 0, .@"1", .parked);
     task.spawned_at = @returnAddress();
     if (when <= s.core.clocks[@backingInt(Core.Kept.awake)]) {
         task.wait = .none;

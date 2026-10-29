@@ -561,7 +561,7 @@ fn prelude(f: *FaultIo, fault: ?IoFault, cancelation_point: bool) Io.Cancelable!
     var next = fault;
     while (next) |x| switch (x) {
         .call => |c| {
-            c.f(f.base, c.ctx);
+            c.hook.run(c.hook, f.base);
             next = if (c.then) |then| then.* else null;
         },
         .delay => |d| {

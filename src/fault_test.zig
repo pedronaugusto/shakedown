@@ -198,8 +198,9 @@ test "a delay sleeps on the base, which a Clock makes virtual" {
 
 const Probe = struct {
     calls: u32 = 0,
-    fn hit(io: Io, ctx: *anyopaque) void {
-        const p: *Probe = @ptrCast(@alignCast(ctx));
+    hook: shakedown.Hook = .{ .run = hit },
+    fn hit(hook: *shakedown.Hook, io: Io) void {
+        const p: *Probe = @fieldParentPtr("hook", hook);
         p.calls += 1;
         _ = Io.Timestamp.now(io, .awake);
     }
@@ -209,7 +210,7 @@ test "a callback runs at its point, on the base, then the call is made" {
     var probe: Probe = .{};
     const plan = [_]IoPlan.Entry{.{
         .at = .{ .nth = .{ .call = .dirCreateFile, .n = 1, .path = .{ .suffix = ".lock" } } },
-        .fault = .{ .call = .{ .ctx = &probe, .f = Probe.hit } },
+        .fault = .{ .call = .{ .hook = &probe.hook } },
         .times = 0,
     }};
     const fio = try FaultIo.init(testing.allocator, testing.io, .{ .plan = &plan });
@@ -584,9 +585,10 @@ fn waitUntil(io: Io, deadline: Io.Timestamp) Io.Cancelable!void {
 /// wait loop under a busy scheduler sees it.
 const Late = struct {
     clock: *shakedown.Clock,
+    hook: shakedown.Hook = .{ .run = pass },
 
-    fn pass(_: Io, ctx: *anyopaque) void {
-        const late: *Late = @ptrCast(@alignCast(ctx)); // safe: the plan hands this test's Late as the context
+    fn pass(hook: *shakedown.Hook, _: Io) void {
+        const late: *Late = @fieldParentPtr("hook", hook);
         late.clock.advance(.fromMilliseconds(10));
     }
 };
@@ -596,7 +598,7 @@ test "a callback runs, then what it leads to happens to the call" {
     var late: Late = .{ .clock = &clock };
     const fio = try FaultIo.init(testing.allocator, clock.io(), .{ .plan = &.{.{
         .at = .{ .nth = .{ .call = .futexWait, .n = 1 } },
-        .fault = .{ .call = .{ .ctx = &late, .f = Late.pass, .then = &.spurious_wake } },
+        .fault = .{ .call = .{ .hook = &late.hook, .then = &.spurious_wake } },
         .times = 0,
     }} });
     defer fio.deinit();
@@ -611,14 +613,14 @@ test "a callback runs, then what it leads to happens to the call" {
     var probe: Probe = .{};
     try fio.setPlan(&.{.{
         .at = .{ .nth = .{ .call = .concurrent, .n = 1 } },
-        .fault = .{ .call = .{ .ctx = &probe, .f = Probe.hit, .then = &.{ .fail = error.ConcurrencyUnavailable } } },
+        .fault = .{ .call = .{ .hook = &probe.hook, .then = &.{ .fail = error.ConcurrencyUnavailable } } },
     }});
     try testing.expectError(error.ConcurrencyUnavailable, io.concurrent(Io.sleep, .{ io, .zero, .awake }));
     try testing.expectEqual(@as(u32, 1), probe.calls);
     // What it leads to is checked with the plan.
     try testing.expectError(error.FaultNotInErrorSet, fio.setPlan(&.{.{
         .at = .{ .nth = .{ .call = .concurrent, .n = 1 } },
-        .fault = .{ .call = .{ .ctx = &probe, .f = Probe.hit, .then = &.{ .fail = error.InputOutput } } },
+        .fault = .{ .call = .{ .hook = &probe.hook, .then = &.{ .fail = error.InputOutput } } },
     }}));
 }
 

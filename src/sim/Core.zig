@@ -20,6 +20,7 @@ const Source = @import("../Source.zig");
 const ids = @import("../ids.zig");
 const Trace = @import("../trace.zig").Trace;
 const IoCall = @import("../io_call.zig").IoCall;
+const Hook = @import("../io_call.zig").Hook;
 const executor = @import("executor.zig");
 const os_thread = @import("os_thread.zig");
 const nanoseconds = @import("../nanoseconds.zig");
@@ -164,7 +165,7 @@ pub const Job = union(enum) {
     root: *const fn (context: *const anyopaque, result: *anyopaque) void,
     node: *const fn (context: *const anyopaque, result: *anyopaque) void,
     /// `Sim.at`'s function, started when its timer fires.
-    at: struct { ctx: *anyopaque, f: *const fn (io: Io, ctx: *anyopaque) void },
+    at: *Hook,
     /// A simulated process's `main`: the process ends when it returns.
     program: *Process,
 };
@@ -601,7 +602,7 @@ fn taskMain(arg: *anyopaque) noreturn {
             .future => |f| f(t.contextPointer(), t.resultPointer()),
             .member => |f| f(t.contextPointer()),
             .root, .node => |f| f(t.contextPointer(), t.resultPointer()),
-            .at => |a| a.f(t.core.outer, a.ctx),
+            .at => |hook| hook.run(hook, t.core.outer),
             .program => |p| {
                 const code = Processes.run(p);
                 t.core.endProcess(p, .{ .exited = code });

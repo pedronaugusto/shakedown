@@ -11,6 +11,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Targeted search: `Case.target(score, label)` reports how far a case got toward something `check` should steer toward. Once half of the cases have run, `check` climbs each label's highest-scoring case. Each scan first writes each span's children twice (a list's elements doubled, in one replay), then from the last choice back each choice jumps to its bound and to 0, then steps up and down by the largest step that raises the score (an exponential, then a binary search); after a rise the scan starts again. The climb works on the tape, so it steers a property's inputs and its simulations' schedules, faults and latencies alike. Its replays count as cases, a failure it finds is shrunk as any other, and the report names the highest score each label reached.
 - `Source.Backend.extend`: a tape's choices, then fresh draws from a seed past its end, for a climb's replays.
 - `EveryCrashOptions.shard`: one of `count` contiguous ranges of the crash points, so a long operation's crash sweep runs as several tests, each well inside a watchdog. A range keeps together the points that leave the same states, so the shards do not repeat each other's recoveries (a state two ranges both reach is recovered in each); interleaved points would each have recovered nearly every state. relic's crash tests of `repack --cruft -d` (576 points) and prune (418) run 50-90 s alone under load.
+### Breaking
+
+- A fault's callback and a simulation's timed event recover their caller's state by type: `shakedown.Hook` is a struct of one function, `run(hook: *Hook, io)`, which the caller embeds as a field of its own state and recovers with `@fieldParentPtr("hook", hook)`. `IoFault.Callback` is `{ .hook = &state.hook, .then = ... }`, where it was `{ .ctx = &state, .f = f }`; `Sim.at(t, &state.hook)` takes the hook, where it took `ctx` and `f`. No context passes through `*anyopaque`, so no cast back to it is the caller's to get right (review-1028 §12). Migration: give the state a `hook: shakedown.Hook = .{ .run = f }` field, make `f` take `(hook: *shakedown.Hook, io: Io)` and recover the state by `@fieldParentPtr`.
+
+### Changed
+
+- `assert.invariant` where `assert.pre` was, as aegis 0.3.0 keeps one name for the always-on contract; it builds on aegis 0.2 too.
 
 ## [0.6.0] - 2026-10-28
 
