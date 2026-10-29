@@ -167,6 +167,23 @@ fn waits(call: IoCall) bool {
 /// Why a fault cannot be injected into a call.
 pub const FaultRefusal = error{ FaultNotInErrorSet, FaultNotApplicable };
 
+/// Test code a fault or a simulation runs at its point. The caller embeds it
+/// as a field of its own state and recovers that state in `run` with
+/// `@fieldParentPtr`, so no context passes through `*anyopaque`:
+///
+///     const Probe = struct {
+///         calls: u32 = 0,
+///         hook: Hook = .{ .run = hit },
+///         fn hit(hook: *Hook, io: Io) void {
+///             const probe: *Probe = @fieldParentPtr("hook", hook);
+///             probe.calls += 1;
+///             _ = io;
+///         }
+///     };
+pub const Hook = struct {
+    run: *const fn (hook: *Hook, io: Io) void,
+};
+
 /// What to do to a call.
 pub const IoFault = union(enum) {
     /// Returned instead of making the call. It must be in the call's error
@@ -207,11 +224,10 @@ pub const IoFault = union(enum) {
     crash,
 
     pub const Callback = struct {
-        ctx: *anyopaque,
-        /// Called with the base `Io`, so its own calls are neither counted
-        /// nor traced, nor faulted.
-        f: *const fn (io: Io, ctx: *anyopaque) void,
-        /// What happens to the call once `f` has run: null makes it, a
+        /// Run with the base `Io`, so its own calls are neither counted nor
+        /// traced, nor faulted.
+        hook: *Hook,
+        /// What happens to the call once the hook has run: null makes it, a
         /// fault is injected as if planned there, checked with the plan.
         then: ?*const IoFault = null,
     };
@@ -340,11 +356,10 @@ test "a spurious wake is a futex wait's, a stall a cancelation point's, and a ca
     try IoFault.check(.stall, .file_read_streaming);
     try IoFault.check(.stall, .fileSync);
     try std.testing.expectError(error.FaultNotApplicable, IoFault.check(.stall, .fileClose));
-    var ctx: u8 = 0;
-    const f = struct {
-        fn f(_: Io, _: *anyopaque) void {}
-    }.f;
-    try IoFault.check(.{ .call = .{ .ctx = &ctx, .f = f, .then = &.{ .fail = error.ConcurrencyUnavailable } } }, .groupConcurrent);
-    try std.testing.expectError(error.FaultNotInErrorSet, IoFault.check(.{ .call = .{ .ctx = &ctx, .f = f, .then = &.{ .fail = error.InputOutput } } }, .groupConcurrent));
-    try IoFault.check(.{ .call = .{ .ctx = &ctx, .f = f, .then = &.crash } }, .fileSync);
+    var hook: Hook = .{ .run = struct {
+        fn run(_: *Hook, _: Io) void {}
+    }.run };
+    try IoFault.check(.{ .call = .{ .hook = &hook, .then = &.{ .fail = error.ConcurrencyUnavailable } } }, .groupConcurrent);
+    try std.testing.expectError(error.FaultNotInErrorSet, IoFault.check(.{ .call = .{ .hook = &hook, .then = &.{ .fail = error.InputOutput } } }, .groupConcurrent));
+    try IoFault.check(.{ .call = .{ .hook = &hook, .then = &.crash } }, .fileSync);
 }

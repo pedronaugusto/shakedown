@@ -30,6 +30,9 @@ pub const Trace = @import("trace.zig").Trace;
 pub const IoCall = @import("io_call.zig").IoCall;
 /// What `FaultIo` can do to a call.
 pub const IoFault = @import("io_call.zig").IoFault;
+/// Test code a fault (`IoFault.call`) or a simulation (`Sim.at`) runs at its point, recovering its
+/// caller's state by `@fieldParentPtr`.
+pub const Hook = @import("io_call.zig").Hook;
 /// One call through `FaultIo`, as its trace records it.
 pub const IoEvent = @import("io_call.zig").IoEvent;
 /// `Plan` over `Io` calls.

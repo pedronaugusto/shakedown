@@ -131,6 +131,7 @@ test "a seed repeats its run, on every executor" {
 const Frames = struct {
     frames: u32 = 0,
     input: u32 = 0,
+    hook: shakedown.Hook = .{ .run = press },
 
     fn loop(f: *Frames, io: Io) Io.Cancelable!void {
         while (f.frames < 100) {
@@ -139,8 +140,8 @@ const Frames = struct {
         }
     }
 
-    fn press(_: Io, ctx: *anyopaque) void {
-        const f: *Frames = @ptrCast(@alignCast(ctx));
+    fn press(hook: *shakedown.Hook, _: Io) void {
+        const f: *Frames = @fieldParentPtr("hook", hook);
         f.input = f.frames;
     }
 };
@@ -151,7 +152,7 @@ test "frame stepping: runFor moves time by a frame, and at injects input at an i
     var f: Frames = .{};
     try sim.start(Frames.loop, .{ &f, sim.io() });
     const t0 = sim.now(.awake);
-    try sim.at(t0.addDuration(.fromMilliseconds(100)), &f, Frames.press);
+    try sim.at(t0.addDuration(.fromMilliseconds(100)), &f.hook);
     for (0..10) |_| try testing.expectEqual(@as(?Sim.Outcome, null), sim.runFor(.fromNanoseconds(16_666_667)));
     // A frame at the start, then one per period: a timer due exactly at
     // the end of a step runs within it.
