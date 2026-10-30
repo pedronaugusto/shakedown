@@ -82,7 +82,7 @@ const slots = struct {
             if (c.spawn(.{ .future = start }, context, context_alignment, result.len, result_alignment, .ready)) |t| {
                 t.spawned_at = @returnAddress();
                 c.record(.async, e, t.id.raw());
-                return @ptrCast(t); // aegis: no-danger: a future of this simulation is its task, cast back by await and cancel
+                return @ptrCast(t); // aegis: no-danger(A019): a future of this simulation is its task, cast back by await and cancel
             } else |_| {}
         }
         c.record(.async, e, 0);
@@ -106,14 +106,14 @@ const slots = struct {
         };
         t.spawned_at = @returnAddress();
         c.record(.concurrent, e, t.id.raw());
-        return @ptrCast(t); // aegis: no-danger: a future of this simulation is its task, cast back by await and cancel
+        return @ptrCast(t); // aegis: no-danger(A019): a future of this simulation is its task, cast back by await and cancel
     }
 
     pub fn await(userdata: ?*anyopaque, any_future: *Io.AnyFuture, result: []u8, _: std.mem.Alignment) void {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("await");
-        const target: *Task = @ptrCast(@alignCast(any_future)); // aegis: no-danger: a future of this simulation is its task
+        const target: *Task = @ptrCast(@alignCast(any_future)); // aegis: no-danger(A019): a future of this simulation is its task
         c.touch(Core.Object.task(c.actorOf(target)), true);
         if (target.state.current() != .done) {
             target.awaiter = t;
@@ -135,7 +135,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("cancel");
-        const target: *Task = @ptrCast(@alignCast(any_future)); // aegis: no-danger: a future of this simulation is its task
+        const target: *Task = @ptrCast(@alignCast(any_future)); // aegis: no-danger(A019): a future of this simulation is its task
         c.touch(Core.Object.task(c.actorOf(target)), true);
         c.requestCancel(target);
         target.awaiter = t;
@@ -255,7 +255,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse {
-            if (@atomicLoad(u32, ptr, .acquire) != expected) return; // aegis: boundary: the futex word is std's, a `*const u32` the vtable hands in
+            if (@atomicLoad(u32, ptr, .acquire) != expected) return; // aegis: boundary(A007): the futex word is std's, a `*const u32` the vtable hands in
             outside("futexWait");
         };
         if (Core.cancelPoint(t)) {
@@ -271,7 +271,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse {
-            if (@atomicLoad(u32, ptr, .acquire) != expected) return; // aegis: boundary: the futex word is std's, a `*const u32` the vtable hands in
+            if (@atomicLoad(u32, ptr, .acquire) != expected) return; // aegis: boundary(A007): the futex word is std's, a `*const u32` the vtable hands in
             outside("futexWaitUncancelable");
         };
         const wake = wait(c, t, ptr, expected, .none, false);
@@ -462,7 +462,7 @@ fn noTerminal(comptime call: IoCall, userdata: ?*anyopaque) Io.Cancelable!bool {
 /// A futex wait from task `t`, after its cancelation point.
 fn wait(c: *Core, t: *Task, ptr: *const u32, expected: u32, timeout: Io.Timeout, cancelable: bool) Core.Wake {
     c.touch(Core.Object.futex(@intFromPtr(ptr)), true); // safe: the address only identifies the futex
-    if (@atomicLoad(u32, ptr, .acquire) != expected) return .woken; // aegis: boundary: the futex word is std's, a `*const u32` the vtable hands in
+    if (@atomicLoad(u32, ptr, .acquire) != expected) return .woken; // aegis: boundary(A007): the futex word is std's, a `*const u32` the vtable hands in
     const deadline = c.deadline(timeout);
     if (deadline == .due) return .timeout;
     if (c.spurious()) {

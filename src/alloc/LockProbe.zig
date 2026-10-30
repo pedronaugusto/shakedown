@@ -46,7 +46,7 @@ pub const Held = struct {
             .context = lock,
             .isHeld = struct {
                 fn is(context: *const anyopaque) bool {
-                    const l: *const std.atomic.Value(bool) = @ptrCast(@alignCast(context)); // aegis: no-danger: made from a flag in `flag`
+                    const l: *const std.atomic.Value(bool) = @ptrCast(@alignCast(context)); // aegis: no-danger(A019): made from a flag in `flag`
                     return l.load(.acquire);
                 }
             }.is,
@@ -61,7 +61,7 @@ pub const Held = struct {
             .context = owner,
             .isHeld = struct {
                 fn is(context: *const anyopaque) bool {
-                    const l: *const Lock = @ptrCast(@alignCast(context)); // aegis: no-danger: made from a pointer to a `Lock` in `guarded`
+                    const l: *const Lock = @ptrCast(@alignCast(context)); // aegis: no-danger(A019): made from a pointer to a `Lock` in `guarded`
                     return l.isHeld();
                 }
             }.is,
@@ -74,7 +74,7 @@ pub const Held = struct {
             .context = lock,
             .isHeld = struct {
                 fn is(context: *const anyopaque) bool {
-                    const l: *const std.Io.Mutex = @ptrCast(@alignCast(context)); // aegis: no-danger: made from a mutex in `mutex`
+                    const l: *const std.Io.Mutex = @ptrCast(@alignCast(context)); // aegis: no-danger(A019): made from a mutex in `mutex`
                     return l.state.load(.acquire) != .unlocked;
                 }
             }.is,
@@ -87,8 +87,8 @@ pub const Held = struct {
             .context = lock,
             .isHeld = struct {
                 fn is(context: *const anyopaque) bool {
-                    const l: *const std.atomic.Mutex = @ptrCast(@alignCast(context)); // aegis: no-danger: made from a spin mutex in `spinMutex`
-                    return @atomicLoad(std.atomic.Mutex, l, .acquire) == .locked; // aegis: boundary: std's spin mutex is read as std lays it out, never taken
+                    const l: *const std.atomic.Mutex = @ptrCast(@alignCast(context)); // aegis: no-danger(A019): made from a spin mutex in `spinMutex`
+                    return @atomicLoad(std.atomic.Mutex, l, .acquire) == .locked; // aegis: boundary(A007): std's spin mutex is read as std lays it out, never taken
                 }
             }.is,
         };
@@ -172,7 +172,7 @@ const vtable: Allocator.VTable = .{
 };
 
 fn of(ptr: *anyopaque) *LockProbe {
-    return @ptrCast(@alignCast(ptr)); // aegis: no-danger: the vtable is only ever paired with a *LockProbe
+    return @ptrCast(@alignCast(ptr)); // aegis: no-danger(A019): the vtable is only ever paired with a *LockProbe
 }
 
 fn note(p: *LockProbe, call: Call, len: usize, ret_addr: usize) void {

@@ -45,10 +45,6 @@
         "level": "gate"
       },
       {
-        "id": "A002",
-        "level": "report"
-      },
-      {
         "id": "A003",
         "level": "gate"
       },

@@ -415,7 +415,7 @@ const SumAtLeast = struct {
     source: Source,
 
     fn run(ctx: *anyopaque, choices: []const u64) Allocator.Error!Verdict {
-        const self: *SumAtLeast = @ptrCast(@alignCast(ctx)); // aegis: no-danger: the test hands its own context to `shrink`
+        const self: *SumAtLeast = @ptrCast(@alignCast(ctx)); // aegis: no-danger(A019): the test hands its own context to `shrink`
         self.source.restart(.{ .replay = choices });
         var sum: u64 = 0;
         const list = self.source.begin();

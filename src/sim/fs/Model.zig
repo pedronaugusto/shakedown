@@ -121,7 +121,7 @@ fn newNode(fs: *Model, kind: Io.File.Kind, permissions: Io.File.Permissions, tar
     return id;
 }
 pub fn encode(id: u32) Io.File.Handle {
-    if (builtin.os.tag == .windows) return @ptrFromInt(std.math.maxInt(usize) - 0x7fff_ffff + @as(usize, id) * 4); // aegis: no-danger: negative NT kernel handles; user-mode calls cannot resolve them
+    if (builtin.os.tag == .windows) return @ptrFromInt(std.math.maxInt(usize) - 0x7fff_ffff + @as(usize, id) * 4); // aegis: no-danger(A019): negative NT kernel handles; user-mode calls cannot resolve them
     return -1_048_576 - @as(i32, @intCast(id));
 }
 fn decode(raw: Io.File.Handle) ?u32 {
@@ -145,7 +145,7 @@ pub fn directory(fs: *Model, dir: Io.Dir) Error!u32 {
     if (fs.root.nodes.items[h.inode].kind != .directory) return error.NotDir;
     return h.inode;
 }
-pub fn openHandle(fs: *Model, inode: u32, read_access: bool, write_access: bool, path_only: bool, iterate: bool) !Io.File { // aegis: boundary: std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
+pub fn openHandle(fs: *Model, inode: u32, read_access: bool, write_access: bool, path_only: bool, iterate: bool) !Io.File { // aegis: boundary(A015): std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
     if (fs.next_handle >= 0x1000_0000) return error.OutOfMemory;
     const id = fs.next_handle;
     try fs.handles.append(fs.gpa, .{ .id = id, .inode = inode, .read = read_access, .write = write_access, .path_only = path_only, .iterate = iterate });

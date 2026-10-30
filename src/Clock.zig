@@ -115,7 +115,7 @@ const Timer = struct {
     node: Timers.Node = undefined,
     clock: Kept,
     /// Private: 0 while armed, 1 once fired. A sleep waits on it.
-    state: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which the base's futexWait waits on as the `u32` itself
+    state: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which the base's futexWait waits on as the `u32` itself
     /// A timed futex wait's word, woken when the timer fires.
     futex: ?*const u32 = null,
     /// Private: how many timers the clock had fired before this one.
@@ -130,7 +130,7 @@ const State = struct {
     locked: aegis.BlockingGuarded(Timing) = .init(.{}),
     count: aegis.Atomic(Armed) = .init(.fromRaw(0)),
     /// Bumped on every arming, so `awaitArmed` can wait on it.
-    arming: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which the base's futexWait waits on as the `u32` itself
+    arming: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which the base's futexWait waits on as the `u32` itself
 };
 
 /// What the clock's lock guards.
@@ -291,7 +291,7 @@ fn futexWait(userdata: ?*anyopaque, ptr: *const u32, expected: u32, timeout: Io.
             // A wake that leaves the word at `expected` is taken for a
             // spurious one and waited through; returning would read as a
             // timeout to a caller such as `Event.waitTimeout`.
-            while (timer.state.load(.acquire) == 0 and @atomicLoad(u32, ptr, .acquire) == expected) { // aegis: boundary: the futex word is std's, a `*const u32` the vtable hands in
+            while (timer.state.load(.acquire) == 0 and @atomicLoad(u32, ptr, .acquire) == expected) { // aegis: boundary(A007): the futex word is std's, a `*const u32` the vtable hands in
                 try l.base.vtable.futexWait(l.base.userdata, ptr, expected, slice);
             }
         },

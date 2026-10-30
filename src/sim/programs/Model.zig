@@ -318,7 +318,7 @@ const windows_base: usize = std.math.maxInt(usize) - 0x1_7fff_ffff;
 pub fn encodePid(pid: u32) std.process.Child.Id {
     const Id = std.process.Child.Id;
     if (Id == void) return {};
-    if (builtin.os.tag == .windows) return @ptrFromInt(windows_base + @as(usize, pid) * 4); // aegis: no-danger: a kernel-mode value user-mode calls cannot resolve, never dereferenced
+    if (builtin.os.tag == .windows) return @ptrFromInt(windows_base + @as(usize, pid) * 4); // aegis: no-danger(A019): a kernel-mode value user-mode calls cannot resolve, never dereferenced
     return posix_pid_base + @as(i32, @intCast(pid));
 }
 

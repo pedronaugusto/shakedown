@@ -124,7 +124,7 @@ const vtable: Allocator.VTable = .{
 };
 
 fn of(ptr: *anyopaque) *Erased {
-    return @ptrCast(@alignCast(ptr)); // aegis: no-danger: the vtable is only ever paired with an *Erased
+    return @ptrCast(@alignCast(ptr)); // aegis: no-danger(A019): the vtable is only ever paired with an *Erased
 }
 
 fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
