@@ -46,7 +46,7 @@ const vtable: std.mem.Allocator.VTable = .{
 };
 
 fn of(ptr: *anyopaque) *Counting {
-    return @ptrCast(@alignCast(ptr)); // aegis: no-danger: the vtable is only ever paired with a *Counting
+    return @ptrCast(@alignCast(ptr)); // aegis: no-danger(A019): the vtable is only ever paired with a *Counting
 }
 
 fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {

@@ -117,7 +117,7 @@ fn futexTimeout(_: Allocator, io: Io) !void {
 // Locks.
 
 const Counter = struct {
-    mutex: Io.Mutex = .init, // aegis: boundary: std's mutex is the subject of the check
+    mutex: Io.Mutex = .init, // aegis: boundary(A007): std's mutex is the subject of the check
     count: u32 = 0,
 
     fn add(c: *Counter, io: Io, times: u32) Io.Cancelable!void {
@@ -141,8 +141,8 @@ fn mutexExcludes(_: Allocator, io: Io) !void {
 }
 
 const Box = struct {
-    mutex: Io.Mutex = .init, // aegis: boundary: std's mutex is the subject of the check
-    cond: Io.Condition = .init, // aegis: boundary: std's condition is the subject of the check
+    mutex: Io.Mutex = .init, // aegis: boundary(A007): std's mutex is the subject of the check
+    cond: Io.Condition = .init, // aegis: boundary(A007): std's condition is the subject of the check
     items: u32 = 0,
     taken: u32 = 0,
     total: u32 = 20,
@@ -174,8 +174,8 @@ fn conditionHandsOff(_: Allocator, io: Io) !void {
 }
 
 fn conditionTimesOut(_: Allocator, io: Io) !void {
-    var mutex: Io.Mutex = .init; // aegis: boundary: std's mutex is the subject of the check
-    var cond: Io.Condition = .init; // aegis: boundary: std's condition is the subject of the check
+    var mutex: Io.Mutex = .init; // aegis: boundary(A007): std's mutex is the subject of the check
+    var cond: Io.Condition = .init; // aegis: boundary(A007): std's condition is the subject of the check
     try mutex.lock(io);
     defer mutex.unlock(io);
     const result = cond.waitTimeout(io, &mutex, .{ .duration = .{ .raw = ms(2), .clock = .awake } });
@@ -183,16 +183,16 @@ fn conditionTimesOut(_: Allocator, io: Io) !void {
 }
 
 fn eventWakes(_: Allocator, io: Io) !void {
-    var ready: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
+    var ready: Io.Event = .unset;
     ready.set(io);
     try ready.wait(io);
-    var gate: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
+    var gate: Io.Event = .unset;
     var waiter = try io.concurrent(Io.Event.wait, .{ &gate, io });
     // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
     defer _ = waiter.cancel(io) catch {};
     gate.set(io);
     try waiter.await(io);
-    var never: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
+    var never: Io.Event = .unset;
     if (never.waitTimeout(io, .{ .duration = .{ .raw = ms(2), .clock = .awake } }) != error.Timeout) return error.NoTimeout;
 }
 
@@ -217,7 +217,7 @@ fn postEach(io: Io, s: *Io.Semaphore, n: u32) void {
 }
 
 fn semaphoreCounts(_: Allocator, io: Io) !void {
-    var s: Io.Semaphore = .{}; // aegis: boundary: std's semaphore is the subject of the check
+    var s: Io.Semaphore = .{}; // aegis: boundary(A007): std's semaphore is the subject of the check
     var poster = try io.concurrent(postEach, .{ io, &s, 10 });
     defer poster.cancel(io);
     for (0..10) |_| try s.wait(io);
@@ -228,7 +228,7 @@ fn semaphoreCounts(_: Allocator, io: Io) !void {
 /// Readers hold the lock together, so what they count is atomic: on a
 /// threaded `Io` they run at once.
 const Shared = struct {
-    lock: Io.RwLock = .init, // aegis: boundary: std's read-write lock is the subject of the check
+    lock: Io.RwLock = .init, // aegis: boundary(A007): std's read-write lock is the subject of the check
     readers: aegis.Atomic(Readers) = .init(.fromRaw(0)),
     writing: aegis.Atomic(Writing) = .init(.idle),
     broken: aegis.Atomic(Broken) = .init(.held),
@@ -283,8 +283,8 @@ fn asyncResult(_: Allocator, io: Io) !void {
 }
 
 const PingPong = struct {
-    ping: Io.Event = .unset, // aegis: boundary: std's event is the subject of the check
-    pong: Io.Event = .unset, // aegis: boundary: std's event is the subject of the check
+    ping: Io.Event = .unset,
+    pong: Io.Event = .unset,
 
     fn answer(p: *PingPong, io: Io) Io.Cancelable!void {
         try p.ping.wait(io);
@@ -317,15 +317,15 @@ fn finishAt(io: Io, gate: *Io.Event) Io.Cancelable!u32 {
 }
 
 fn cancelFinished(_: Allocator, io: Io) !void {
-    var done: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
+    var done: Io.Event = .unset;
     var task = try io.concurrent(finishAt, .{ io, &done });
     try done.wait(io);
     if (try task.cancel(io) != 5) return error.WrongResult;
 }
 
 const Protected = struct {
-    started: Io.Event = .unset, // aegis: boundary: std's event is the subject of the check
-    release: Io.Event = .unset, // aegis: boundary: std's event is the subject of the check
+    started: Io.Event = .unset,
+    release: Io.Event = .unset,
     waited: bool = false,
 
     fn run(p: *Protected, io: Io) Io.Cancelable!void {
@@ -367,7 +367,7 @@ fn twice(io: Io, started: *Io.Event) error{ Canceled, Missed }!void {
 }
 
 fn recancelAgain(_: Allocator, io: Io) !void {
-    var started: Io.Event = .unset; // aegis: boundary: std's event is the subject of the check
+    var started: Io.Event = .unset;
     var task = try io.concurrent(twice, .{ io, &started });
     try started.wait(io);
     if (task.cancel(io)) |_| return error.NotCanceled else |err| if (err != error.Canceled) return err;

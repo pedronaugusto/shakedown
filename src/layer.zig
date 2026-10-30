@@ -59,7 +59,7 @@ pub fn Layer(comptime State: type, comptime overrides: Overrides) type {
 
         /// From inside an override: the layer whose state `userdata` is.
         pub fn of(userdata: ?*anyopaque) *Self {
-            const state: *State = @ptrCast(@alignCast(userdata.?)); // aegis: no-danger: every Io this type hands out carries `&layer.state`
+            const state: *State = @ptrCast(@alignCast(userdata.?)); // aegis: no-danger(A019): every Io this type hands out carries `&layer.state`
             return @alignCast(@fieldParentPtr("state", state)); // safe: `state` is the field of a layer, aligned as one
         }
     };

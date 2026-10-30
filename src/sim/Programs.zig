@@ -54,7 +54,7 @@ fn EntryOf(comptime main: anytype, comptime Context: type) type {
         @compileError("a program's main takes std.process.Init or std.process.Init.Minimal after its context, not " ++ @typeName(Last));
     return struct {
         fn entry(raw: *const anyopaque, init: std.process.Init) u8 {
-            const context: *const Context = @ptrCast(@alignCast(raw)); // aegis: no-danger: registered with this context's bytes, aligned for it
+            const context: *const Context = @ptrCast(@alignCast(raw)); // aegis: no-danger(A019): registered with this context's bytes, aligned for it
             const result = if (Last == std.process.Init)
                 @call(.auto, main, context.* ++ .{init})
             else if (Last == std.process.Init.Minimal)
@@ -105,7 +105,7 @@ pub const Size = Pipes.Size;
 pub const Terminal = struct { master: Io.File, slave: Io.File };
 
 /// A pipe the caller owns: its read end and its write end.
-pub fn pipe(p: Programs) Pipes.CreateError![2]Io.File { // aegis: boundary: a simulated pipe's ends as std's Io.File names them, the caller's to close as an Io call's result is
+pub fn pipe(p: Programs) Pipes.CreateError![2]Io.File { // aegis: boundary(A015): a simulated pipe's ends as std's Io.File names them, the caller's to close as an Io call's result is
     return calls.pipe(p.core, @returnAddress());
 }
 

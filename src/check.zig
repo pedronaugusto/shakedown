@@ -207,7 +207,7 @@ pub fn Bound(comptime Ctx: type, comptime body: fn (Ctx, *Case) anyerror!void) t
         const Self = @This();
 
         pub fn run(erased: *anyopaque, c: *Case) anyerror!void {
-            const self: *Self = @ptrCast(@alignCast(erased)); // aegis: no-danger: `Runner.body` pairs this function with a pointer to its own struct
+            const self: *Self = @ptrCast(@alignCast(erased)); // aegis: no-danger(A019): `Runner.body` pairs this function with a pointer to its own struct
             return body(self.ctx, c);
         }
     };
@@ -373,7 +373,7 @@ const Same = struct {
     err: anyerror,
 
     fn run(ctx: *anyopaque, choices: []const u64) Allocator.Error!shrinker.Verdict {
-        const self: *Same = @ptrCast(@alignCast(ctx)); // aegis: no-danger: `shrink` hands back the context `failed` gave it
+        const self: *Same = @ptrCast(@alignCast(ctx)); // aegis: no-danger(A019): `shrink` hands back the context `failed` gave it
         const outcome = try self.runner.once(.{ .replay = choices });
         return switch (outcome) {
             .fail => |err| if (err == self.err) .{ .fails = self.runner.source.tape() } else .other,

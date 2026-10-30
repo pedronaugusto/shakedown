@@ -127,7 +127,7 @@ fn key(a: NodeId, b: NodeId) u64 {
 /// dense from 0, so the first node has no place and a caller keeps it apart.
 pub fn followerIndex(node: NodeId) usize {
     std.debug.assert(node != NodeId.fromRaw(0));
-    // aegis: internal: docs/design.md#aegis-types-and-the-raw-sites; the model issues ids densely from 0 and is the one place that knows it
+    // aegis: internal(A004): docs/design.md#aegis-types-and-the-raw-sites; the model issues ids densely from 0 and is the one place that knows it
     return node.raw() - 1;
 }
 pub fn addNode(m: *Model, addresses: []const Address) error{OutOfMemory}!NodeId {
@@ -255,7 +255,7 @@ fn recycle(m: *Model, p: *Packet) void {
 }
 fn handleFromId(id: u32) Handle {
     return switch (@typeInfo(Handle)) {
-        .pointer => @ptrFromInt(id), // aegis: no-danger: virtual opaque handles are identifiers, never dereferenced
+        .pointer => @ptrFromInt(id), // aegis: no-danger(A019): virtual opaque handles are identifiers, never dereferenced
         .int => @intCast(id),
         else => @compileError("unsupported Io socket handle representation"),
     };

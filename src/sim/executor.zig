@@ -52,7 +52,7 @@ pub const Context = struct {
 
 const Baton = struct {
     /// 1 when this context may run.
-    turn: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which futexWait waits on as the `u32` itself
+    turn: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which futexWait waits on as the `u32` itself
     /// Set to make the thread exit when it next gets the baton.
     exit: bool = false,
     handle: ?Thread = null,
@@ -61,7 +61,7 @@ const Baton = struct {
     /// The thread the context runs on, as the watchdog reads it: the driver's
     /// own, or a task's, which names itself before `start` returns.
     os: os_thread.Thread = .none,
-    named: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which futexWait waits on as the `u32` itself
+    named: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which futexWait waits on as the `u32` itself
 };
 
 /// A task's thread. On Windows a thread of our own: std's `Thread.join`
@@ -173,13 +173,13 @@ fn fiberStart(b: *Baton, _: ?shuttle.Context.Nothing) callconv(.c) noreturn {
 // Threads.
 
 const win32 = struct {
-    extern "kernel32" fn ExitThread(code: u32) callconv(.winapi) noreturn; // aegis: boundary: kernel32 thread exit, which std does not bind
+    extern "kernel32" fn ExitThread(code: u32) callconv(.winapi) noreturn; // aegis: boundary(A019): kernel32 thread exit, which std does not bind
     const stack_size_param_is_a_reservation: u32 = 0x10000;
-    extern "kernel32" fn CreateThread(attributes: ?*anyopaque, stack_size: usize, start: *const fn (?*anyopaque) callconv(.winapi) u32, param: ?*anyopaque, flags: u32, id: ?*u32) callconv(.winapi) ?windows.HANDLE; // aegis: boundary: kernel32 thread creation with a caller stack size, which std does not bind
+    extern "kernel32" fn CreateThread(attributes: ?*anyopaque, stack_size: usize, start: *const fn (?*anyopaque) callconv(.winapi) u32, param: ?*anyopaque, flags: u32, id: ?*u32) callconv(.winapi) ?windows.HANDLE; // aegis: boundary(A019): kernel32 thread creation with a caller stack size, which std does not bind
 };
 
 fn win32ThreadStart(param: ?*anyopaque) callconv(.winapi) u32 {
-    threadMain(@ptrCast(@alignCast(param.?))); // aegis: no-danger: `start` passes the context's baton
+    threadMain(@ptrCast(@alignCast(param.?))); // aegis: no-danger(A019): `start` passes the context's baton
     return 0;
 }
 

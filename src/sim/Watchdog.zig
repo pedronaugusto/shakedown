@@ -35,7 +35,7 @@ const Watchdog = @This();
 locked: aegis.BlockingGuarded(Watching) = .init(.{}),
 /// Private: bumped to wake the thread, when a simulation comes or goes and
 /// when it is to stop.
-signal: std.atomic.Value(u32) = .init(0), // aegis: boundary: a futex word, which futexWait waits on as the `u32` itself
+signal: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which futexWait waits on as the `u32` itself
 
 /// What the lock guards.
 const Watching = struct {

@@ -91,7 +91,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     s.core.network.drawn_by = &s.core;
     s.core.network.draw_fn = struct {
         fn draw(p: *anyopaque, max: u64) u64 {
-            const c: *Core = @ptrCast(@alignCast(p)); // aegis: no-danger: installed with this Core as drawn_by
+            const c: *Core = @ptrCast(@alignCast(p)); // aegis: no-danger(A019): installed with this Core as drawn_by
             return c.draw(max);
         }
     }.draw;
@@ -199,8 +199,8 @@ fn startAt(s: *Sim, comptime f: anytype, args: std.meta.ArgsTuple(@TypeOf(f)), s
     const Args = @TypeOf(args);
     const Start = struct {
         fn start(context: *const anyopaque, result: *anyopaque) void {
-            const a: *const Args = @ptrCast(@alignCast(context)); // aegis: no-danger: the core copied the arguments here
-            const err: *?anyerror = @ptrCast(@alignCast(result)); // aegis: no-danger: the root's result slot is sized and aligned for it
+            const a: *const Args = @ptrCast(@alignCast(context)); // aegis: no-danger(A019): the core copied the arguments here
+            const err: *?anyerror = @ptrCast(@alignCast(result)); // aegis: no-danger(A019): the root's result slot is sized and aligned for it
             err.* = errorOf(@call(.auto, f, a.*));
         }
     };
@@ -305,7 +305,7 @@ pub fn programsOf(any: Io) ?Programs {
 
 /// The context of a simulation's `Io`, or null for any other `Io`.
 fn contextOf(any: Io) ?*Core.Context {
-    if (any.vtable == &calls.vtable) return @ptrCast(@alignCast(any.userdata.?)); // aegis: no-danger: a simulation's own vtable is handed out with a Context as userdata
+    if (any.vtable == &calls.vtable) return @ptrCast(@alignCast(any.userdata.?)); // aegis: no-danger(A019): a simulation's own vtable is handed out with a Context as userdata
     if (any.vtable == &Routing.vtable) return Routing.of(any.userdata).state.context;
     return null;
 }

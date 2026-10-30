@@ -275,11 +275,11 @@ pub const Task = struct {
     }
 
     fn contextPointer(t: *Task) *const anyopaque {
-        return @ptrCast(t.frame.ptr + t.context_offset); // aegis: no-danger: the frame holds the copied context at this offset
+        return @ptrCast(t.frame.ptr + t.context_offset); // aegis: no-danger(A019): the frame holds the copied context at this offset
     }
 
     fn resultPointer(t: *Task) *anyopaque {
-        return @ptrCast(t.frame.ptr + t.result_offset); // aegis: no-danger: the frame holds the result at this offset
+        return @ptrCast(t.frame.ptr + t.result_offset); // aegis: no-danger(A019): the frame holds the result at this offset
     }
 
     pub fn result(t: *Task) []u8 {
@@ -363,7 +363,7 @@ pub fn deinit(c: *Core) void {
 }
 
 pub fn of(userdata: ?*anyopaque) *Core {
-    const ctx: *Context = @ptrCast(@alignCast(userdata.?)); // aegis: no-danger: each simulation Io owns a stable Context
+    const ctx: *Context = @ptrCast(@alignCast(userdata.?)); // aegis: no-danger(A019): each simulation Io owns a stable Context
     const c = ctx.core;
     if (!ctx.inherit) {
         if (c.current) |t| t.io_context = ctx else c.active_context = ctx;
@@ -391,7 +391,7 @@ pub fn processOf(c: *const Core) ?*Process {
 
 /// The working directory a context's calls mean by `Dir.cwd()`; null for
 /// its node's root.
-pub fn cwdOf(ctx: *const Context) ?Io.Dir { // aegis: design: a borrow of the working directory the context's process holds and closes
+pub fn cwdOf(ctx: *const Context) ?Io.Dir {
     if (ctx.process) |p| return p.cwd;
     return ctx.cwd;
 }
@@ -443,7 +443,7 @@ pub fn diskOf(c: *Core, node: NodeId) ?*Fs {
 /// the schedule may switch there, it touches that disk for a search, and the
 /// trace records it as a foreign call. Outside a run it is made at once.
 pub fn flushStep(ptr: *anyopaque, fs: *Fs, handle: Io.File.Handle, kind: Fs.Flush, dir: bool) Fs.FlushError!void {
-    const c: *Core = @ptrCast(@alignCast(ptr)); // aegis: no-danger: Sim installs its own Core as the stepper's core
+    const c: *Core = @ptrCast(@alignCast(ptr)); // aegis: no-danger(A019): Sim installs its own Core as the stepper's core
     if (c.current == null) return fs.flushNow(handle, kind, dir);
     const entered = c.enter(@returnAddress(), true);
     c.touch(Object.disk(c.diskNode(fs)), true);
@@ -595,7 +595,7 @@ pub fn release(c: *Core, t: *Task) void {
 /// What every task context runs: a job, then the switch away; a task
 /// reused for another job comes back here.
 fn taskMain(arg: *anyopaque) noreturn {
-    const t: *Task = @ptrCast(@alignCast(arg)); // aegis: no-danger: every context is made with its task as the argument
+    const t: *Task = @ptrCast(@alignCast(arg)); // aegis: no-danger(A019): every context is made with its task as the argument
     if (t.core.kind == .threads) running_core = t.core;
     while (true) {
         switch (t.job) {
@@ -641,12 +641,12 @@ fn finish(c: *Core, t: *Task) void {
             c.release(t);
         },
         .root => {
-            const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer())); // aegis: no-danger: a root's result is its error, written by its start function
+            const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer())); // aegis: no-danger(A019): a root's result is its error, written by its start function
             if (err.*) |e| c.outcome = .{ .failed = e };
             c.release(t);
         },
         .node => {
-            const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer())); // aegis: no-danger: node callback writes an optional error
+            const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer())); // aegis: no-danger(A019): node callback writes an optional error
             if (err.*) |e| if (e != error.Canceled or t.cancel != .delivered) {
                 c.outcome = .{ .failed = e };
             };
@@ -660,14 +660,14 @@ fn finish(c: *Core, t: *Task) void {
 /// The token of a group with members and no awaiter: the group itself.
 /// While a task awaits the group, the token is that task.
 pub fn groupMarker(g: *Io.Group) *anyopaque {
-    return @ptrCast(g); // aegis: no-danger: only compared, never dereferenced as anything else
+    return @ptrCast(g); // aegis: no-danger(A019): only compared, never dereferenced as anything else
 }
 
 /// The task awaiting `g`, if one is.
 pub fn groupAwaiter(g: *Io.Group) ?*Task {
     const token = g.token.raw orelse return null;
     if (token == groupMarker(g)) return null;
-    return @ptrCast(@alignCast(token)); // aegis: no-danger: a token other than the marker is the awaiting task
+    return @ptrCast(@alignCast(token)); // aegis: no-danger(A019): a token other than the marker is the awaiting task
 }
 
 // Scheduling.
