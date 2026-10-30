@@ -71,6 +71,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/every/fault.zig",
         "src/every.zig",
         "src/every/crash.zig",
+        "src/tasks.zig",
     } },
     .{ .name = "public", .patterns = &.{
         "src/shakedown.zig",
