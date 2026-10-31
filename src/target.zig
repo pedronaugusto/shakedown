@@ -160,19 +160,24 @@ pub fn climb(gpa: Allocator, start: *const Best, probe: Probe, budget: *u32) All
     var i = c.choices.items.len;
     while (i > 0 and improvements < max_improvements) {
         i -= 1;
-        const before = improvements;
         for ([_]Direction{ .up, .down }) |direction| {
             c.at = i;
             c.base = c.choices.items[i];
             c.direction = direction;
             if (!try c.jump()) try c.findStep();
+            const rose = c.improved > 0;
             improvements += c.improved;
             c.improved = 0;
             if (c.stop) |stop| return stop;
+            // A rise may open choices already passed over: start again from
+            // the end. Moving the risen choice back the other way would
+            // mostly replay the tape it rose from.
+            if (rose) {
+                i = c.choices.items.len;
+                break;
+            }
             if (i >= c.choices.items.len) break;
         }
-        // A rise may open choices already passed over: start again from the end.
-        if (improvements > before) i = c.choices.items.len;
     }
     return if (improvements > 0) .improved else .flat;
 }
