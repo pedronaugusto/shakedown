@@ -285,9 +285,10 @@ Some failures need a value, a length or a timing far from anything random
 drawing reaches in a test's budget. `case.target(score, label)` says how close a
 case came: how many items a queue held, how long a list grew, how near a number
 is to a boundary. Once half of the cases have run, `check` climbs the passing
-case that scored highest on each label. From the last choice back, each choice
-jumps to its bound and to 0, then steps up and down by the largest step that
-raises the score (doubling, then halving the gap). A jump is kept when the score
+case that scored highest on each label. Each pass first writes each list's
+elements twice (any span's children, in one replay). Then from the last choice
+back, each choice jumps to its bound and to 0, then steps up and down by the
+largest step that raises the score (doubling, then halving the gap). A jump is kept when the score
 does not fall and the tape grows no longer, so a yes-or-no draw flips in one
 replay. Draws past the edited tape's end are fresh. The climb edits the tape,
 so it steers a simulation as it steers inputs: the schedule, the faults, the

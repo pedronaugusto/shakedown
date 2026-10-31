@@ -253,8 +253,13 @@ case and a `Probe` that replays a candidate tape and says whether the property
 failed, what the climbed label scored, and what tape the replay drew. The
 shrinker is built the same way, around its `Replay`.
 
-The climb keeps one current tape and score. From the last choice back, each
-choice tries, in each direction, a jump (to its recorded bound, or to 0). The
+The climb keeps one current tape and score. Each scan begins with the spans:
+each span with two children or more, from the last back, has its children but
+the last written again after themselves, and the first that raises the score is
+kept. A list's elements are its children and its closing choice the last, so
+this doubles a list in one replay, where a choice at a time grows it by one
+fresh tail per replay (Hypothesis's span mutations make the same move). Then
+from the last choice back, each choice tries, in each direction, a jump (to its recorded bound, or to 0). The
 jump is kept when the score does not fall and the tape grows no longer. Failing
 that, a step search: steps of 1 to 4, then doubling, then halving the gap, each
 kept only when it raises the score. A replay's tape replaces the current one

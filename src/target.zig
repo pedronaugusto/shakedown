@@ -3,12 +3,13 @@
 //! A property reports a score per label (`Case.target`). `Targets` keeps,
 //! for each label, the highest score a passing case reached and that case's
 //! tape. `climb` then hill-climbs a label's best tape (targeted property
-//! testing, Löscher and Sagonas, ISSTA 2017, here over the tape): from the
-//! last choice back, each choice jumped to its bound and to 0, then raised
-//! and lowered by the largest step that raises the score, found by an
-//! exponential then a binary search. It knows nothing of what the
-//! choices mean, so it steers a property's inputs and its simulation's
-//! schedules, faults and latencies alike.
+//! testing, Löscher and Sagonas, ISSTA 2017, here over the tape): each span's
+//! children written twice, a list's elements doubled; then from the last
+//! choice back, each choice jumped to its bound and to 0, then raised and
+//! lowered by the largest step that raises the score, found by an
+//! exponential then a binary search. It knows nothing of what the choices
+//! mean, so it steers a property's inputs and its simulation's schedules,
+//! faults and latencies alike.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Source = @import("Source.zig");
@@ -20,16 +21,20 @@ pub const Best = struct {
     score: f64,
     choices: []u64,
     bounds: []u64,
+    spans: []Tape.Span,
 
     fn of(gpa: Allocator, score: f64, tape: Tape) Allocator.Error!Best {
         const choices = try gpa.dupe(u64, tape.choices);
         errdefer gpa.free(choices);
-        return .{ .score = score, .choices = choices, .bounds = try gpa.dupe(u64, tape.bounds) };
+        const bounds = try gpa.dupe(u64, tape.bounds);
+        errdefer gpa.free(bounds);
+        return .{ .score = score, .choices = choices, .bounds = bounds, .spans = try gpa.dupe(Tape.Span, tape.spans) };
     }
 
     fn deinit(b: *Best, gpa: Allocator) void {
         gpa.free(b.choices);
         gpa.free(b.bounds);
+        gpa.free(b.spans);
         b.* = undefined;
     }
 
@@ -151,14 +156,33 @@ pub fn climb(gpa: Allocator, start: *const Best, probe: Probe, budget: *u32) All
     defer c.choices.deinit(gpa);
     c.bounds = try .initCapacity(gpa, start.bounds.len);
     defer c.bounds.deinit(gpa);
+    c.spans = try .initCapacity(gpa, start.spans.len);
+    defer c.spans.deinit(gpa);
     c.choices.appendSliceAssumeCapacity(start.choices);
     c.bounds.appendSliceAssumeCapacity(start.bounds);
+    c.spans.appendSliceAssumeCapacity(start.spans);
     c.candidate = try .initCapacity(gpa, start.choices.len);
     defer c.candidate.deinit(gpa);
 
     var improvements: u32 = 0;
     var i = c.choices.items.len;
+    var scan_begins = true;
     while (i > 0 and improvements < max_improvements) {
+        // A scan begins with the spans doubled: the one move that grows a
+        // list by its whole length in a replay.
+        if (scan_begins) {
+            scan_begins = false;
+            try c.repeatSpans();
+            const rose = c.improved > 0;
+            improvements += c.improved;
+            c.improved = 0;
+            if (c.stop) |stop| return stop;
+            if (rose) {
+                i = c.choices.items.len;
+                scan_begins = true;
+                continue;
+            }
+        }
         i -= 1;
         for ([_]Direction{ .up, .down }) |direction| {
             c.at = i;
@@ -174,6 +198,7 @@ pub fn climb(gpa: Allocator, start: *const Best, probe: Probe, budget: *u32) All
             // mostly replay the tape it rose from.
             if (rose) {
                 i = c.choices.items.len;
+                scan_begins = true;
                 break;
             }
             if (i >= c.choices.items.len) break;
@@ -192,6 +217,7 @@ const Climb = struct {
     score: f64,
     choices: std.ArrayList(u64) = .empty,
     bounds: std.ArrayList(u64) = .empty,
+    spans: std.ArrayList(Tape.Span) = .empty,
     candidate: std.ArrayList(u64) = .empty,
     /// The choice being moved, its value when the search began, and which way.
     at: usize = 0,
@@ -246,20 +272,58 @@ const Climb = struct {
     /// it on a tape no longer.
     const Keep = enum { rise, level };
 
+    /// Each span with two children or more, from the last back, with its
+    /// children but the last written again after themselves: a list's
+    /// elements twice, its closing choice after them. The first that
+    /// raises the score is kept.
+    fn repeatSpans(c: *Climb) Allocator.Error!void {
+        var s = c.spans.items.len;
+        while (s > 0) {
+            s -= 1;
+            const outer = c.spans.items[s];
+            // Spans are kept in the order they began, so a span's own are
+            // the deeper ones after it; its children are one level down.
+            // The last is left out, so the run ends where it starts.
+            var children: u32 = 0;
+            var run_start: u32 = 0;
+            var run_end: u32 = 0;
+            for (c.spans.items[s + 1 ..]) |inner| {
+                if (inner.depth <= outer.depth) break;
+                if (inner.depth != outer.depth + 1) continue;
+                if (children == 0) run_start = inner.start;
+                children += 1;
+                run_end = inner.start;
+            }
+            if (children < 2 or run_end <= run_start) continue;
+            try c.candidate.ensureTotalCapacity(c.gpa, c.choices.items.len + (run_end - run_start));
+            c.candidate.clearRetainingCapacity();
+            c.candidate.appendSliceAssumeCapacity(c.choices.items[0..run_end]);
+            c.candidate.appendSliceAssumeCapacity(c.choices.items[run_start..run_end]);
+            c.candidate.appendSliceAssumeCapacity(c.choices.items[run_end..]);
+            if (try c.replay(.rise)) return;
+            if (c.stop != null) return;
+        }
+    }
+
     /// Replays the current tape with the choice set to `value`, and keeps
     /// the result as `keep` says. False when the value is past the choice's
     /// bound, the climb must stop, or the result is not kept.
     fn attempt(c: *Climb, value: u64, keep: Keep) Allocator.Error!bool {
         if (c.stop != null or c.at >= c.choices.items.len) return false;
         if (value > c.bounds.items[c.at]) return false;
+        c.candidate.clearRetainingCapacity();
+        c.candidate.appendSliceAssumeCapacity(c.choices.items);
+        c.candidate.items[c.at] = value;
+        return c.replay(keep);
+    }
+
+    /// Replays `candidate`, and keeps the result as `keep` says.
+    fn replay(c: *Climb, keep: Keep) Allocator.Error!bool {
         if (c.budget.* == 0) {
             c.stop = .spent;
             return false;
         }
         c.budget.* -= 1;
-        c.candidate.clearRetainingCapacity();
-        c.candidate.appendSliceAssumeCapacity(c.choices.items);
-        c.candidate.items[c.at] = value;
         const ran = switch (try c.probe.run(c.probe.ctx, c.candidate.items)) {
             .failed => {
                 c.stop = .failed;
@@ -279,11 +343,14 @@ const Climb = struct {
     fn adopt(c: *Climb, tape: Tape) Allocator.Error!void {
         try c.choices.ensureTotalCapacity(c.gpa, tape.choices.len);
         try c.bounds.ensureTotalCapacity(c.gpa, tape.bounds.len);
+        try c.spans.ensureTotalCapacity(c.gpa, tape.spans.len);
         try c.candidate.ensureTotalCapacity(c.gpa, tape.choices.len);
         c.choices.clearRetainingCapacity();
         c.bounds.clearRetainingCapacity();
+        c.spans.clearRetainingCapacity();
         c.choices.appendSliceAssumeCapacity(tape.choices);
         c.bounds.appendSliceAssumeCapacity(tape.bounds);
+        c.spans.appendSliceAssumeCapacity(tape.spans);
     }
 };
 
@@ -301,7 +368,7 @@ const SumProbe = struct {
     }
 
     fn run(ctx: *anyopaque, choices: []const u64) Allocator.Error!Ran {
-        const p: *SumProbe = @ptrCast(@alignCast(ctx)); // safe: the tests pair this function with a SumProbe
+        const p: *SumProbe = @ptrCast(@alignCast(ctx)); // aegis: no-danger: the tests pair this function with a SumProbe
         p.runs += 1;
         p.source.restart(.{ .extend = .{ .choices = choices, .seed = p.runs } });
         var sum: u64 = 0;
@@ -356,6 +423,42 @@ test "a climb stops at the replay that fails, and when its replays run out" {
     try std.testing.expectEqual(@as(u32, 3), p.runs);
 }
 
+/// A probe for the tests: a list of bytes in spans, as `gen.slice` draws
+/// one, scored by its sum.
+const ListProbe = struct {
+    source: Source,
+    top: f64 = 0,
+
+    fn run(ctx: *anyopaque, choices: []const u64) Allocator.Error!Ran {
+        const p: *ListProbe = @ptrCast(@alignCast(ctx)); // aegis: no-danger: the test pairs this function with a ListProbe
+        p.source.restart(.{ .replay = choices });
+        const list = p.source.begin();
+        var sum: u64 = 0;
+        while (true) {
+            const item = p.source.begin();
+            defer p.source.end(item);
+            if (!p.source.more(4)) break;
+            sum += p.source.below(255);
+        }
+        p.source.end(list);
+        p.top = @max(p.top, @as(f64, @floatFromInt(sum)));
+        return .{ .ran = .{ .score = @floatFromInt(sum), .tape = p.source.tape() } };
+    }
+};
+
+test "a climb first writes a list's elements twice, in one replay" {
+    const gpa = std.testing.allocator;
+    var p: ListProbe = .{ .source = try .initRecording(gpa, .{ .prng = 0 }, .{}) };
+    defer p.source.deinit();
+    const ran = try ListProbe.run(&p, &.{ 999_999, 3, 999_999, 10, 999_999, 7, 0 });
+    var start: Best = try .of(gpa, ran.ran.score.?, ran.ran.tape);
+    defer start.deinit(gpa);
+    try std.testing.expectEqual(@as(f64, 20), start.score);
+    var budget: u32 = 1;
+    try std.testing.expectEqual(Climbed.spent, try climb(gpa, &start, .{ .ctx = &p, .run = ListProbe.run }, &budget));
+    try std.testing.expectEqual(@as(f64, 40), p.top);
+}
+
 /// A probe whose score is the first choice alone, below 1000, and whose
 /// later draws score nothing.
 const FirstProbe = struct {
@@ -363,7 +466,7 @@ const FirstProbe = struct {
     runs: u32 = 0,
 
     fn run(ctx: *anyopaque, choices: []const u64) Allocator.Error!Ran {
-        const p: *FirstProbe = @ptrCast(@alignCast(ctx)); // safe: the test pairs this function with a FirstProbe
+        const p: *FirstProbe = @ptrCast(@alignCast(ctx)); // aegis: no-danger: the test pairs this function with a FirstProbe
         p.runs += 1;
         p.source.restart(.{ .replay = choices });
         const first = p.source.below(999);
