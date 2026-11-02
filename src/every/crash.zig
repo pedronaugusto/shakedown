@@ -29,7 +29,7 @@ pub const EveryCrashOptions = struct {
             return .{ .first = s.boundary(points, s.index), .end = s.boundary(points, s.index + 1) };
         }
         fn boundary(s: Shard, points: u64, at: u32) u64 {
-            return points / s.count * at + points % s.count * at / s.count;
+            return points / s.count * at + (points % s.count) * at / s.count;
         }
     };
 };
