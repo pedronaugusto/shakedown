@@ -7,7 +7,6 @@ const testing = std.testing;
 const shakedown = @import("shakedown.zig");
 const gen = shakedown.gen;
 const Case = shakedown.Case;
-const Sim = shakedown.Sim;
 
 /// A list of bytes that fails once it sums to `fails_at`, scored by its sum
 /// when `steered`.
