@@ -298,6 +298,34 @@ test "Fs everyCrash sweeps call boundaries and recovery on fresh schedulers" {
     // every point leaves a state another point left: each is recovered once.
     try t.expect(report.repeated > 0);
 }
+test "Fs everyCrash shards: contiguous ranges that tile the points, together recovering every state the whole sweep does" {
+    const Shard = shakedown.EveryCrashOptions.Shard;
+    for ([_]u64{ 0, 1, 7, 100 }) |points| for (1..6) |count| {
+        var next: u64 = 0;
+        for (0..count) |index| {
+            const range = (Shard{ .index = @intCast(index), .count = @intCast(count) }).range(points);
+            try t.expectEqual(next, range.first);
+            try t.expect(range.end >= range.first and range.end - range.first <= points / count + 1);
+            next = range.end;
+        }
+        try t.expectEqual(points, next);
+    };
+    var whole: CrashContext = .{};
+    const all = try shakedown.everyCrash(t.allocator, &whole, .{ .sim = .{ .watchdog = null }, .max_states = 64 });
+    var recovered: u64 = 0;
+    for (0..3) |index| {
+        var ctx: CrashContext = .{};
+        const report = try shakedown.everyCrash(t.allocator, &ctx, .{ .sim = .{ .watchdog = null }, .max_states = 64, .shard = .{ .index = @intCast(index), .count = 3 } });
+        try t.expectEqual(all.steps, report.steps);
+        try t.expectEqual(ctx.recovered + 1, report.runs);
+        recovered += ctx.recovered;
+    }
+    // A state two ranges both reach is recovered in each.
+    try t.expect(recovered >= whole.recovered);
+    var ctx: CrashContext = .{};
+    try t.expectError(error.CheckFailed, shakedown.everyCrash(t.allocator, &ctx, .{ .sim = .{ .watchdog = null }, .shard = .{ .index = 3, .count = 3 } }));
+    try t.expectError(error.CheckFailed, shakedown.everyCrash(t.allocator, &ctx, .{ .sim = .{ .watchdog = null }, .shard = .{ .count = 0 } }));
+}
 
 /// The digest of what `build` leaves on a fresh simulated disk.
 fn digestOf(build: *const fn (*Sim.Fs) anyerror!void) !u128 {
@@ -637,6 +665,30 @@ test "Fs everyCrash reports the crash point and the recovery trace" {
     try t.expectEqual(error.InvariantBroken, report.failure.?.err);
     try t.expectEqual(1, report.failure.?.injected.?.step);
     try t.expect(report.failure.?.trace.len > 0);
+}
+pub const TempLeft = struct {
+    inner: CrashContext = .{},
+    pub fn setUp(ctx: *TempLeft, sim: *Sim) !void {
+        try ctx.inner.setUp(sim);
+    }
+    pub fn run(ctx: *TempLeft, io: Io) !void {
+        try ctx.inner.run(io);
+    }
+    pub fn recover(_: *TempLeft, _: Io) !void {}
+    pub fn check(_: *TempLeft, io: Io) !void {
+        if (Io.Dir.cwd().statFile(io, "temp", .{})) |_| return error.TempLeft else |_| {}
+    }
+};
+test "Fs everyCrash in a shard reports a failure at a crash point of its range" {
+    var ctx: TempLeft = .{};
+    var report: shakedown.EveryFaultReport = .{};
+    const shard: shakedown.EveryCrashOptions.Shard = .{ .index = 1, .count = 2 };
+    try t.expectError(error.CheckFailed, shakedown.everyCrash(t.allocator, &ctx, .{ .sim = .{ .watchdog = null }, .diagnostics = &report, .shard = shard }));
+    defer report.deinit();
+    try t.expectEqual(error.TempLeft, report.failure.?.err);
+    const range = shard.range(report.steps + 1);
+    const point = report.failure.?.injected.?.step - 1;
+    try t.expect(point >= range.first and point < range.end);
 }
 
 test "Fs a Windows cross-directory rename permits both or neither name" {

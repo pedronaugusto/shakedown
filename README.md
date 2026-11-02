@@ -451,8 +451,11 @@ all allowed sectors and orders. Release each snapshot and the iterator with
 every call boundary and after return, then runs `ctx.recover(io)` and
 `ctx.check(io)` on each allowed disk image in a fresh simulation. The prefix must
 match the clean trace. `max_states` bounds images per point; the returned report's
-`bounded` count says how many points exceeded it. `diagnostics` records a failed
-recovery's crash point, error and trace. Optional `ctx.tearDown()` releases state
+`bounded` count says how many points exceeded it. `shard` explores one of `count`
+contiguous ranges of the points, so a long operation's sweep runs as several
+tests; a range keeps together the points that leave the same states, so shards
+seldom repeat each other's recoveries (a state two ranges reach is recovered in
+each). `diagnostics` records a failed recovery's crash point, error and trace. Optional `ctx.tearDown()` releases state
 owned by the context. Abandoned tasks do not execute defers, including with an
 root-namespace `IoFault.crash` plan, which requires its filesystem enabled.
 Explicit nodes use cooperative cancellation through their crash/kill lifecycle.
