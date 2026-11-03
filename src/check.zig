@@ -63,7 +63,7 @@ pub const Case = struct {
     /// integers up to 2^53, coarser past them. Under `explore`, `SHAKEDOWN_TAPE`
     /// and the fuzzer, it does nothing.
     pub fn target(c: *Case, score: f64, label: []const u8) void {
-        aegis.assert.pre(std.math.isFinite(score), "a target's score is finite");
+        aegis.assert.invariant(std.math.isFinite(score), "a target's score is finite");
         const targets = &(c.runner.targets orelse return);
         // glint-ignore: Z026 -- a score that cannot be kept is lost; the case runs on as it would without it
         targets.observe(score, label) catch {};

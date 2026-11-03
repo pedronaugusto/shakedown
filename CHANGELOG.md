@@ -21,7 +21,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- `assert.invariant` where `assert.pre` was, as aegis 0.3.0 keeps one name for the always-on contract; it builds on aegis 0.2 too.
+- `assert.invariant` where `assert.pre` was, as aegis 0.3.0 keeps one name for the always-on contract. Pins aegis breaking-0.3 (7bdb587).
 
 ## [0.6.0] - 2026-10-28
 
