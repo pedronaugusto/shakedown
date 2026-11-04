@@ -676,7 +676,10 @@ pub const TempLeft = struct {
     }
     pub fn recover(_: *TempLeft, _: Io) !void {}
     pub fn check(_: *TempLeft, io: Io) !void {
-        if (Io.Dir.cwd().statFile(io, "temp", .{})) |_| return error.TempLeft else |_| {}
+        if (Io.Dir.cwd().statFile(io, "temp", .{})) |_| return error.TempLeft else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
     }
 };
 test "Fs everyCrash in a shard reports a failure at a crash point of its range" {
