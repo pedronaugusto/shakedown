@@ -45,6 +45,9 @@ pub const FaultIo = @import("FaultIo.zig");
 pub const everyFault = every.fault.everyFault;
 /// What `everyFault` tries, and what it keeps when a run fails.
 pub const EveryFaultOptions = every.fault.EveryFaultOptions;
+/// One of several contiguous ranges of a sweep's points: `EveryFaultOptions.shard`
+/// and `EveryCrashOptions.shard`.
+pub const Shard = every.fault.Shard;
 /// Why `everyFault` failed.
 pub const EveryFaultError = every.fault.EveryFaultError;
 /// What `everyFault` did, and how a failing run failed.

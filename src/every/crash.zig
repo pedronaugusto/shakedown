@@ -20,18 +20,7 @@ pub const EveryCrashOptions = struct {
     /// together the points that leave the same states, so a state is
     /// recovered by about one shard; a state two ranges both reach is
     /// recovered in each.
-    pub const Shard = struct {
-        index: u32 = 0,
-        count: u32 = 1,
-
-        /// The crash points, numbered from 0 of `points`, this shard explores.
-        pub fn range(s: Shard, points: u64) struct { first: u64, end: u64 } {
-            return .{ .first = s.boundary(points, s.index), .end = s.boundary(points, s.index + 1) };
-        }
-        fn boundary(s: Shard, points: u64, at: u32) u64 {
-            return points / s.count * at + (points % s.count) * at / s.count;
-        }
-    };
+    pub const Shard = reports.Shard;
 };
 pub const Report = reports.EveryFaultReport;
 pub const Error = Sim.InitError || error{ OutOfMemory, Nondeterministic, CheckFailed, TooManySteps, FileSystemDisabled };
@@ -49,7 +38,7 @@ pub const Error = Sim.InitError || error{ OutOfMemory, Nondeterministic, CheckFa
 pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptions) Error!Report {
     if (options.sim.fs == null) return error.FileSystemDisabled;
     if (options.max_states == 0) return error.CheckFailed;
-    if (options.shard.count == 0 or options.shard.index >= options.shard.count) return error.CheckFailed;
+    if (!options.shard.valid()) return error.CheckFailed;
     var config = options.sim;
     config.max_steps = options.max_steps;
     config.trace = .all;

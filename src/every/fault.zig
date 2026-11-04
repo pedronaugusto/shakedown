@@ -17,6 +17,28 @@ const IoFault = io_call.IoFault;
 const FaultIo = @import("../FaultIo.zig");
 const IoTrace = FaultIo.IoTrace;
 
+/// One of `count` contiguous ranges of a sweep's points, so a long
+/// operation's sweep runs as several tests, each well inside a watchdog:
+/// shard `index` takes the points from `points * index / count` up to the
+/// next shard's first. `everyFault`'s points are the clean run's steps,
+/// `everyCrash`'s its crash points.
+pub const Shard = struct {
+    index: u32 = 0,
+    count: u32 = 1,
+
+    /// The points, numbered from 0 of `points`, this shard explores.
+    pub fn range(s: Shard, points: u64) struct { first: u64, end: u64 } {
+        return .{ .first = s.boundary(points, s.index), .end = s.boundary(points, s.index + 1) };
+    }
+    fn boundary(s: Shard, points: u64, at: u32) u64 {
+        return points / s.count * at + (points % s.count) * at / s.count;
+    }
+    /// Whether `index` names one of `count` shards.
+    pub fn valid(s: Shard) bool {
+        return s.count != 0 and s.index < s.count;
+    }
+};
+
 /// What `everyFault` tries, and what it keeps when a run fails.
 pub const EveryFaultOptions = struct {
     /// Errors tried at every step whose call can return them.
@@ -42,6 +64,10 @@ pub const EveryFaultOptions = struct {
     trace: IoTrace.Mode = .{ .last = 64 },
     /// Filled when a run fails, if given. Free with `EveryFaultReport.deinit`.
     diagnostics: ?*EveryFaultReport = null,
+    /// The steps this call faults: one of `count` contiguous ranges of the
+    /// clean run's steps. Every shard makes the clean run, which each
+    /// faulted run is held to.
+    shard: Shard = .{},
 };
 
 /// Why `everyFault` failed: a run failed its check (or its `setUp`), a
@@ -104,6 +130,7 @@ pub const EveryFaultReport = struct {
 /// Allocation is faulted through the allocators `setUp` makes with
 /// `fio.allocator`.
 pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOptions) EveryFaultError!EveryFaultReport {
+    if (!options.shard.valid()) return error.CheckFailed;
     var report: EveryFaultReport = .{};
     const clean = FaultIo.init(gpa, base, .{ .trace = .all, .random_seed = options.random_seed }) catch |err| return outOfMemory(err);
     defer clean.deinit();
@@ -112,8 +139,9 @@ pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOpt
     if (report.steps > options.max_steps) return error.TooManySteps;
 
     const records = clean.trace().records();
+    const range = options.shard.range(records.len);
     var faults: [max_faults]IoFault = undefined;
-    for (records, 0..) |record, index| {
+    for (records[@intCast(range.first)..@intCast(range.end)], @intCast(range.first)..) |record, index| {
         for (candidates(ctx, options, record, &faults)) |fault| {
             const injected: Injected = .{ .step = record.step, .call = record.event.call, .fault = fault };
             const mode: IoTrace.Mode = if (options.trace == .off) .{ .last = 1 } else options.trace;

@@ -125,6 +125,24 @@ test "a save through a temp file and a rename survives every single fault" {
     try testing.expect(report.runs > 2 * report.steps);
 }
 
+test "everyFault's shards fault the clean run's steps between them, each once" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var save: Save = .{ .dir = tmp.dir, .how = .atomic };
+    const whole = try shakedown.everyFault(testing.allocator, testing.io, &save, .{});
+    // Each shard makes the clean run too; its faulted runs are its own.
+    var faulted: u64 = 0;
+    for (0..3) |index| {
+        const shard: shakedown.Shard = .{ .index = @intCast(index), .count = 3 };
+        const part = try shakedown.everyFault(testing.allocator, testing.io, &save, .{ .shard = shard });
+        try testing.expectEqual(whole.steps, part.steps);
+        try testing.expect(part.runs > 1);
+        faulted += part.runs - 1;
+    }
+    try testing.expectEqual(whole.runs - 1, faulted);
+    try testing.expectError(error.CheckFailed, shakedown.everyFault(testing.allocator, testing.io, &save, .{ .shard = .{ .index = 3, .count = 3 } }));
+}
+
 test "a save in place is caught losing the old save" {
     var tmp = testing.tmpDir(.{});
     defer tmp.cleanup();
