@@ -357,7 +357,11 @@ const slots = struct {
         };
         const op = process_calls.translateOperation(c, operation);
         const result = while (true) {
-            if (attempt(c, e.node, op)) |result| break result;
+            const done = attempt(c, e.node, op) catch |err| {
+                c.record(callOf(operation), e, digest(err));
+                return err;
+            };
+            if (done) |result| break result;
             net_calls.wait(c, e.task, .never) catch {
                 c.record(callOf(operation), e, digest(error.Canceled));
                 return error.Canceled;
@@ -375,10 +379,17 @@ const slots = struct {
             return error.Canceled;
         };
         var batch_digest: u64 = 0;
-        while (!complete(c, e.node, b, &batch_digest)) net_calls.wait(c, e.task, .never) catch {
-            c.record(.batchAwaitAsync, e, digest(error.Canceled));
-            return error.Canceled;
-        };
+        while (true) {
+            const done = complete(c, e.node, b, &batch_digest) catch |err| {
+                c.record(.batchAwaitAsync, e, digest(err));
+                return err;
+            };
+            if (done) break;
+            net_calls.wait(c, e.task, .never) catch {
+                c.record(.batchAwaitAsync, e, digest(error.Canceled));
+                return error.Canceled;
+            };
+        }
         c.record(.batchAwaitAsync, e, batch_digest);
     }
 
@@ -391,10 +402,17 @@ const slots = struct {
         };
         const deadline = c.deadline(timeout);
         var batch_digest: u64 = 0;
-        while (!complete(c, e.node, b, &batch_digest)) net_calls.wait(c, e.task, deadline) catch |err| {
-            c.record(.batchAwaitConcurrent, e, digest(err));
-            return err;
-        };
+        while (true) {
+            const done = complete(c, e.node, b, &batch_digest) catch |err| {
+                c.record(.batchAwaitConcurrent, e, digest(err));
+                return err;
+            };
+            if (done) break;
+            net_calls.wait(c, e.task, deadline) catch |err| {
+                c.record(.batchAwaitConcurrent, e, digest(err));
+                return err;
+            };
+        }
         c.record(.batchAwaitConcurrent, e, batch_digest);
     }
 
@@ -556,12 +574,14 @@ fn standard(file: Io.File) bool {
 }
 
 /// An operation's result: standard output reaches the process, file operations
-/// reach this simulation's disk, and unavailable parts fail.
-fn perform(c: *Core, operation: Io.Operation) Io.Operation.Result {
+/// reach this simulation's disk, and unavailable parts fail. A cancel the
+/// process's Io answers a write to standard output with is the caller's, as
+/// `lockStderr`'s is.
+fn perform(c: *Core, operation: Io.Operation) Io.Cancelable!Io.Operation.Result {
     switch (operation) {
         .file_write_streaming => |w| if (standard(w.file)) {
             const r = real();
-            if (r.vtable.operate(r.userdata, operation)) |result| return result else |_| {}
+            return r.vtable.operate(r.userdata, operation);
         },
         else => {},
     }
@@ -591,8 +611,8 @@ fn failed(comptime tag: Io.Operation.Tag) Io.Operation.Result {
 
 /// What an operation does, or null while it would wait: a network
 /// operation on the network model, a stream of a pipe on the pipes, the
-/// rest at once.
-fn attempt(c: *Core, node: Model.NodeId, op: Io.Operation) ?Io.Operation.Result {
+/// rest at once. A cancel is the caller's.
+fn attempt(c: *Core, node: Model.NodeId, op: Io.Operation) Io.Cancelable!?Io.Operation.Result {
     if (net_calls.isNetwork(op) and c.options.net != null) {
         c.touch(Core.Object.network, true);
         return net_calls.perform(c, node, op);
@@ -602,7 +622,7 @@ fn attempt(c: *Core, node: Model.NodeId, op: Io.Operation) ?Io.Operation.Result 
         return process_calls.perform(c, op);
     }
     c.touch(Core.Object.disk(node), true);
-    return perform(c, op);
+    return try perform(c, op);
 }
 
 /// An operation's digest for the trace: 0 for the file system's, whose
@@ -614,7 +634,9 @@ fn operationDigest(c: *Core, node: Model.NodeId, op: Io.Operation, result: Io.Op
 }
 
 /// Probe all submissions, leaving blocked operations available to retry or cancel.
-fn complete(c: *Core, node: Model.NodeId, b: *Io.Batch, batch_digest: *u64) bool {
+/// On a cancel, the submissions from the one it landed on stay submitted, behind
+/// those still pending, and the completed ones stay completed.
+fn complete(c: *Core, node: Model.NodeId, b: *Io.Batch, batch_digest: *u64) Io.Cancelable!bool {
     var tail = b.completed.tail;
     var pending: @TypeOf(b.submitted) = .{ .head = .none, .tail = .none };
     var index = b.submitted.head;
@@ -622,7 +644,16 @@ fn complete(c: *Core, node: Model.NodeId, b: *Io.Batch, batch_digest: *u64) bool
         const storage = &b.storage[index.toIndex()];
         const next = storage.submission.node.next;
         const op = process_calls.translateOperation(c, storage.submission.operation);
-        const result = attempt(c, node, op);
+        const result = attempt(c, node, op) catch |err| {
+            switch (pending.tail) {
+                .none => pending.head = index,
+                else => b.storage[pending.tail.toIndex()].submission.node.next = index,
+            }
+            pending.tail = b.submitted.tail;
+            b.completed.tail = tail;
+            b.submitted = pending;
+            return err;
+        };
         if (result) |value| {
             const op_digest = operationDigest(c, node, op, value);
             if (op_digest != 0) batch_digest.* = std.hash.int(batch_digest.* ^ op_digest ^ index.toIndex());

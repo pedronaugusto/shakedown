@@ -1,5 +1,6 @@
 //! `Sim` from outside: time, tasks, futexes, cancelation, the outcomes a
 //! run ends in, and runs that repeat from their seed on every executor.
+const builtin = @import("builtin");
 const std = @import("std");
 const Io = std.Io;
 const testing = std.testing;
@@ -490,4 +491,33 @@ test "a task's thread starts whatever small a stack the simulation asks for" {
 
 test "the watchdog's thread asks for no less stack than libc or a sanitizer takes" {
     try testing.expect(Sim.Watchdog.spawn.stack_size >= 1024 * 1024);
+}
+
+const HostCancel = struct {
+    fn writeOut(io: Io) !void {
+        try Io.File.stdout().writeStreamingAll(io, "a canceled write\n");
+    }
+
+    /// A task of the process's own Io: it takes the cancel the test sends,
+    /// sets it pending again, and runs a simulation on its thread, where the
+    /// simulation's write to standard output is the first call to meet it.
+    fn run(io: Io) Sim.Outcome {
+        io.sleep(.fromSeconds(600), .awake) catch |err| switch (err) {
+            error.Canceled => io.recancel(),
+        };
+        const sim = Sim.init(testing.allocator, .{ .executor = .fibers, .watchdog = null }) catch |err| return .{ .failed = err };
+        defer sim.deinit();
+        return sim.run(writeOut, .{sim.io()});
+    }
+};
+
+test "a cancel the process's Io answers a simulation's write to standard output with is returned, not dropped" {
+    if (builtin.single_threaded) return error.SkipZigTest;
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var host = try io.concurrent(HostCancel.run, .{io});
+    const outcome = host.cancel(io);
+    if (outcome == .failed and outcome.failed == error.ExecutorUnavailable) return error.SkipZigTest;
+    try testing.expectEqual(Sim.Outcome{ .failed = error.Canceled }, outcome);
 }

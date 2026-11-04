@@ -23,6 +23,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `assert.invariant` where `assert.pre` was, as aegis 0.3.0 keeps one name for the always-on contract. Pins aegis breaking-0.3 (7bdb587).
 
+### Fixed
+
+- A simulation's write to standard output returns a cancel the process's Io answers it with, where the cancel was dropped and the write failed with `error.Unexpected` against the simulated disk: a simulation run in a task of a real Io that was canceled lost that cancel. An operation and a batch's await carry it to their caller, and a batch keeps the submissions not yet completed.
+
 ## [0.6.0] - 2026-10-28
 
 ### Breaking
