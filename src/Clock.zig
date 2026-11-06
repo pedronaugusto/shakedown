@@ -33,10 +33,10 @@ layer: L,
 
 pub const Options = struct {
     /// `.real` at the start, in Unix time (2026-01-01T00:00:00Z).
-    real: Io.Timestamp = .fromNanoseconds(1_767_225_600 * std.time.ns_per_s),
+    real: Io.Timestamp = nanoseconds.seconds(1_767_225_600),
     /// `.awake` and `.boot` at the start, and where frozen CPU clocks stay.
     /// Nonzero, so code that treats 0 as "unset" is caught.
-    monotonic: Io.Timestamp = .fromNanoseconds(std.time.ns_per_s),
+    monotonic: Io.Timestamp = nanoseconds.seconds(1),
     resolution: Io.Duration = .fromNanoseconds(1),
     cpu: Cpu = .frozen,
     /// How often, in real time, a timed futex or batch wait looks again at

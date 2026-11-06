@@ -1023,7 +1023,7 @@ pub fn capture(c: *Core, t: *Task) void {
         .none => .none,
         .start => .unstarted,
         .futex => |address| .{ .futex = address },
-        .sleep => .{ .sleep = if (t.timer_armed) .{ .raw = .fromNanoseconds(t.timer.key.deadline), .clock = clockOf(t.timer_clock) } else null },
+        .sleep => .{ .sleep = if (t.timer_armed) .{ .raw = nanoseconds.timestamp(t.timer.key.deadline), .clock = clockOf(t.timer_clock) } else null },
         .task => |other| .{ .task = other.id },
         .group => .group,
         .process => |pid| .{ .process = pid },
@@ -1041,7 +1041,7 @@ pub fn capture(c: *Core, t: *Task) void {
 
 pub fn now(c: *const Core, which: Io.Clock) Io.Timestamp {
     const kept = keptOf(which) orelse return c.options.clock.monotonic;
-    return .fromNanoseconds(c.clocks[@backingInt(kept)]);
+    return nanoseconds.timestamp(c.clocks[@backingInt(kept)]);
 }
 
 /// When a timeout ends: never, already, or at an instant on a kept clock.
@@ -1313,7 +1313,7 @@ pub fn touch(c: *Core, object: u64, write: bool) void {
 pub fn record(c: *Core, call: IoCall, entered: Call, outcome: u64) void {
     const id = if (entered.task) |t| t.id else ids.outside;
     const event: Event = .{ .call = call, .task = id, .node = entered.node, .decision = c.decision, .outcome = outcome };
-    const at: Io.Timestamp = .fromNanoseconds(c.clocks[@backingInt(Kept.awake)]);
+    const at: Io.Timestamp = nanoseconds.timestamp(c.clocks[@backingInt(Kept.awake)]);
     // glint-ignore: Z026 -- a record that cannot be kept is dropped; the hash still counts it
     c.trace.append(.{ .step = entered.step, .task = id, .at = at, .event = event }) catch {};
 }

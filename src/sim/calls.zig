@@ -79,6 +79,7 @@ const slots = struct {
             .any => c.draw(1) == 0,
         };
         if (!at_once) {
+            // glint-ignore: Z026 -- a future the simulation has no task for runs at once, as Io.async allows; the run records it with task 0
             if (c.spawn(.{ .future = start }, context, context_alignment, result.len, result_alignment, .ready)) |t| {
                 t.spawned_at = @returnAddress();
                 c.record(.async, e, t.id.raw());
@@ -160,6 +161,7 @@ const slots = struct {
             .deferred => .deferred,
             .any => if (c.draw(1) == 0) null else .ready,
         };
+        // glint-ignore: Z026 -- a member the simulation has no task for runs at once, as Io.Group.async allows; the run records it with task 0
         if (state) |s| if (spawnMember(c, group, context, context_alignment, start, s, @returnAddress())) |t| {
             c.record(.groupAsync, e, t.id.raw());
             return;

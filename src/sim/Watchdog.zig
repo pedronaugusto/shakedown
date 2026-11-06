@@ -27,6 +27,9 @@ const Io = std.Io;
 const ids = @import("../ids.zig");
 const os_thread = @import("os_thread.zig");
 const nanoseconds = @import("../nanoseconds.zig");
+const Span = nanoseconds.Span;
+/// A reading of the awake clock, as the watchdog keeps it.
+const Reading = nanoseconds.Reading(Watchdog);
 
 const Watchdog = @This();
 
@@ -58,8 +61,8 @@ pub const Watched = struct {
     running: *const aegis.Atomic(ids.TaskId),
     calls: *const aegis.Atomic(Calls),
     stuck: *aegis.Atomic(Stuck),
-    /// Time, in nanoseconds, a task may run without a call.
-    limit: i64,
+    /// Time a task may run without a call.
+    limit: Span,
     /// The thread the running task runs on, as the simulation names it; null
     /// when it names none, and real time counts.
     runner: ?*const aegis.Atomic(os_thread.Thread) = null,
@@ -69,14 +72,14 @@ pub const Watched = struct {
     seen: u64 = 0,
     seen_runner: os_thread.Thread = .none,
     /// When the call count was first seen; null while no task runs.
-    since: ?i64 = null,
+    since: ?Reading = null,
     /// The runner's last reading, and when it was taken.
     last: ?os_thread.Reading = null,
-    read_at: i64 = 0,
+    read_at: Reading = .fromRaw(0),
     /// How long the task could run since `since`, or since the mark.
-    ran: i64 = 0,
+    ran: Span = .fromRaw(0),
     /// When the run was marked stuck.
-    marked: ?i64 = null,
+    marked: ?Reading = null,
 };
 
 pub fn init() Watchdog {
@@ -156,14 +159,14 @@ fn run(w: *Watchdog) void {
     while (true) {
         const seen = w.signal.load(.acquire);
         const next = w.sample() orelse return;
-        const timeout: Io.Timeout = if (next.slice) |ns| .{ .duration = .{ .raw = .fromNanoseconds(ns), .clock = .awake } } else .none;
+        const timeout: Io.Timeout = if (next.slice) |ns| .{ .duration = .{ .raw = ns.toIoDuration(), .clock = .awake } } else .none;
         // glint-ignore: Z026 -- a wait cut short only samples sooner
         real().futexWaitTimeout(u32, &w.signal.raw, seen, timeout) catch {};
     }
 }
 
 /// How long until the next sample; null while nothing is watched.
-const Next = struct { slice: ?i64 };
+const Next = struct { slice: ?Span };
 
 /// Samples every simulation watched. Null once the watchdog is stopping.
 fn sample(w: *Watchdog) ?Next {
@@ -171,41 +174,63 @@ fn sample(w: *Watchdog) ?Next {
     defer held.deinit(real());
     const s = held.value();
     if (s.stopping) return null;
-    const now = nanoseconds.reading(Watchdog, .now(real(), .awake)).raw();
-    var slice: ?i64 = null;
+    const now = nanoseconds.reading(Watchdog, .now(real(), .awake));
+    var slice: ?Span = null;
     var it = s.first;
     while (it) |watched| : (it = watched.next) {
         look(watched, now);
-        const own = @max(@divTrunc(watched.limit, 8), std.time.ns_per_ms);
-        slice = if (slice) |least| @min(least, own) else own;
+        const own = later(eighth(watched.limit), shortest_slice);
+        slice = if (slice) |least| earlier(least, own) else own;
     }
     return .{ .slice = slice };
 }
 
-fn look(watched: *Watched, now: i64) void {
+/// The least time between samples, however short a watchdog time is.
+const shortest_slice: Span = .literal("1ms");
+
+/// An eighth of `limit`, rounded toward zero: how often a simulation with that watchdog time is sampled.
+fn eighth(limit: Span) Span {
+    // unreachable: 8 is neither zero nor -1, the two divisors that fail
+    return limit.divTrunc(8) catch unreachable;
+}
+
+fn earlier(a: Span, b: Span) Span {
+    return if (a.compare(b) == .gt) b else a;
+}
+
+fn later(a: Span, b: Span) Span {
+    return if (a.compare(b) == .lt) b else a;
+}
+
+fn look(watched: *Watched, now: Reading) void {
     const task = watched.running.load(.monotonic);
     const calls = watched.calls.load(.monotonic).raw();
     const runner: os_thread.Thread = if (watched.runner) |r| r.load(.monotonic) else .none;
     const reading = if (task == ids.outside) null else os_thread.read(runner);
     switch (verdict(watched, task, calls, runner, now, reading)) {
         .running => {},
-        .marked => |idle| say("shakedown: task {d} has made no Io call for {d} ms, a watchdog time of it running; the run ends as stuck at its next one\n", .{ task.raw(), @divTrunc(idle, std.time.ns_per_ms) }),
+        .marked => |idle| say("shakedown: task {d} has made no Io call for {f}, a watchdog time of it running; the run ends as stuck at its next one\n", .{ task.raw(), millis(idle) }),
         .unstoppable => |idle| {
-            say("shakedown: task {d} has made no Io call for {d} ms and cannot be stopped; aborting\n", .{ task.raw(), @divTrunc(idle, std.time.ns_per_ms) });
+            say("shakedown: task {d} has made no Io call for {f} and cannot be stopped; aborting\n", .{ task.raw(), millis(idle) });
             std.process.abort();
         },
     }
+}
+
+/// `idle` in whole milliseconds, rounded down, for a report.
+fn millis(idle: Span) aegis.units.Duration(.millisecond, i64) {
+    return idle.convert(.millisecond, i64, .down);
 }
 
 /// What one sample finds: a task that runs as it should, one just marked
 /// stuck, or one that could run a whole watchdog time after it was marked
 /// and made no call. Each carries how long, in real time, the task has gone
 /// without a call.
-const Verdict = union(enum) { running, marked: i64, unstoppable: i64 };
+const Verdict = union(enum) { running, marked: Span, unstoppable: Span };
 
 /// `reading` is the runner's, taken now: null when no task runs or the
 /// system says nothing of it.
-fn verdict(watched: *Watched, task: ids.TaskId, calls: u64, runner: os_thread.Thread, now: i64, reading: ?os_thread.Reading) Verdict {
+fn verdict(watched: *Watched, task: ids.TaskId, calls: u64, runner: os_thread.Thread, now: Reading, reading: ?os_thread.Reading) Verdict {
     if (task == ids.outside) {
         watched.since = null;
         return .running;
@@ -216,18 +241,18 @@ fn verdict(watched: *Watched, task: ids.TaskId, calls: u64, runner: os_thread.Th
         watched.since = now;
         watched.last = reading;
         watched.read_at = now;
-        watched.ran = 0;
+        watched.ran = .fromRaw(0);
         watched.marked = null;
         return .running;
     }
-    watched.ran += os_thread.couldRun(watched.last, reading, now -| watched.read_at);
+    watched.ran = watched.ran.saturatingAdd(os_thread.couldRun(watched.last, reading, watched.read_at.saturatingDurationTo(now)));
     watched.last = reading;
     watched.read_at = now;
-    const idle = now -| watched.since.?;
-    if (watched.ran < watched.limit) return .running;
+    const idle = watched.since.?.saturatingDurationTo(now);
+    if (watched.ran.compare(watched.limit) == .lt) return .running;
     if (watched.marked != null) return .{ .unstoppable = idle };
     watched.marked = now;
-    watched.ran = 0;
+    watched.ran = .fromRaw(0);
     watched.stuck.store(.stuck, .monotonic);
     return .{ .marked = idle };
 }
@@ -239,18 +264,28 @@ const Fixture = struct {
     runner: aegis.Atomic(os_thread.Thread) = .init(@fromBackingInt(7)),
     watched: Watched = undefined,
 
-    const ms = std.time.ns_per_ms;
+    /// `n` milliseconds.
+    fn ms(n: i64) Span {
+        // unreachable: the tests' counts are far inside an i64 of nanoseconds
+        return aegis.units.Duration(.millisecond, i64).fromRaw(n).convert(.nanosecond, i64, .exact) catch unreachable;
+    }
+
+    /// `n` milliseconds after the clock's zero.
+    fn moment(n: i64) Reading {
+        return Reading.fromRaw(0).saturatingAdd(ms(n));
+    }
+
     const task: ids.TaskId = .fromRaw(1);
     const thread: os_thread.Thread = @fromBackingInt(@intCast(7));
 
     fn init(f: *Fixture) void {
-        f.watched = .{ .running = &f.running, .calls = &f.calls, .stuck = &f.stuck, .runner = &f.runner, .limit = 50 * ms };
+        f.watched = .{ .running = &f.running, .calls = &f.calls, .stuck = &f.stuck, .runner = &f.runner, .limit = ms(50) };
     }
 
     /// The verdict at `now` ms of a task that made `calls` calls, its
     /// thread having had `cpu` ms of CPU, blocked or not.
     fn at(f: *Fixture, calls: u64, now: i64, cpu: i64, blocked: bool) Verdict {
-        return verdict(&f.watched, task, calls, thread, now * ms, .{ .cpu = cpu * ms, .blocked = blocked });
+        return verdict(&f.watched, task, calls, thread, moment(now), .{ .cpu = ms(cpu), .blocked = blocked });
     }
 };
 
@@ -260,10 +295,10 @@ test "a task marked stuck has a whole watchdog time from the mark to reach its c
     const ms = Fixture.ms;
     try std.testing.expectEqual(Verdict.running, f.at(0, 0, 0, false));
     // A late sample marks it at 95 ms; the next, at 101 ms, is not past the grace.
-    try std.testing.expectEqual(Verdict{ .marked = 95 * ms }, f.at(0, 95, 95, false));
+    try std.testing.expectEqual(Verdict{ .marked = ms(95) }, f.at(0, 95, 95, false));
     try std.testing.expect(f.stuck.load(.monotonic) == .stuck);
     try std.testing.expectEqual(Verdict.running, f.at(0, 101, 101, false));
-    try std.testing.expectEqual(Verdict{ .unstoppable = 145 * ms }, f.at(0, 145, 145, false));
+    try std.testing.expectEqual(Verdict{ .unstoppable = ms(145) }, f.at(0, 145, 145, false));
     // A call clears the mark.
     try std.testing.expectEqual(Verdict.running, f.at(1, 150, 150, false));
     try std.testing.expectEqual(Verdict.running, f.at(1, 199, 199, false));
@@ -274,11 +309,11 @@ test "a task whose thread waits for a CPU is not charged the wait" {
     f.init();
     const ms = Fixture.ms;
     try std.testing.expectEqual(Verdict.running, f.at(0, 0, 0, false));
-    try std.testing.expectEqual(Verdict{ .marked = 60 * ms }, f.at(0, 60, 60, false));
+    try std.testing.expectEqual(Verdict{ .marked = ms(60) }, f.at(0, 60, 60, false));
     // Off the CPU for most of 140 ms after the mark: it had 2 ms of them.
     try std.testing.expectEqual(Verdict.running, f.at(0, 200, 62, false));
     try std.testing.expectEqual(Verdict.running, f.at(0, 300, 100, false));
-    try std.testing.expectEqual(Verdict{ .unstoppable = 320 * ms }, f.at(0, 320, 112, false));
+    try std.testing.expectEqual(Verdict{ .unstoppable = ms(320) }, f.at(0, 320, 112, false));
 }
 
 test "a task blocked in the kernel is charged all the time it is blocked" {
@@ -287,8 +322,8 @@ test "a task blocked in the kernel is charged all the time it is blocked" {
     const ms = Fixture.ms;
     try std.testing.expectEqual(Verdict.running, f.at(0, 0, 0, true));
     try std.testing.expectEqual(Verdict.running, f.at(0, 30, 0, true));
-    try std.testing.expectEqual(Verdict{ .marked = 60 * ms }, f.at(0, 60, 0, true));
-    try std.testing.expectEqual(Verdict{ .unstoppable = 110 * ms }, f.at(0, 110, 0, true));
+    try std.testing.expectEqual(Verdict{ .marked = ms(60) }, f.at(0, 60, 0, true));
+    try std.testing.expectEqual(Verdict{ .unstoppable = ms(110) }, f.at(0, 110, 0, true));
 }
 
 test "a task on another thread starts its time again" {
@@ -296,8 +331,8 @@ test "a task on another thread starts its time again" {
     f.init();
     try std.testing.expectEqual(Verdict.running, f.at(0, 0, 0, false));
     try std.testing.expectEqual(Verdict.running, f.at(0, 40, 40, false));
-    try std.testing.expectEqual(Verdict.running, verdict(&f.watched, Fixture.task, 0, @fromBackingInt(@intCast(8)), 45 * Fixture.ms, .{ .cpu = 0, .blocked = false }));
-    try std.testing.expectEqual(Verdict.running, verdict(&f.watched, Fixture.task, 0, @fromBackingInt(@intCast(8)), 90 * Fixture.ms, .{ .cpu = 45 * Fixture.ms, .blocked = false }));
+    try std.testing.expectEqual(Verdict.running, verdict(&f.watched, Fixture.task, 0, @fromBackingInt(@intCast(8)), Fixture.moment(45), .{ .cpu = Fixture.ms(0), .blocked = false }));
+    try std.testing.expectEqual(Verdict.running, verdict(&f.watched, Fixture.task, 0, @fromBackingInt(@intCast(8)), Fixture.moment(90), .{ .cpu = Fixture.ms(45), .blocked = false }));
 }
 
 fn say(comptime fmt: []const u8, args: anytype) void {

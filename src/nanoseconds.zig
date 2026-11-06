@@ -16,6 +16,19 @@ pub fn Reading(comptime ClockTag: anytype) type {
 /// std's span, which holds every one kept and more.
 const WideSpan = aegis.units.Duration(.nanosecond, i96);
 
+/// `kept`, a reading as it is kept, back out as std's timestamp.
+pub fn timestamp(kept: i64) Io.Timestamp {
+    return Reading(Kept).fromRaw(kept).toTimestamp();
+}
+
+/// `n` whole seconds from a clock's zero, as std's timestamp: a clock's start, given in the unit it is chosen in.
+pub fn seconds(n: i64) Io.Timestamp {
+    return aegis.units.Instant(Kept, .second, i64).fromRaw(n).toTimestamp();
+}
+
+/// The clock a reading converted at this module's edge was kept on: any of them, since std's timestamp names none.
+const Kept = struct {};
+
 /// `d` as it is kept.
 pub fn span(d: Io.Duration) Span {
     const wide = WideSpan.fromIoDuration(d, .exact);
@@ -38,4 +51,9 @@ test "spans and readings past an i64 saturate, and those within come back as the
     const t: Io.Timestamp = .fromNanoseconds(1_767_225_600_000_000_000);
     try std.testing.expect(reading(T.clock, t).toTimestamp().compare(.eq, t));
     try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), reading(T.clock, .fromNanoseconds(std.math.maxInt(i96))).raw());
+}
+
+test "a start in seconds and a kept reading go out as the timestamps they name" {
+    try std.testing.expect(seconds(1_767_225_600).compare(.eq, .fromNanoseconds(1_767_225_600_000_000_000)));
+    try std.testing.expect(timestamp(-5).compare(.eq, .fromNanoseconds(-5)));
 }

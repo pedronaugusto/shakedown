@@ -249,7 +249,7 @@ const Climbing = struct {
     failure: ?anyerror = null,
 
     fn replay(ctx: *anyopaque, choices: []const u64) Allocator.Error!target.Ran {
-        const self: *Climbing = @ptrCast(@alignCast(ctx)); // aegis: no-danger: `climbTargets` pairs this function with its own Climbing
+        const self: *Climbing = @ptrCast(@alignCast(ctx)); // `climbTargets` pairs this function with its own Climbing
         const r = self.runner;
         const index = self.run.tries;
         self.run.tries += 1;

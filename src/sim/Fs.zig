@@ -3,6 +3,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Model = @import("fs/Model.zig");
+const nanoseconds = @import("../nanoseconds.zig");
 const Fs = @This();
 
 pub const Options = Model.Options;
@@ -35,7 +36,7 @@ pub const Stepper = struct {
 };
 
 fn setTime(fs: *Fs) void {
-    if (fs.clock) |clock| fs.model.at = .fromNanoseconds(clock.*);
+    if (fs.clock) |clock| fs.model.at = nanoseconds.timestamp(clock.*);
 }
 
 /// Create a durable setup file, including any missing parents.

@@ -11,6 +11,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const aegis = @import("aegis");
+const Span = @import("../nanoseconds.zig").Span;
 const windows = std.os.windows;
 const linux = std.os.linux;
 
@@ -37,8 +38,8 @@ extern "c" fn pthread_mach_thread_np(thread: std.c.pthread_t) std.c.mach_port_t;
 
 /// One reading of a thread.
 pub const Reading = struct {
-    /// CPU time the thread has had, in nanoseconds.
-    cpu: i64,
+    /// CPU time the thread has had.
+    cpu: Span,
     /// Waiting in the kernel for something other than a CPU.
     blocked: bool,
 };
@@ -55,15 +56,17 @@ pub fn read(thread: Thread) ?Reading {
     };
 }
 
-/// How much of `wall` nanoseconds, between readings `before` and `after`,
+/// How much of `wall`, between readings `before` and `after`,
 /// the thread could run: its CPU time, or all of it when it was blocked at
 /// both readings; all of it, too, when a reading is missing, since then
 /// nothing tells it from running.
-pub fn couldRun(before: ?Reading, after: ?Reading, wall: i64) i64 {
+pub fn couldRun(before: ?Reading, after: ?Reading, wall: Span) Span {
     const b = before orelse return wall;
     const a = after orelse return wall;
     if (b.blocked and a.blocked) return wall;
-    return std.math.clamp(a.cpu -| b.cpu, 0, wall);
+    const cpu = a.cpu.saturatingSub(b.cpu);
+    if (cpu.compare(.fromRaw(0)) == .lt) return .fromRaw(0);
+    return if (cpu.compare(wall) == .gt) wall else cpu;
 }
 
 fn readLinux(tid: u32) ?Reading {
@@ -83,7 +86,7 @@ fn readLinux(tid: u32) ?Reading {
     if (linux.errno(n) != .SUCCESS) return null;
     const seconds = Seconds.fromRaw(ts.sec).convert(.nanosecond, i64, .exact) catch return null;
     const cpu = seconds.add(.fromRaw(ts.nsec)) catch return null;
-    return .{ .cpu = cpu.raw(), .blocked = blockedState(buf[0..n]) orelse return null };
+    return .{ .cpu = cpu, .blocked = blockedState(buf[0..n]) orelse return null };
 }
 
 /// Whether the state in a `/proc/<pid>/task/<tid>/stat` line is a wait in
@@ -109,7 +112,7 @@ fn readMach(port: std.c.mach_port_t) ?Reading {
         .saturatingAdd(.fromRaw(info.user_time.microseconds)).saturatingAdd(.fromRaw(info.system_time.microseconds));
     const cpu = us.convert(.nanosecond, i64, .exact) catch return null;
     // TH_STATE_WAITING, TH_STATE_UNINTERRUPTIBLE; TH_STATE_RUNNING is running or runnable.
-    return .{ .cpu = cpu.raw(), .blocked = info.run_state == 3 or info.run_state == 4 };
+    return .{ .cpu = cpu, .blocked = info.run_state == 3 or info.run_state == 4 };
 }
 
 /// `SYSTEM_PROCESS_INFORMATION`, its threads after it.
@@ -182,7 +185,7 @@ fn findThread(snapshot: []align(@alignOf(ProcessInformation)) const u8, id: u32)
             for (threads[0..process.number_of_threads]) |t| {
                 if (@intFromPtr(t.client_id.UniqueThread) != id) continue; // safe: the system keeps a thread id in the handle's place
                 // KTHREAD_STATE's Waiting; times count 100 ns.
-                return .{ .cpu = (t.kernel_time + t.user_time) * 100, .blocked = t.thread_state == 5 };
+                return .{ .cpu = .fromRaw((t.kernel_time + t.user_time) * 100), .blocked = t.thread_state == 5 };
             }
             return null;
         }
@@ -203,8 +206,8 @@ test "a thread reads its own CPU time going up while it spins" {
     const first = read(current()) orelse return error.SkipZigTest;
     try std.testing.expect(!first.blocked);
     var later = first;
-    while (later.cpu == first.cpu) later = read(current()).?;
-    try std.testing.expect(later.cpu > first.cpu);
+    while (later.cpu.eql(first.cpu)) later = read(current()).?;
+    try std.testing.expect(later.cpu.compare(first.cpu) == .gt);
 }
 
 test "a thread blocked in the kernel reads as blocked, its CPU time still" {
@@ -242,10 +245,16 @@ test "a thread blocked in the kernel reads as blocked, its CPU time still" {
 }
 
 test "a thread could run all of an interval it spent blocked, and only its CPU time of one it did not" {
-    const ms = std.time.ns_per_ms;
-    try std.testing.expectEqual(@as(i64, 50 * ms), couldRun(.{ .cpu = 0, .blocked = true }, .{ .cpu = 0, .blocked = true }, 50 * ms));
-    try std.testing.expectEqual(@as(i64, 2 * ms), couldRun(.{ .cpu = 0, .blocked = false }, .{ .cpu = 2 * ms, .blocked = false }, 50 * ms));
-    try std.testing.expectEqual(@as(i64, 2 * ms), couldRun(.{ .cpu = 0, .blocked = true }, .{ .cpu = 2 * ms, .blocked = false }, 50 * ms));
-    try std.testing.expectEqual(@as(i64, 50 * ms), couldRun(.{ .cpu = 0, .blocked = false }, .{ .cpu = 60 * ms, .blocked = false }, 50 * ms));
-    try std.testing.expectEqual(@as(i64, 50 * ms), couldRun(null, .{ .cpu = 0, .blocked = false }, 50 * ms));
+    const ms = testMs;
+    try std.testing.expectEqual(ms(50), couldRun(.{ .cpu = ms(0), .blocked = true }, .{ .cpu = ms(0), .blocked = true }, ms(50)));
+    try std.testing.expectEqual(ms(2), couldRun(.{ .cpu = ms(0), .blocked = false }, .{ .cpu = ms(2), .blocked = false }, ms(50)));
+    try std.testing.expectEqual(ms(2), couldRun(.{ .cpu = ms(0), .blocked = true }, .{ .cpu = ms(2), .blocked = false }, ms(50)));
+    try std.testing.expectEqual(ms(50), couldRun(.{ .cpu = ms(0), .blocked = false }, .{ .cpu = ms(60), .blocked = false }, ms(50)));
+    try std.testing.expectEqual(ms(50), couldRun(null, .{ .cpu = ms(0), .blocked = false }, ms(50)));
+}
+
+/// `n` milliseconds, as a test writes its times.
+fn testMs(n: i64) Span {
+    // unreachable: the tests' counts are far inside an i64 of nanoseconds
+    return aegis.units.Duration(.millisecond, i64).fromRaw(n).convert(.nanosecond, i64, .exact) catch unreachable;
 }

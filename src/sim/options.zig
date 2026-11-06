@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 const aegis = @import("aegis");
 const Io = std.Io;
 const Source = @import("../Source.zig");
+const nanoseconds = @import("../nanoseconds.zig");
 const ids = @import("../ids.zig");
 const io_call = @import("../io_call.zig");
 const IoCall = io_call.IoCall;
@@ -122,9 +123,9 @@ pub const Options = struct {
 
     pub const Clock = struct {
         /// `.real` at the start, in Unix time (2026-01-01T00:00:00Z).
-        real: Io.Timestamp = .fromNanoseconds(1_767_225_600 * std.time.ns_per_s),
+        real: Io.Timestamp = nanoseconds.seconds(1_767_225_600),
         /// `.awake` and `.boot` at the start; the CPU clocks stay here.
-        monotonic: Io.Timestamp = .fromNanoseconds(std.time.ns_per_s),
+        monotonic: Io.Timestamp = nanoseconds.seconds(1),
         resolution: Io.Duration = .fromNanoseconds(1),
     };
 };

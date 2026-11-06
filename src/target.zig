@@ -368,7 +368,7 @@ const SumProbe = struct {
     }
 
     fn run(ctx: *anyopaque, choices: []const u64) Allocator.Error!Ran {
-        const p: *SumProbe = @ptrCast(@alignCast(ctx)); // aegis: no-danger: the tests pair this function with a SumProbe
+        const p: *SumProbe = @ptrCast(@alignCast(ctx)); // the tests pair this function with a SumProbe
         p.runs += 1;
         p.source.restart(.{ .extend = .{ .choices = choices, .seed = p.runs } });
         var sum: u64 = 0;
@@ -430,7 +430,7 @@ const ListProbe = struct {
     top: f64 = 0,
 
     fn run(ctx: *anyopaque, choices: []const u64) Allocator.Error!Ran {
-        const p: *ListProbe = @ptrCast(@alignCast(ctx)); // aegis: no-danger: the test pairs this function with a ListProbe
+        const p: *ListProbe = @ptrCast(@alignCast(ctx)); // the test pairs this function with a ListProbe
         p.source.restart(.{ .replay = choices });
         const list = p.source.begin();
         var sum: u64 = 0;
@@ -466,7 +466,7 @@ const FirstProbe = struct {
     runs: u32 = 0,
 
     fn run(ctx: *anyopaque, choices: []const u64) Allocator.Error!Ran {
-        const p: *FirstProbe = @ptrCast(@alignCast(ctx)); // aegis: no-danger: the test pairs this function with a FirstProbe
+        const p: *FirstProbe = @ptrCast(@alignCast(ctx)); // the test pairs this function with a FirstProbe
         p.runs += 1;
         p.source.restart(.{ .replay = choices });
         const first = p.source.below(999);

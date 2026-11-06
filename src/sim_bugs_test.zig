@@ -90,9 +90,7 @@ fn Journal(comptime Cond: type) type {
             var reader = try io.concurrent(read, .{ &j, io });
             var writer = try io.concurrent(append, .{ &j, io });
             writer.await(io);
-            reader.cancel(io) catch |err| switch (err) {
-                error.Canceled => {},
-            };
+            try testing.expectError(error.Canceled, reader.cancel(io));
         }
 
         fn property(_: void, c: *Case) !void {

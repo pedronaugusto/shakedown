@@ -76,7 +76,7 @@ pub const checks = [_]Check{
 };
 
 fn ms(n: i64) Io.Duration {
-    return .fromMilliseconds(n);
+    return aegis.units.Duration(.millisecond, i64).fromRaw(n).toIoDuration();
 }
 
 // Time and futexes.
@@ -361,6 +361,7 @@ fn cancelProtected(_: Allocator, io: Io) !void {
 fn twice(io: Io, started: *Io.Event) error{ Canceled, Missed }!void {
     started.set(io);
     // Wait for the cancel, which this sleep receives.
+    // glint-ignore: Z026 -- the sleep is to end in the cancel, the error this case waits for; it is asked for again just below
     if (io.sleep(.fromSeconds(3600), .awake)) |_| return error.Missed else |_| {}
     io.recancel();
     if (io.checkCancel()) |_| return error.Missed else |err| return err;
