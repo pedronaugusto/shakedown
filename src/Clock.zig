@@ -114,13 +114,19 @@ const Timer = struct {
     /// Private: the timer's place among the armed ones.
     node: Timers.Node = undefined,
     clock: Kept,
-    /// Private: 0 while armed, 1 once fired. A sleep waits on it.
-    state: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which the base's futexWait waits on as the `u32` itself
+    /// Private: armed, then fired. A sleep waits on it.
+    state: aegis.Atomic(Fired) = .init(.armed),
     /// A timed futex wait's word, woken when the timer fires.
     futex: ?*const u32 = null,
     /// Private: how many timers the clock had fired before this one.
     rank: u64 = 0,
 };
+
+/// Whether a timer has fired.
+const Fired = enum(u32) { armed, fired };
+
+/// The armings a clock has seen, a count that wraps: `awaitArmed` waits for it to move.
+const Armings = aegis.units.Count(Timer, u32);
 
 const State = struct {
     options: Options,
@@ -130,7 +136,7 @@ const State = struct {
     locked: aegis.BlockingGuarded(Timing) = .init(.{}),
     count: aegis.Atomic(Armed) = .init(.fromRaw(0)),
     /// Bumped on every arming, so `awaitArmed` can wait on it.
-    arming: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which the base's futexWait waits on as the `u32` itself
+    arming: aegis.Atomic(Armings) = .init(.fromRaw(0)),
 };
 
 /// What the clock's lock guards.
@@ -242,7 +248,7 @@ pub fn awaitArmed(c: *Clock, n: usize, timeout: Io.Timeout) AwaitArmedError!void
             .deadline => |at| if (at.compare(.lte, .now(base, at.clock))) return error.Timeout,
             .none, .duration => {},
         }
-        try base.futexWaitTimeout(u32, &s.arming.raw, seen, deadline);
+        try s.arming.waitTimeout(base, seen, deadline);
     }
 }
 
@@ -270,7 +276,7 @@ fn sleep(userdata: ?*anyopaque, timeout: Io.Timeout) Io.Cancelable!void {
             var timer: Timer = .{ .clock = at.clock };
             if (!arm(l, &timer, at.deadline)) return l.base.checkCancel();
             defer disarm(l, &timer);
-            while (timer.state.load(.acquire) == 0) try l.base.futexWait(u32, &timer.state.raw, 0);
+            while (timer.state.load(.acquire) == .armed) try timer.state.wait(l.base, .armed);
         },
     }
 }
@@ -291,7 +297,7 @@ fn futexWait(userdata: ?*anyopaque, ptr: *const u32, expected: u32, timeout: Io.
             // A wake that leaves the word at `expected` is taken for a
             // spurious one and waited through; returning would read as a
             // timeout to a caller such as `Event.waitTimeout`.
-            while (timer.state.load(.acquire) == 0 and @atomicLoad(u32, ptr, .acquire) == expected) { // aegis: design(A007): the futex word is std's, a `*const u32` the vtable hands in
+            while (timer.state.load(.acquire) == .armed and @atomicLoad(u32, ptr, .acquire) == expected) { // aegis: design(A007): the futex word is std's, a `*const u32` the vtable hands in
                 try l.base.vtable.futexWait(l.base.userdata, ptr, expected, slice);
             }
         },
@@ -312,9 +318,9 @@ fn batchAwaitConcurrent(userdata: ?*anyopaque, batch: *Io.Batch, timeout: Io.Tim
     const slice = recheck(l);
     while (true) {
         // A timer that has fired gets one last look, which waits for nothing.
-        const fired = timer.state.load(.acquire) != 0;
+        const fired = timer.state.load(.acquire) == .fired;
         return l.base.vtable.batchAwaitConcurrent(l.base.userdata, batch, if (fired) zero else slice) catch |err| switch (err) {
-            error.Timeout => if (fired or timer.state.load(.acquire) != 0) error.Timeout else continue,
+            error.Timeout => if (fired or timer.state.load(.acquire) == .fired) error.Timeout else continue,
             else => err,
         };
     }
@@ -402,8 +408,8 @@ fn arm(l: *L, timer: *Timer, deadline: Reading) bool {
     var entry = t.timers[kept].getEntryFor(.{ .deadline = deadline, .seq = t.seq });
     entry.set(&timer.node);
     _ = s.count.fetchAddWrapping(.fromRaw(1), .release);
-    _ = s.arming.fetchAdd(1, .release);
-    l.base.futexWake(u32, &s.arming.raw, std.math.maxInt(u32));
+    _ = s.arming.fetchAddWrapping(.fromRaw(1), .release);
+    s.arming.wake(l.base, std.math.maxInt(u32));
     switch (s.options.advance) {
         .manual => {},
         .auto => |auto| {
@@ -419,7 +425,7 @@ fn arm(l: *L, timer: *Timer, deadline: Reading) bool {
 fn disarm(l: *L, timer: *Timer) void {
     var held = acquire(l);
     defer held.deinit(l.base);
-    if (timer.state.load(.acquire) != 0) return;
+    if (timer.state.load(.acquire) == .fired) return;
     var entry = held.value().timers[@backingInt(timer.clock)].getEntryForExisting(&timer.node);
     entry.set(null);
     _ = l.state.count.fetchSubWrapping(.fromRaw(1), .release);
@@ -490,11 +496,11 @@ fn fire(l: *L, t: *Timing, pick: Pick) void {
     _ = l.state.count.fetchSubWrapping(.fromRaw(1), .release);
     timer.rank = t.fired;
     t.fired += 1;
-    timer.state.store(1, .release);
+    timer.state.store(.fired, .release);
     if (timer.futex) |word| {
         l.base.vtable.futexWake(l.base.userdata, word, std.math.maxInt(u32));
     } else {
-        l.base.futexWake(u32, &timer.state.raw, 1);
+        timer.state.wake(l.base, 1);
     }
 }
 
@@ -538,9 +544,9 @@ test "a fired timer is out of the set, and an expired one is never armed" {
     try std.testing.expect(arm(l, &t, start.saturatingAdd(.fromRaw(5))));
     try std.testing.expectEqual(@as(usize, 1), clock.armed());
     clock.advance(.fromNanoseconds(4));
-    try std.testing.expectEqual(@as(u32, 0), t.state.load(.acquire));
+    try std.testing.expectEqual(Fired.armed, t.state.load(.acquire));
     clock.advance(.fromNanoseconds(1));
-    try std.testing.expectEqual(@as(u32, 1), t.state.load(.acquire));
+    try std.testing.expectEqual(Fired.fired, t.state.load(.acquire));
     try std.testing.expectEqual(@as(usize, 0), clock.armed());
     disarm(l, &t);
     try std.testing.expectEqual(@as(usize, 0), clock.armed());
@@ -572,7 +578,7 @@ test "timers fire in the order the clocks reach them, ties in arming order" {
     try std.testing.expectEqual(@as(usize, 1), clock.armed());
     const order = [_]usize{ 1, 2, 3, 0, 5 };
     for (order, 0..) |index, rank| {
-        try std.testing.expectEqual(@as(u32, 1), timers[index].state.load(.acquire));
+        try std.testing.expectEqual(Fired.fired, timers[index].state.load(.acquire));
         try std.testing.expectEqual(@as(u64, rank), timers[index].rank);
     }
     try std.testing.expectEqual(@as(?Io.Duration, .fromNanoseconds(20)), clock.advanceToNext());

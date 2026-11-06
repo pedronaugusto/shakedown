@@ -97,19 +97,22 @@ fn timeMoves(_: Allocator, io: Io) !void {
     if (early.compare(.gt, .now(io, .awake))) return error.WokeBeforeDeadline;
 }
 
+/// A word the futex cases wait on.
+const Word = enum(u32) { zero, one };
+
 fn futexMismatch(_: Allocator, io: Io) !void {
-    var word: u32 = 1;
-    try io.futexWait(u32, &word, 0);
-    io.futexWake(u32, &word, 1);
+    var word: aegis.Atomic(Word) = .init(.one);
+    try word.wait(io, .zero);
+    word.wake(io, 1);
 }
 
 fn futexTimeout(_: Allocator, io: Io) !void {
-    var word: u32 = 0;
+    var word: aegis.Atomic(Word) = .init(.zero);
     const start = Io.Timestamp.now(io, .awake);
     // Spurious wakes are allowed: wait until the timeout has passed.
     const deadline: Io.Clock.Timestamp = .fromNow(io, .{ .raw = ms(2), .clock = .awake });
     while (deadline.compare(.gt, .now(io, .awake))) {
-        try io.futexWaitTimeout(u32, &word, 0, .{ .deadline = deadline });
+        try word.waitTimeout(io, .zero, .{ .deadline = deadline });
     }
     if (start.durationTo(.now(io, .awake)).nanoseconds < ms(2).nanoseconds) return error.TimedOutEarly;
 }

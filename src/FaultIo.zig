@@ -1049,8 +1049,8 @@ fn rearmedLands(f: *FaultIo) bool {
 /// A stalled call's wait: on the base, until a cancel ends it.
 fn stall(f: *FaultIo) Io.Cancelable {
     if (f.rearmedLands()) return error.Canceled;
-    const never: u32 = 0;
-    while (true) f.base.vtable.futexWait(f.base.userdata, &never, 0, .none) catch return error.Canceled;
+    const never: aegis.Atomic(enum(u32) { never }) = .init(.never);
+    while (true) never.wait(f.base, .never) catch return error.Canceled;
 }
 
 // Batches.

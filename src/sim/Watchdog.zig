@@ -38,7 +38,10 @@ const Watchdog = @This();
 locked: aegis.BlockingGuarded(Watching) = .init(.{}),
 /// Private: bumped to wake the thread, when a simulation comes or goes and
 /// when it is to stop.
-signal: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which futexWait waits on as the `u32` itself
+signal: aegis.Atomic(Signals) = .init(.fromRaw(0)),
+
+/// The wakes the thread has been sent, a count that wraps: it waits for it to move.
+const Signals = aegis.units.Count(Watchdog, u32);
 
 /// What the lock guards.
 const Watching = struct {
@@ -151,8 +154,8 @@ fn real() Io {
 }
 
 fn wake(w: *Watchdog) void {
-    _ = w.signal.fetchAdd(1, .release);
-    real().futexWake(u32, &w.signal.raw, 1);
+    _ = w.signal.fetchAddWrapping(.fromRaw(1), .release);
+    w.signal.wake(real(), 1);
 }
 
 fn run(w: *Watchdog) void {
@@ -161,7 +164,7 @@ fn run(w: *Watchdog) void {
         const next = w.sample() orelse return;
         const timeout: Io.Timeout = if (next.slice) |ns| .{ .duration = .{ .raw = ns.toIoDuration(), .clock = .awake } } else .none;
         // glint-ignore: Z026 -- a wait cut short only samples sooner
-        real().futexWaitTimeout(u32, &w.signal.raw, seen, timeout) catch {};
+        w.signal.waitTimeout(real(), seen, timeout) catch {};
     }
 }
 

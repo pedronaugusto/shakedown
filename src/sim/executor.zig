@@ -13,6 +13,7 @@
 //! by switching back into its loop.
 const builtin = @import("builtin");
 const std = @import("std");
+const aegis = @import("aegis");
 const shuttle = @import("shuttle");
 const os_thread = @import("os_thread.zig");
 const windows = std.os.windows;
@@ -51,8 +52,8 @@ pub const Context = struct {
 };
 
 const Baton = struct {
-    /// 1 when this context may run.
-    turn: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which futexWait waits on as the `u32` itself
+    /// Whether this context may run.
+    turn: aegis.Atomic(Turn) = .init(.waiting),
     /// Set to make the thread exit when it next gets the baton.
     exit: bool = false,
     handle: ?Thread = null,
@@ -61,7 +62,11 @@ const Baton = struct {
     /// The thread the context runs on, as the watchdog reads it: the driver's
     /// own, or a task's, which names itself before `start` returns.
     os: os_thread.Thread = .none,
-    named: std.atomic.Value(u32) = .init(0), // aegis: boundary(A007): a futex word, which futexWait waits on as the `u32` itself
+    /// Whether `os` names the thread yet.
+    named: aegis.Atomic(Named) = .init(.unnamed),
+
+    const Turn = enum(u32) { waiting, running };
+    const Named = enum(u32) { unnamed, named };
 };
 
 /// A task's thread. On Windows a thread of our own: std's `Thread.join`
@@ -103,7 +108,7 @@ pub fn start(c: *Context, entry: Entry, arg: *anyopaque, stack_size: usize) Crea
                     else => error.SystemResources,
                 };
             }
-            while (c.thread.named.load(.acquire) == 0) real().futexWaitUncancelable(u32, &c.thread.named.raw, 0);
+            while (c.thread.named.load(.acquire) == .unnamed) c.thread.named.waitUncancelable(real(), .unnamed);
         },
     }
 }
@@ -185,8 +190,8 @@ fn win32ThreadStart(param: ?*anyopaque) callconv(.winapi) u32 {
 
 fn threadMain(b: *Baton) void {
     b.os = os_thread.current();
-    b.named.store(1, .release);
-    real().futexWake(u32, &b.named.raw, 1);
+    b.named.store(.named, .release);
+    b.named.wake(real(), 1);
     wait(b);
     b.entry.?(b.arg.?);
 }
@@ -197,15 +202,15 @@ fn real() std.Io {
 }
 
 fn pass(b: *Baton) void {
-    b.turn.store(1, .release);
-    real().futexWake(u32, &b.turn.raw, 1);
+    b.turn.store(.running, .release);
+    b.turn.wake(real(), 1);
 }
 
 /// Waits for this context's turn. A context told to exit leaves its thread
 /// there, without unwinding.
 fn wait(b: *Baton) void {
-    while (b.turn.load(.acquire) == 0) real().futexWaitUncancelable(u32, &b.turn.raw, 0);
-    b.turn.store(0, .monotonic);
+    while (b.turn.load(.acquire) == .waiting) b.turn.waitUncancelable(real(), .waiting);
+    b.turn.store(.waiting, .monotonic);
     if (b.exit) exitThread();
 }
 
