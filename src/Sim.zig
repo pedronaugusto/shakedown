@@ -91,7 +91,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
     s.core.network.drawn_by = &s.core;
     s.core.network.draw_fn = struct {
         fn draw(p: *anyopaque, max: u64) u64 {
-            const c: *Core = @ptrCast(@alignCast(p)); // aegis: no-danger(A019): installed with this Core as drawn_by
+            const c: *Core = @ptrCast(@alignCast(p)); // installed with this Core as drawn_by
             return c.draw(max);
         }
     }.draw;
@@ -305,7 +305,7 @@ pub fn programsOf(any: Io) ?Programs {
 
 /// The context of a simulation's `Io`, or null for any other `Io`.
 fn contextOf(any: Io) ?*Core.Context {
-    if (any.vtable == &calls.vtable) return @ptrCast(@alignCast(any.userdata.?)); // aegis: no-danger(A019): a simulation's own vtable is handed out with a Context as userdata
+    if (any.vtable == &calls.vtable) return @ptrCast(@alignCast(any.userdata.?)); // a simulation's own vtable is handed out with a Context as userdata
     if (any.vtable == &Routing.vtable) return Routing.of(any.userdata).state.context;
     return null;
 }

@@ -31,8 +31,8 @@ state: aegis.Guarded(State) = .init(.{}),
 
 /// Private: what the lock guards.
 const State = struct {
-    /// Every reservation still held, by base address, with its length.
-    mappings: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    /// Every reservation still held, by its base's address.
+    mappings: std.AutoHashMapUnmanaged(usize, Range) = .empty,
     /// Freed reservations, oldest first, from `freed_head` on.
     freed: std.ArrayList(Range) = .empty,
     freed_head: usize = 0,
@@ -54,7 +54,8 @@ pub const Options = struct {
     pub const Guard = enum { none, after };
 };
 
-const Range = struct { base: usize, len: usize };
+/// A whole mapping this allocator made: its page-aligned base and its length.
+const Range = struct { base: [*]align(std.heap.page_size_min) u8, len: usize };
 
 /// Whether this target quarantines; elsewhere blocks are plain pages.
 pub const supported = builtin.target.os.tag == .windows or have_mprotect;
@@ -79,7 +80,7 @@ pub fn deinit(q: *Quarantine) void {
     // asserts it.
     const state = q.state.teardown();
     var it = state.mappings.iterator();
-    while (it.next()) |entry| release(.{ .base = entry.key_ptr.*, .len = entry.value_ptr.* });
+    while (it.next()) |entry| release(entry.value_ptr.*);
     state.mappings.deinit(bookkeeping);
     state.freed.deinit(bookkeeping);
     q.* = undefined;
@@ -97,7 +98,7 @@ const vtable: std.mem.Allocator.VTable = .{
 };
 
 fn of(ptr: *anyopaque) *Quarantine {
-    return @ptrCast(@alignCast(ptr)); // aegis: no-danger(A019): the vtable is only ever paired with a *Quarantine
+    return @ptrCast(@alignCast(ptr)); // the vtable is only ever paired with a *Quarantine
 }
 
 fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*]u8 {
@@ -107,16 +108,18 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*
     const data = std.mem.alignForward(usize, @max(len, 1), page);
     const guard: usize = if (q.options.guard == .after) page else 0;
     const span = std.math.add(usize, data, guard) catch return null;
-    const base = std.heap.PageAllocator.map(span, .fromByteUnits(@max(alignment.toByteUnits(), page))) orelse return null;
+    const mapped = std.heap.PageAllocator.map(span, .fromByteUnits(@max(alignment.toByteUnits(), page))) orelse return null;
+    const base: [*]align(std.heap.page_size_min) u8 = @alignCast(mapped); // aegis: no-danger(A019): a whole mapping this allocator made, page-aligned
+    const range: Range = .{ .base = base, .len = span };
     const at = @intFromPtr(base); // safe: an address, kept as a number for page arithmetic
-    if (guard != 0 and !close(at + data, guard)) {
-        release(.{ .base = at, .len = span });
+    if (guard != 0 and !close(base + data, guard)) {
+        release(range);
         return null;
     }
     var held = q.state.acquire();
     defer held.deinit();
-    held.value().mappings.put(bookkeeping, at, span) catch {
-        release(.{ .base = at, .len = span });
+    held.value().mappings.put(bookkeeping, at, range) catch {
+        release(range);
         return null;
     };
     // With a guard the block ends where the guard begins.
@@ -148,25 +151,26 @@ fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) vo
     // with whatever an `unreachable` lets happen.
     const found = state.mappings.get(base);
     assert.invariant(found != null, "Quarantine freed a block it does not hold");
-    const span = found.?;
+    const range = found.?;
+    const span = range.len;
     const guard: usize = if (q.options.guard == .after) page else 0;
-    if (!decommit(base, span - guard)) {
+    if (!decommit(range.base, span - guard)) {
         // The pages could not be closed, so they cannot be kept: give the
         // range back rather than leave it open and reserved.
-        release(.{ .base = base, .len = span });
+        release(range);
         _ = state.mappings.remove(base);
         return;
     }
     const reuse = q.options.reuse_after orelse return;
     const limit: aegis.bounded.Limit(usize) = .init(reuse.raw());
-    state.freed.append(bookkeeping, .{ .base = base, .len = span }) catch return;
+    state.freed.append(bookkeeping, range) catch return;
     state.quarantined += span;
     while (state.freed_head < state.freed.items.len and exceeds(limit, state.quarantined)) {
         const oldest = state.freed.items[state.freed_head];
         state.freed_head += 1;
         state.quarantined -= oldest.len;
         release(oldest);
-        _ = state.mappings.remove(oldest.base);
+        _ = state.mappings.remove(@intFromPtr(oldest.base));
     }
     if (state.freed_head == state.freed.items.len) {
         state.freed.clearRetainingCapacity();
@@ -180,33 +184,31 @@ fn exceeds(limit: aegis.bounded.Limit(usize), amount: usize) bool {
 }
 
 /// Makes `[at, at + len)` inaccessible, keeping it reserved and resident.
-fn close(at: usize, len: usize) bool {
+fn close(at: [*]u8, len: usize) bool {
     if (builtin.target.os.tag == .windows) {
-        var address: ?windows.PVOID = @ptrFromInt(at); // aegis: boundary(A019): the system call takes the address of the range this allocator mapped
+        var address: ?windows.PVOID = at;
         var size: windows.SIZE_T = len;
         var old: windows.PAGE = undefined;
         return windows.ntdll.NtProtectVirtualMemory(windows.GetCurrentProcess(), &address, &size, .{ .NOACCESS = true }, &old) == .SUCCESS;
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // aegis: no-danger(A019): `at` is a page boundary inside a mapping this allocator made
+    const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at); // aegis: no-danger(A019): `at` is a page boundary inside a mapping this allocator made
     return std.posix.errno(std.posix.system.mprotect(start, len, std.mem.zeroes(std.posix.PROT))) == .SUCCESS;
 }
 
 /// Gives `[at, at + len)` back to the system and leaves it inaccessible
 /// and reserved, so no later mapping lands there.
-fn decommit(at: usize, len: usize) bool {
+fn decommit(at: [*]align(std.heap.page_size_min) u8, len: usize) bool {
     if (builtin.target.os.tag == .windows) {
-        var address: ?windows.PVOID = @ptrFromInt(at); // aegis: boundary(A019): the system call takes the address of the range this allocator mapped
+        var address: windows.PVOID = at;
         var size: windows.SIZE_T = len;
-        return windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), &size, .{ .DECOMMIT = true }) == .SUCCESS; // aegis: boundary(A019): the binding takes the base address as `*?*anyopaque`
+        return windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), &address, &size, .{ .DECOMMIT = true }) == .SUCCESS;
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // aegis: no-danger(A019): `at` is a page boundary inside a mapping this allocator made
     const advice = if (builtin.target.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
     // glint-ignore: Z026 -- pages not given back stay resident; the range is still closed below
-    std.posix.madvise(start, len, advice) catch {};
+    std.posix.madvise(at, len, advice) catch {};
     return close(at, len);
 }
 
 fn release(range: Range) void {
-    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(range.base); // aegis: no-danger(A019): every range here is a whole mapping this allocator made, page-aligned
-    std.heap.PageAllocator.unmap(start[0..range.len]);
+    std.heap.PageAllocator.unmap(range.base[0..range.len]);
 }

@@ -78,7 +78,7 @@ pub fn allocator(r: *Region) std.mem.Allocator {
 const vtable: std.mem.Allocator.VTable = .{ .alloc = alloc, .resize = resize, .remap = remap, .free = free };
 
 fn of(ptr: *anyopaque) *Region {
-    return @ptrCast(@alignCast(ptr)); // aegis: no-danger(A019): the vtable is only ever paired with a *Region
+    return @ptrCast(@alignCast(ptr)); // the vtable is only ever paired with a *Region
 }
 
 /// The class of a block: its size rounded up to a power of two, at least
@@ -165,9 +165,9 @@ fn reserveAt(at: usize) ?[*]align(std.heap.page_size_min) u8 {
 
 fn commit(at: [*]u8, len: usize) bool {
     if (builtin.os.tag == .windows) {
-        var address: ?windows.PVOID = at;
+        var address: windows.PVOID = at;
         var size: windows.SIZE_T = len;
-        return windows.ntdll.NtAllocateVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), 0, &size, .{ .COMMIT = true }, .{ .READWRITE = true }) == .SUCCESS; // aegis: boundary(A019): the binding takes the base address as `*?*anyopaque`
+        return windows.ntdll.NtAllocateVirtualMemory(windows.GetCurrentProcess(), &address, 0, &size, .{ .COMMIT = true }, .{ .READWRITE = true }) == .SUCCESS;
     }
     const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at); // aegis: no-danger(A019): commits start at the region's base or a commit step past it, page-aligned
     return std.posix.errno(std.posix.system.mprotect(start, len, .{ .READ = true, .WRITE = true })) == .SUCCESS;
@@ -177,9 +177,9 @@ fn commit(at: [*]u8, len: usize) bool {
 /// region's, never handed out again.
 fn decommit(at: [*]u8, len: usize) void {
     if (builtin.os.tag == .windows) {
-        var address: ?windows.PVOID = at;
+        var address: windows.PVOID = at;
         var size: windows.SIZE_T = len;
-        _ = windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), &size, .{ .DECOMMIT = true }); // aegis: boundary(A019): the binding takes the base address as `*?*anyopaque`
+        _ = windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), &address, &size, .{ .DECOMMIT = true });
         return;
     }
     const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at); // aegis: no-danger(A019): a large block starts on a page
@@ -190,9 +190,9 @@ fn decommit(at: [*]u8, len: usize) void {
 
 fn release(at: [*]align(std.heap.page_size_min) u8, len: usize) void {
     if (builtin.os.tag == .windows) {
-        var address: ?windows.PVOID = at;
+        var address: windows.PVOID = at;
         var size: windows.SIZE_T = 0;
-        _ = windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), &size, .{ .RELEASE = true }); // aegis: boundary(A019): the binding takes the base address as `*?*anyopaque`
+        _ = windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), &address, &size, .{ .RELEASE = true });
         return;
     }
     std.posix.munmap(at[0..len]);

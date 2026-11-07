@@ -314,7 +314,7 @@ pub fn Bound(comptime Ctx: type, comptime body: fn (Ctx, *Case) anyerror!void) t
         const Self = @This();
 
         pub fn run(erased: *anyopaque, c: *Case) anyerror!void {
-            const self: *Self = @ptrCast(@alignCast(erased)); // aegis: no-danger(A019): `Runner.body` pairs this function with a pointer to its own struct
+            const self: *Self = @ptrCast(@alignCast(erased)); // `Runner.body` pairs this function with a pointer to its own struct
             return body(self.ctx, c);
         }
     };
@@ -442,8 +442,7 @@ pub const Runner = struct {
         if (r.targets) |*t| printTargets(&text.writer, t) catch return error.OutOfMemory;
         if (r.trace_len > 0) {
             const t: std.builtin.StackTrace = .{ .instruction_addresses = r.trace[0..r.trace_len], .index = r.trace_len };
-            // glint-ignore: Z026 -- a trace that cannot be written leaves the report without it
-            std.debug.writeErrorReturnTrace(&t, .{ .writer = &text.writer, .mode = .no_color }) catch {};
+            std.debug.writeErrorReturnTrace(&t, .{ .writer = &text.writer, .mode = .no_color }) catch return error.OutOfMemory;
         }
         const diagnostics = r.options.diagnostics orelse {
             var buffer: [256]u8 = undefined;
@@ -498,7 +497,7 @@ const Same = struct {
     err: anyerror,
 
     fn run(ctx: *anyopaque, choices: []const u64) Allocator.Error!shrinker.Verdict {
-        const self: *Same = @ptrCast(@alignCast(ctx)); // aegis: no-danger(A019): `shrink` hands back the context `failed` gave it
+        const self: *Same = @ptrCast(@alignCast(ctx)); // `shrink` hands back the context `failed` gave it
         const outcome = try self.runner.once(.{ .replay = choices });
         return switch (outcome) {
             .fail => |err| if (err == self.err) .{ .fails = self.runner.source.tape() } else .other,
