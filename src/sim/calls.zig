@@ -257,7 +257,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse {
-            if (@atomicLoad(u32, ptr, .acquire) != expected) return; // aegis: boundary(A007): the futex word is std's, a `*const u32` the vtable hands in
+            if (@atomicLoad(u32, ptr, .acquire) != expected) return; // aegis: design(A007): the futex word is std's, a `*const u32` the vtable hands in
             outside("futexWait");
         };
         if (Core.cancelPoint(t)) {
@@ -273,7 +273,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse {
-            if (@atomicLoad(u32, ptr, .acquire) != expected) return; // aegis: boundary(A007): the futex word is std's, a `*const u32` the vtable hands in
+            if (@atomicLoad(u32, ptr, .acquire) != expected) return; // aegis: design(A007): the futex word is std's, a `*const u32` the vtable hands in
             outside("futexWaitUncancelable");
         };
         const wake = wait(c, t, ptr, expected, .none, false);
@@ -482,7 +482,7 @@ fn noTerminal(comptime call: IoCall, userdata: ?*anyopaque) Io.Cancelable!bool {
 /// A futex wait from task `t`, after its cancelation point.
 fn wait(c: *Core, t: *Task, ptr: *const u32, expected: u32, timeout: Io.Timeout, cancelable: bool) Core.Wake {
     c.touch(Core.Object.futex(@intFromPtr(ptr)), true); // safe: the address only identifies the futex
-    if (@atomicLoad(u32, ptr, .acquire) != expected) return .woken; // aegis: boundary(A007): the futex word is std's, a `*const u32` the vtable hands in
+    if (@atomicLoad(u32, ptr, .acquire) != expected) return .woken; // aegis: design(A007): the futex word is std's, a `*const u32` the vtable hands in
     const deadline = c.deadline(timeout);
     if (deadline == .due) return .timeout;
     if (c.spurious()) {

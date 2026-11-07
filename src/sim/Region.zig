@@ -18,7 +18,7 @@ const windows = std.os.windows;
 const Region = @This();
 
 /// Private: the reservation.
-base: usize,
+base: [*]align(std.heap.page_size_min) u8,
 len: usize,
 /// Private: whether the region landed at the fixed address.
 fixed: bool,
@@ -54,7 +54,7 @@ pub const InitError = error{ OutOfMemory, Unsupported };
 
 pub fn init() InitError!Region {
     if (!supported) return error.Unsupported;
-    if (reserveAt(hint)) |base| return .{ .base = base, .len = reserve, .fixed = base == hint };
+    if (reserveAt(hint)) |base| return .{ .base = base, .len = reserve, .fixed = @intFromPtr(base) == hint };
     const base = reserveAt(0) orelse return error.OutOfMemory;
     return .{ .base = base, .len = reserve, .fixed = false };
 }
@@ -106,7 +106,7 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, _: usize) ?[*]u8 {
 }
 
 fn bump(r: *Region, size: usize, alignment: Alignment) ?[*]u8 {
-    const start = alignment.forward(r.base + r.used) - r.base;
+    const start = alignment.forward(@intFromPtr(r.base) + r.used) - @intFromPtr(r.base);
     const end = std.math.add(usize, start, size) catch return null;
     if (end > r.len) return null;
     if (end > r.committed) {
@@ -115,7 +115,7 @@ fn bump(r: *Region, size: usize, alignment: Alignment) ?[*]u8 {
         r.committed = target;
     }
     r.used = end;
-    return @ptrFromInt(r.base + start); // aegis: boundary(A019): an address inside the region this allocator reserved and committed
+    return r.base + start;
 }
 
 fn resize(_: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, _: usize) bool {
@@ -142,61 +142,60 @@ fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, _: usize) void {
         return;
     }
     const page = std.heap.pageSize();
-    decommit(@intFromPtr(memory.ptr), std.mem.alignForward(usize, memory.len, page)); // safe: a large block is a page run of the region
+    decommit(memory.ptr, std.mem.alignForward(usize, memory.len, page));
 }
 
 // The system.
 
-fn reserveAt(at: usize) ?usize {
+fn reserveAt(at: usize) ?[*]align(std.heap.page_size_min) u8 {
     if (builtin.os.tag == .windows) {
-        var address: ?windows.PVOID = if (at == 0) null else @ptrFromInt(at); // aegis: boundary(A019): the system call takes the address of the region this allocator reserved
+        var address: ?[*]align(std.heap.page_size_min) u8 = if (at == 0) null else @ptrFromInt(at); // aegis: boundary(A019): the system call takes the address of the region this allocator reserved
         var size: windows.SIZE_T = reserve;
         const status = windows.ntdll.NtAllocateVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), 0, &size, .{ .RESERVE = true }, .{ .NOACCESS = true }); // aegis: boundary(A019): the binding takes the base address as `*?*anyopaque`
         if (status != .SUCCESS) return null;
-        return @intFromPtr(address.?); // safe: the reserved base, kept as a number for offsets
+        return address.?;
     }
     var flags: std.posix.MAP = .{ .TYPE = .PRIVATE, .ANONYMOUS = true };
     // std names no NORESERVE for every architecture (riscv64's, loongarch's); a mapping with
     // no access is charged no commit there either.
     if (comptime @hasField(std.posix.MAP, "NORESERVE")) flags.NORESERVE = true;
     const mapped = std.posix.mmap(if (at == 0) null else @ptrFromInt(at), reserve, .{}, flags, -1, 0) catch return null; // aegis: boundary(A019): mmap takes the hinted address of the region to reserve
-    return @intFromPtr(mapped.ptr); // safe: the reserved base, kept as a number for offsets
+    return mapped.ptr;
 }
 
-fn commit(at: usize, len: usize) bool {
+fn commit(at: [*]u8, len: usize) bool {
     if (builtin.os.tag == .windows) {
-        var address: ?windows.PVOID = @ptrFromInt(at); // aegis: boundary(A019): the system call takes the address of the region this allocator reserved
+        var address: ?windows.PVOID = at;
         var size: windows.SIZE_T = len;
         return windows.ntdll.NtAllocateVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), 0, &size, .{ .COMMIT = true }, .{ .READWRITE = true }) == .SUCCESS; // aegis: boundary(A019): the binding takes the base address as `*?*anyopaque`
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // aegis: no-danger(A019): commits start at the region's base or a commit step past it, page-aligned
+    const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at); // aegis: no-danger(A019): commits start at the region's base or a commit step past it, page-aligned
     return std.posix.errno(std.posix.system.mprotect(start, len, .{ .READ = true, .WRITE = true })) == .SUCCESS;
 }
 
 /// Gives the pages of a freed large block back; the addresses stay the
 /// region's, never handed out again.
-fn decommit(at: usize, len: usize) void {
+fn decommit(at: [*]u8, len: usize) void {
     if (builtin.os.tag == .windows) {
-        var address: ?windows.PVOID = @ptrFromInt(at); // aegis: boundary(A019): the system call takes the address of the region this allocator reserved
+        var address: ?windows.PVOID = at;
         var size: windows.SIZE_T = len;
         _ = windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), &size, .{ .DECOMMIT = true }); // aegis: boundary(A019): the binding takes the base address as `*?*anyopaque`
         return;
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // aegis: no-danger(A019): a large block starts on a page
+    const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at); // aegis: no-danger(A019): a large block starts on a page
     const advice = if (builtin.target.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
     // glint-ignore: Z026 -- pages not given back stay resident until the region goes
     std.posix.madvise(start, len, advice) catch {};
 }
 
-fn release(at: usize, len: usize) void {
+fn release(at: [*]align(std.heap.page_size_min) u8, len: usize) void {
     if (builtin.os.tag == .windows) {
-        var address: ?windows.PVOID = @ptrFromInt(at); // aegis: boundary(A019): the system call takes the address of the region this allocator reserved
+        var address: ?windows.PVOID = at;
         var size: windows.SIZE_T = 0;
         _ = windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), &size, .{ .RELEASE = true }); // aegis: boundary(A019): the binding takes the base address as `*?*anyopaque`
         return;
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @ptrFromInt(at); // aegis: no-danger(A019): the region's base, page-aligned
-    std.posix.munmap(start[0..len]);
+    std.posix.munmap(at[0..len]);
 }
 
 test "the same allocations give the same addresses in a fresh region" {

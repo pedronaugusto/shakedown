@@ -367,7 +367,7 @@ fn pathOf(exe: std.process.ReplaceOptions.Exe, argv: []const []const u8) ?[]cons
 
 /// The process's own handle on `inode`, a directory, as its working
 /// directory.
-fn openCwd(disk: *Disk, inode: u32, owner: u32) (Disk.Error || error{NotDir})!Io.Dir { // aegis: boundary(A015): a simulated handle, the spawned process's working directory, which the process holds and closes
+fn openCwd(disk: *Disk, inode: u32, owner: u32) (Disk.Error || error{NotDir})!Io.Dir { // a simulated handle, the spawned process's working directory, which the process holds and closes
     if (disk.root.nodes.items[inode].kind != .directory) return error.NotDir;
     const file = try disk.openHandle(inode, true, false, false, false);
     disk.setOwner(file.handle, owner);
@@ -380,7 +380,7 @@ fn cwdInode(disk: *Disk, ctx: ?*const Core.Context) Disk.Error!u32 {
     return disk.directory(cwd);
 }
 
-fn resolveCwd(c: *Core, disk: *Disk, cwd: std.process.Child.Cwd, owner: u32) !?Io.Dir { // aegis: boundary(A015): a simulated handle, the spawned process's working directory, which the process holds and closes
+fn resolveCwd(c: *Core, disk: *Disk, cwd: std.process.Child.Cwd, owner: u32) !?Io.Dir { // a simulated handle, the spawned process's working directory, which the process holds and closes
     const parent = c.currentContext();
     const inode = switch (cwd) {
         .inherit => if (parent != null and Core.cwdOf(parent.?) != null) try cwdInode(disk, parent) else return null,
@@ -404,7 +404,7 @@ fn mapSpawn(err: anyerror) std.process.SpawnError {
     };
 }
 
-fn spawn(c: *Core, e: Core.Call, options: std.process.SpawnOptions, ret: usize) std.process.SpawnError!std.process.Child { // aegis: boundary(A015): std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
+fn spawn(c: *Core, e: Core.Call, options: std.process.SpawnOptions, ret: usize) std.process.SpawnError!std.process.Child { // std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
     if (std.process.Child.Id == void) return error.OperationUnsupported;
     const path = pathOf(options.exe, options.argv) orelse return error.InvalidExe;
     const program = c.processes.find(path) orelse return error.FileNotFound;
@@ -530,7 +530,7 @@ fn processOfChild(c: *Core, child: *const std.process.Child) ?*Process {
 }
 
 const slots = struct {
-    pub fn processSpawn(userdata: ?*anyopaque, options: std.process.SpawnOptions) std.process.SpawnError!std.process.Child { // aegis: boundary(A015): std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
+    pub fn processSpawn(userdata: ?*anyopaque, options: std.process.SpawnOptions) std.process.SpawnError!std.process.Child { // std's Io vtable returns this simulated handle to the code under test, which owns it as it owns a file the system opened
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), true);
         if (e.task) |t| if (Core.cancelPoint(t)) {
@@ -730,7 +730,7 @@ fn replace(c: *Core, e: Core.Call, options: std.process.ReplaceOptions) std.proc
 // simulation in their place. Each is a step of the run, as an Io call is.
 
 /// A pipe the calling process (or the test) owns: its read and write ends.
-pub fn pipe(c: *Core, ret: usize) Pipes.CreateError![2]Io.File { // aegis: boundary(A015): a simulated pipe's ends as std's Io.File names them, the caller's to close as an Io call's result is
+pub fn pipe(c: *Core, ret: usize) Pipes.CreateError![2]Io.File { // a simulated pipe's ends as std's Io.File names them, the caller's to close as an Io call's result is
     const e = c.enter(ret, true);
     c.touch(Core.Object.pipes, true);
     const ends = c.processes.pipes.create(c.ownerOf(), c.ownerOf()) catch |err| {

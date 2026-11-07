@@ -122,7 +122,7 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*
     // With a guard the block ends where the guard begins.
     const start = if (guard == 0) at else alignment.backward(at + data - @max(len, 1));
     assert.invariant(start >= at, "a guarded block starts inside its mapping");
-    return @ptrFromInt(start); // aegis: boundary(A019): the address of a block inside a mapping this allocator made, as the OS returned it
+    return base + (start - at);
 }
 
 /// In place, a shrink would leave the tail open and a growth could move
