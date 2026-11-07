@@ -235,8 +235,7 @@ test "a thread blocked in the kernel reads as blocked, its CPU time still" {
     var tries: u32 = 0;
     while (!reading.blocked) : (tries += 1) {
         if (tries == 1000) return error.TestUnexpectedResult;
-        // glint-ignore: Z026 -- a sleep cut short only reads sooner
-        std.Io.Threaded.global_single_threaded.io().sleep(.fromMilliseconds(1), .awake) catch {};
+        try std.Io.Threaded.global_single_threaded.io().sleep(.fromMilliseconds(1), .awake);
         reading = read(id).?;
     }
     const again = read(id).?;

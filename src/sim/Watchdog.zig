@@ -160,8 +160,13 @@ fn run(w: *Watchdog) void {
         const seen = w.signal.load(.acquire);
         const next = w.sample() orelse return;
         const timeout: Io.Timeout = if (next.slice) |ns| .{ .duration = .{ .raw = ns.toIoDuration(), .clock = .awake } } else .none;
-        // glint-ignore: Z026 -- a wait cut short only samples sooner
-        real().futexWaitTimeout(u32, &w.signal.raw, seen, timeout) catch {};
+        real().futexWaitTimeout(u32, &w.signal.raw, seen, timeout) catch |err| switch (err) {
+            // A canceled thread samples no more; the cancel stays asked for.
+            error.Canceled => {
+                real().recancel();
+                return;
+            },
+        };
     }
 }
 
