@@ -26,6 +26,8 @@ pub fn Trace(comptime Event: type) type {
         kept: std.ArrayList(Record) = .empty,
         /// Private: the rolling hash after each record, outside `.off`.
         prefixes: std.ArrayList(u64) = .empty,
+        /// Private: each record's step and hashes, in `.all` and `.last`.
+        entries: std.ArrayList(Entry) = .empty,
         /// Private: interned bytes.
         strings: std.StringHashMapUnmanaged(void) = .empty,
         arena: std.heap.ArenaAllocator,
@@ -60,6 +62,11 @@ pub fn Trace(comptime Event: type) type {
             event: Event,
         };
 
+        /// One record, as two runs compare it by step: its step, the hash of
+        /// its call alone (`Event.callHash`, where the event has one; the whole
+        /// record otherwise) and of the whole record, outcome included.
+        pub const Entry = struct { step: u64, call: u64, whole: u64 };
+
         pub fn init(gpa: Allocator, mode: Mode) Self {
             // Keeping the newest none is keeping none: the ring below needs a
             // slot to write, and a trace built from an option never fails.
@@ -73,6 +80,7 @@ pub fn Trace(comptime Event: type) type {
         pub fn deinit(t: *Self) void {
             t.kept.deinit(t.gpa);
             t.prefixes.deinit(t.gpa);
+            t.entries.deinit(t.gpa);
             t.strings.deinit(t.gpa);
             t.arena.deinit();
             t.* = undefined;
@@ -82,6 +90,7 @@ pub fn Trace(comptime Event: type) type {
         pub fn clear(t: *Self) void {
             t.kept.clearRetainingCapacity();
             t.prefixes.clearRetainingCapacity();
+            t.entries.clearRetainingCapacity();
             t.count = 0;
             t.slot = 0;
             t.rolling = seed;
@@ -97,7 +106,10 @@ pub fn Trace(comptime Event: type) type {
                 return;
             }
             const hashed = t.prefixed();
-            if (hashed) try t.prefixes.append(t.gpa, t.rolling);
+            if (hashed) {
+                try t.entries.ensureUnusedCapacity(t.gpa, 1);
+                try t.prefixes.append(t.gpa, t.rolling);
+            }
             errdefer if (hashed) {
                 _ = t.prefixes.pop();
             };
@@ -115,7 +127,15 @@ pub fn Trace(comptime Event: type) type {
                     t.slot = if (at + 1 == n) 0 else at + 1;
                 },
             }
+            if (hashed) t.entries.appendAssumeCapacity(.{ .step = record.step, .call = callHash(record), .whole = h });
             t.count += 1;
+        }
+
+        /// Every record's entry in the order appended, in `.all` and `.last`;
+        /// null in `.off` and `.window`, which keep nothing that grows.
+        pub fn entriesKept(t: *const Self) ?[]const Entry {
+            if (!t.prefixed()) return null;
+            return t.entries.items;
         }
 
         /// The kept records, oldest first: every one for `.all`, the newest
@@ -188,6 +208,13 @@ pub fn Trace(comptime Event: type) type {
             } else {
                 std.hash.autoHashStrat(&hasher, record.event, .Deep);
             }
+            return hasher.final();
+        }
+
+        fn callHash(record: Record) u64 {
+            if (comptime !std.meta.hasMethod(Event, "callHash")) return recordHash(record);
+            var hasher: std.hash.Wyhash = .init(0);
+            record.event.callHash(&hasher);
             return hasher.final();
         }
 

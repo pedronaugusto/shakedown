@@ -424,3 +424,147 @@ test "no fault makes a positional read end before the end of the file" {
     defer report.deinit();
     _ = try shakedown.everyFault(testing.allocator, testing.io, &read, .{ .diagnostics = &report });
 }
+
+// What a call owes its caller on an error, when FaultIo answers in its place.
+
+/// A simulation's root task ran to its end.
+fn simFinished(outcome: shakedown.Sim.Outcome) !void {
+    switch (outcome) {
+        .finished => {},
+        .failed => |err| return err,
+        else => {
+            std.debug.print("{t}\n", .{outcome});
+            return error.TestUnexpectedResult;
+        },
+    }
+}
+
+test "a lookup failed in place of the call closes its queue, as the call would" {
+    const sim = try shakedown.Sim.init(testing.allocator, .{ .watchdog = null, .schedule = .fifo });
+    defer sim.deinit();
+    const server = try sim.node("server", .{ .addresses = &.{try Io.net.IpAddress.parseIp4("10.0.0.2", 80)} });
+    try sim.net().dns("server.test", server);
+    const Work = struct {
+        fn run(base: Io) !void {
+            const fio = try FaultIo.init(testing.allocator, base, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .netLookup, .n = 1 } }, .fault = .{ .fail = error.NameServerFailure } }} });
+            defer fio.deinit();
+            var buffer: [4]Io.net.HostName.LookupResult = undefined;
+            var queue: Io.Queue(Io.net.HostName.LookupResult) = .init(&buffer);
+            try testing.expectError(error.NameServerFailure, Io.net.HostName.lookup(try .init("server.test"), fio.io(), &queue, .{ .port = 80 }));
+            // A reader of the queue is told it ended, where it waited forever.
+            try testing.expectError(error.Closed, queue.getOne(base));
+        }
+    };
+    try simFinished(sim.run(Work.run, .{sim.io()}));
+}
+
+test "a group's await canceled in place of the call returns once every member has run" {
+    const sim = try shakedown.Sim.init(testing.allocator, .{ .watchdog = null, .schedule = .fifo });
+    defer sim.deinit();
+    const Work = struct {
+        fn member(io: Io, ran: *bool) void {
+            io.sleep(.fromSeconds(1), .awake) catch |err| switch (err) {
+                // The group's cancel reached it: it ends here.
+                error.Canceled => {},
+            };
+            ran.* = true;
+        }
+
+        fn run(base: Io) !void {
+            const fio = try FaultIo.init(testing.allocator, base, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .groupAwait, .n = 1 } }, .fault = .cancel }} });
+            defer fio.deinit();
+            const io = fio.io();
+            var ran = false;
+            var group: Io.Group = .init;
+            try group.concurrent(io, member, .{ io, &ran });
+            try testing.expectError(error.Canceled, group.await(io));
+            try testing.expect(ran);
+        }
+    };
+    try simFinished(sim.run(Work.run, .{sim.io()}));
+}
+
+test "the write-file calls' reader errors are never injected in place of the call" {
+    for ([_]shakedown.IoCall{ .netWriteFile, .fileWriteFileStreaming, .fileWriteFilePositional }) |call| {
+        for ([_]anyerror{ error.ReadFailed, error.EndOfStream }) |err| {
+            try testing.expectError(error.FaultNotInErrorSet, FaultIo.init(testing.allocator, testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = call, .n = 1 } }, .fault = .{ .fail = err } }} }));
+        }
+    }
+    // The call's own errors still are.
+    const fio = try FaultIo.init(testing.allocator, testing.io, .{ .plan = &.{.{ .at = .{ .nth = .{ .call = .netWriteFile, .n = 1 } }, .fault = .{ .fail = error.ConnectionResetByPeer } }} });
+    fio.deinit();
+}
+
+// The determinism check compares by step.
+
+/// A task waits long on a sleep while the root makes three short ones, then
+/// cancels it: its call returns last, after calls made after it.
+pub const Waiting = struct {
+    pub fn setUp(_: *Waiting, _: *FaultIo) !void {}
+
+    fn wait(io: Io) Io.Cancelable!void {
+        try io.sleep(.fromSeconds(10), .awake);
+    }
+
+    pub fn run(_: *Waiting, io: Io) !void {
+        var long = try io.concurrent(wait, .{io});
+        // glint-ignore: Z026 -- the waiting task's own end, canceled or not, is not what the run tests
+        defer long.cancel(io) catch {};
+        for (0..3) |_| try io.sleep(.fromMilliseconds(1), .awake);
+    }
+
+    pub fn check(_: *Waiting, _: Io, result: anyerror!void, _: ?shakedown.Injected) !void {
+        result catch |err| if (err != error.Canceled) return err;
+    }
+
+    pub fn tearDown(_: *Waiting) void {}
+};
+
+test "a fault that ends a waiting call early moves its record, and is no nondeterminism" {
+    const sim = try shakedown.Sim.init(testing.allocator, .{ .watchdog = null, .schedule = .fifo });
+    defer sim.deinit();
+    const Work = struct {
+        fn run(base: Io) !void {
+            var waiting: Waiting = .{};
+            var report = try shakedown.everyFault(testing.allocator, base, &waiting, .{ .errors = &.{}, .short = false, .alloc = false });
+            defer report.deinit();
+            // A fault on a short sleep fired while the long one waited: its outcome was excused.
+            try testing.expect(report.excused > 0);
+            try testing.expect(report.runs > 3);
+        }
+    };
+    try simFinished(sim.run(Work.run, .{sim.io()}));
+}
+
+/// Writes as many bytes as runs came before, then syncs: a call that returns
+/// before a later fault returns differently in each run.
+pub const Growing = struct {
+    dir: Io.Dir,
+    runs: usize = 0,
+
+    pub fn setUp(g: *Growing, _: *FaultIo) !void {
+        g.runs += 1;
+    }
+
+    pub fn run(g: *Growing, io: Io) !void {
+        const file = try g.dir.createFile(io, "growing", .{ .read = true });
+        defer file.close(io);
+        const bytes = "abcdefghijklmnopqrstuvwxyz";
+        try file.writePositionalAll(io, bytes[0..@min(g.runs, bytes.len)], 0);
+        try file.sync(io);
+    }
+
+    pub fn check(_: *Growing, _: Io, _: anyerror!void, _: ?shakedown.Injected) !void {}
+
+    pub fn tearDown(_: *Growing) void {}
+};
+
+test "a call that returned before the fault fired, differently from the clean run, is still nondeterminism" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var growing: Growing = .{ .dir = tmp.dir };
+    var report: shakedown.EveryFaultReport = .{};
+    defer report.deinit();
+    try testing.expectError(error.Nondeterministic, shakedown.everyFault(testing.allocator, testing.io, &growing, .{ .diagnostics = &report, .short = false, .alloc = false }));
+    try testing.expect(report.failure.?.difference != null);
+}

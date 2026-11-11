@@ -102,8 +102,15 @@ fn inSet(comptime E: type, err: anyerror) bool {
     return false;
 }
 
-/// Whether `call` can return `err`.
+/// Whether `call` can return `err`, as a fault in place of the call. The
+/// write-file slots' `ReadFailed` and `EndOfStream` are the file reader's to
+/// answer: its caller reads why from the reader (`File.Reader.err`, its
+/// size), which a call that was not made never sets, so they are not.
 pub fn canFail(call: IoCall, err: anyerror) bool {
+    switch (call) {
+        .fileWriteFileStreaming, .fileWriteFilePositional, .netWriteFile => if (err == error.ReadFailed or err == error.EndOfStream) return false,
+        else => {},
+    }
     switch (call) {
         inline else => |c| {
             const set = comptime failSet(c);
@@ -278,6 +285,17 @@ pub const IoEvent = struct {
     /// `ok` carries the bytes moved, or 0 for calls that move none.
     pub const Outcome = union(enum) { ok: u64, err: anyerror };
     pub const Foreign = struct { domain: [:0]const u8, call: u32 };
+
+    /// The call alone, as `hash` gives it without its outcome and its fault:
+    /// what two runs that made the same call agree on however it ended.
+    pub fn callHash(e: IoEvent, hasher: *std.hash.Wyhash) void {
+        std.hash.autoHash(hasher, e.call);
+        std.hash.autoHashStrat(hasher, e.subject.path, .Deep);
+        if (e.foreign) |f| {
+            hasher.update(f.domain);
+            std.hash.autoHash(hasher, f.call);
+        }
+    }
 
     /// Everything but the handle: handle numbers are the system's to
     /// choose and may differ between two runs that did the same thing.

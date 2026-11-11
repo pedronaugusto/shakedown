@@ -715,15 +715,15 @@ noinline fn slow(f: *FaultIo, comptime name: []const u8, args: anytype) Return(n
         return;
     }
     var event: IoEvent = .{ .call = call, .subject = subject, .fault = if (d.fault) |x| x else null };
-    const fault = f.prelude(d.fault, cancelation_point) catch |err| return f.failed(name, d.step, &event, err);
+    const fault = f.prelude(d.fault, cancelation_point) catch |err| return f.unmade(name, args, d.step, &event, err);
     // What replaces the call.
     if (fault) |x| switch (x) {
-        .fail => |err| return f.failed(name, d.step, &event, err),
+        .fail => |err| return f.unmade(name, args, d.step, &event, err),
         .cancel => if (cancelation_point) {
-            if (f.land()) return f.failed(name, d.step, &event, error.Canceled);
+            if (f.land()) return f.unmade(name, args, d.step, &event, error.Canceled);
             if (d.fault.? == .cancel) event.fault = null;
         },
-        .stall => if (cancelation_point) return f.failed(name, d.step, &event, f.stall()),
+        .stall => if (cancelation_point) return f.unmade(name, args, d.step, &event, f.stall()),
         .spurious_wake => if (comptime call == .futexWait or call == .futexWaitUncancelable) {
             f.record(d.step, event);
             return;
@@ -731,7 +731,7 @@ noinline fn slow(f: *FaultIo, comptime name: []const u8, args: anytype) Return(n
         .fail_after, .short, .delay, .call, .crash => {},
     };
     // A cancel re-armed for this task lands where the base would deliver it.
-    if (cancelation_point and f.rearmedLands()) return f.failed(name, d.step, &event, error.Canceled);
+    if (cancelation_point and f.rearmedLands()) return f.unmade(name, args, d.step, &event, error.Canceled);
     if (comptime call == .recancel) if (f.rearm()) {
         f.record(d.step, event);
         return;
@@ -766,6 +766,30 @@ noinline fn slow(f: *FaultIo, comptime name: []const u8, args: anytype) Return(n
     event.outcome = outcomeOf(R, result);
     f.record(d.step, event);
     return result;
+}
+
+/// Fails slot `name` with `err` in place of the call, first giving the caller
+/// what the slot's own error path would have: a call that was not made still
+/// keeps its contract.
+fn unmade(f: *FaultIo, comptime name: []const u8, args: anytype, step: u64, event: *IoEvent, err: anyerror) Return(name) {
+    f.owed(name, args);
+    return f.failed(name, step, event, err);
+}
+
+/// What slot `name` owes its caller on every return, an error included, when
+/// FaultIo answers in its place. `netLookup` closes `resolved` before it
+/// returns, even on error (`HostName.lookup`), or a reader of the queue waits
+/// forever. `groupAwait` returns, `Canceled` included, only once every task
+/// of the group has run (`Group.await`): a cancel that reached the waiting
+/// task goes to the members, and they are waited for. Every other slot owes
+/// nothing on an error: a handle it would hand back is not made, a batch
+/// stays the caller's to cancel (`Batch.cancel`), an out-buffer is not read
+/// past an error, and the write-file slots' `ReadFailed` and `EndOfStream`,
+/// answered by the file reader's own state, are never injected
+/// (`io_call.canFail`).
+fn owed(f: *FaultIo, comptime name: []const u8, args: anytype) void {
+    if (comptime std.mem.eql(u8, name, "netLookup")) args[1].close(f.base);
+    if (comptime std.mem.eql(u8, name, "groupAwait")) f.base.vtable.groupCancel(f.base.userdata, args[0], args[1]);
 }
 
 /// Records `err` as the outcome of slot `name` and returns it as the slot's

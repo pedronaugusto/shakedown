@@ -91,6 +91,10 @@ pub const EveryFaultReport = struct {
     /// everyCrash: crash states an earlier point already recovered, whose
     /// recovery is not made again: a state recovers as it did.
     repeated: u64 = 0,
+    /// everyFault: calls a faulted run made as the clean run did, before its
+    /// fault's step, that were still waiting when the fault fired, so their
+    /// outcomes were not compared (an accept, a read another task waits on).
+    excused: u64 = 0,
     failure: ?Failure = null,
     /// Private: what `failure.trace` was allocated with.
     gpa: ?Allocator = null,
@@ -130,6 +134,22 @@ pub const EveryFaultReport = struct {
 /// `tearDown`, and `tearDown` follows every run whose `setUp` succeeded.
 /// Allocation is faulted through the allocators `setUp` makes with
 /// `fio.allocator`.
+///
+/// Make every call through the faulted `Io`, and every allocation through
+/// `fio.allocator`, inside `run`: a second request, a client's or a server's
+/// teardown included. A faulted run is held to the clean run's calls when
+/// `run` returns, but the clean run's trace keeps whatever `check` and
+/// `tearDown` call through it too, so each of those calls becomes a step
+/// whose fault never fires in time and the run is called `Nondeterministic`.
+/// Keep what `run` saw in `ctx`, and let `check` judge that; it may make
+/// calls of its own on an `Io` no fault reaches.
+///
+/// Faulted runs are compared with the clean run by step, not by the order
+/// calls returned in: a fault that ends a waiting call early (an accept, a
+/// read another task waits on) moves its record and nothing else. Up to the
+/// fault's step a run makes exactly the clean run's calls, and every call
+/// that returned before the fault fired returned as it did; a call still
+/// waiting then is excused its outcome and counted in `excused`.
 pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOptions) EveryFaultError!EveryFaultReport {
     if (!options.shard.valid()) return error.CheckFailed;
     var report: EveryFaultReport = .{};
@@ -141,8 +161,12 @@ pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOpt
 
     const records = clean.trace().records();
     const range = options.shard.range(records.len);
+    // The clean run's calls by step, for each faulted run to be held to.
+    const by_step = gpa.dupe(Entry, clean.trace().entriesKept().?) catch return error.OutOfMemory;
+    defer gpa.free(by_step);
+    std.mem.sort(Entry, by_step, {}, earlier);
     var faults: [max_faults]IoFault = undefined;
-    for (records[@intCast(range.first)..@intCast(range.end)], @intCast(range.first)..) |record, index| {
+    for (records[@intCast(range.first)..@intCast(range.end)]) |record| {
         for (candidates(ctx, options, record, &faults)) |fault| {
             const injected: Injected = .{ .step = record.step, .call = record.event.call, .fault = fault };
             const mode: IoTrace.Mode = if (options.trace == .off) .{ .last = 1 } else options.trace;
@@ -152,7 +176,7 @@ pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOpt
                 .plan = &.{.{ .at = .{ .step = record.step }, .fault = fault }},
             }) catch |err| return outOfMemory(err);
             defer fio.deinit();
-            try once(gpa, ctx, fio, options, &report, .{ .injected = injected, .clean = clean, .index = index });
+            try once(gpa, ctx, fio, options, &report, .{ .injected = injected, .clean = by_step });
         }
     }
     return report;
@@ -161,8 +185,15 @@ pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOpt
 /// The most faults tried at one step.
 const max_faults = 32;
 
-/// A faulted run: its fault, and the clean run it must follow up to it.
-const Faulted = struct { injected: Injected, clean: *FaultIo, index: usize };
+const Entry = IoTrace.Entry;
+
+fn earlier(_: void, a: Entry, b: Entry) bool {
+    return a.step < b.step;
+}
+
+/// A faulted run: its fault, and the clean run's calls, by step, it must
+/// make up to it.
+const Faulted = struct { injected: Injected, clean: []const Entry };
 
 /// One run: set up, run, check, tear down. `check` judges the run before
 /// `tearDown` releases what it left, and `tearDown` follows every run whose
@@ -177,10 +208,10 @@ fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: EveryFaultOptions,
     const result = ctx.run(fio.io());
     var injected = if (faulted) |f| f.injected else null;
     if (faulted) |f| {
-        if (divergence(f.clean, fio, f.index, f.injected.step)) |at| {
+        if (divergence(f.clean, fio, f.injected.step, &report.excused)) |at| {
             return fail(gpa, options, fio, report.*, .{ .injected = injected, .err = error.Nondeterministic, .difference = at, .trace = "" });
         }
-        if (!landed(f.clean, fio, f.index)) injected = null;
+        if (!landed(f.clean, fio, f.injected.step)) injected = null;
     }
     ctx.check(fio.io(), result, injected) catch |err| {
         return fail(gpa, options, fio, report.*, .{ .injected = injected, .err = err, .trace = "" });
@@ -189,10 +220,16 @@ fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: EveryFaultOptions,
 
 /// Whether the faulted run's fault did something at its step: a cancel
 /// under blocked protection did not, and its record is the clean run's.
-fn landed(clean: *FaultIo, faulted: *FaultIo, index: usize) bool {
-    const theirs = faulted.trace().hashAt(index) orelse return true;
-    const ours = clean.trace().hashAt(index) orelse return true;
-    return theirs != ours;
+fn landed(clean: []const Entry, faulted: *FaultIo, step: u64) bool {
+    const ours = atStep(clean, step) orelse return true;
+    for (faulted.trace().entriesKept() orelse return true) |e| if (e.step == step) return e.whole != ours.whole;
+    return true;
+}
+
+/// The clean run's entry at `step`, from its entries sorted by step.
+fn atStep(by_step: []const Entry, step: u64) ?Entry {
+    const at: usize = @intCast(atStepIndex(by_step, step));
+    return if (at < by_step.len and by_step[at].step == step) by_step[at] else null;
 }
 
 /// The faults to try at `record`'s step, into `buffer`.
@@ -254,23 +291,49 @@ fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, 
     return buffer[0..len];
 }
 
-/// Where a faulted run parted from the clean run before its fault, or
-/// null when it did not: the fault must have fired at `step`, and every
-/// record before it must be the clean run's.
-fn divergence(clean: *FaultIo, faulted: *FaultIo, index: usize, step: u64) ?u64 {
+/// Where a faulted run parted from the clean run before its fault, as the
+/// index of its first record that differs, or null when it did not. The
+/// fault must have fired at `step`. Up to it the faulted run makes exactly
+/// the clean run's calls: a call at every step the clean run made one, the
+/// same call with the same arguments. A call that returned before the fault
+/// fired returned as it did in the clean run. Only a call still waiting when
+/// the fault fired, which the fault may end another way, is excused its
+/// outcome, and counted in `excused`. Records are compared by step, not by
+/// position: a call returns when it returns, so a fault that ends a waiting
+/// call early moves its record, and nothing else.
+fn divergence(clean: []const Entry, faulted: *FaultIo, step: u64, excused: *u64) ?u64 {
+    const theirs = faulted.trace().entriesKept() orelse return 0;
     const fired = faulted.fired();
-    if (fired.len == 0 or fired[0].step != step) return @min(index, faulted.trace().len());
-    if (index == 0) return null;
-    const theirs = faulted.trace().hashAt(index - 1);
-    if (theirs != null and theirs.? == clean.trace().hashAt(index - 1).?) return null;
-    // The first record at which the two differ.
-    var lo: u64 = 0;
-    var hi: u64 = index;
+    if (fired.len == 0 or fired[0].step != step) return theirs.len;
+    // What returned before the fault's own record had returned when it fired.
+    const fault_at = for (theirs, 0..) |e, i| {
+        if (e.step == step) break i;
+    } else theirs.len;
+    var made: u64 = 0;
+    var waiting: u64 = 0;
+    for (theirs, 0..) |e, i| {
+        if (e.step >= step) continue;
+        const ours = atStep(clean, e.step) orelse return i;
+        if (ours.call != e.call) return i;
+        if (i < fault_at) {
+            if (ours.whole != e.whole) return i;
+        } else waiting += 1;
+        made += 1;
+    }
+    // Every call the clean run made before the step, the faulted run made too.
+    const before = atStepIndex(clean, step);
+    if (made != before) return theirs.len;
+    excused.* += waiting;
+    return null;
+}
+
+/// How many of the clean run's entries come before `step`.
+fn atStepIndex(by_step: []const Entry, step: u64) u64 {
+    var lo: usize = 0;
+    var hi: usize = by_step.len;
     while (lo < hi) {
         const mid = lo + (hi - lo) / 2;
-        const a = clean.trace().hashAt(mid);
-        const b = faulted.trace().hashAt(mid);
-        if (b != null and a.? == b.?) lo = mid + 1 else hi = mid;
+        if (by_step[mid].step < step) lo = mid + 1 else hi = mid;
     }
     return lo;
 }
