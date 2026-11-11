@@ -525,9 +525,9 @@ cancels the node's tasks while respecting blocked cancellation protection.
 until old live tasks have ended and `SimulationEnded` after a final outcome.
 
 `sim.settle(.{ .within = .fromSeconds(30) })` says the faults are over: it
-heals every partition and hold and empties the fault plan, then runs the
-simulation on, never past thirty seconds of `.awake`, until every task has
-ended, or, with `.until = .{ .holds = &state.progress }`, until the test's own
+heals every partition and hold, empties the fault plan and stops drawn
+wall-clock steps, then runs the simulation on, never past thirty seconds of
+`.awake`, until every task has ended, or, with `.until = .{ .holds = &state.progress }`, until the test's own
 predicate holds. The result is `live` with the time it took, `stalled` with a
 report of every task still alive and where it waits (the run paused, free to
 go on), or `ended` with the outcome that came first. It formats as a report, so
@@ -544,6 +544,19 @@ shared packet storage (1024 by default); packets hold at most 65536 bytes and
 UDP datagrams at most 65535. A resource limit reports `SystemResources`;
 optional duplicate packets may be dropped when the pool is full. All resources
 are released by `sim.deinit()`.
+
+A node's clocks can disagree with the simulation's:
+`sim.node("b", .{ .clock = .{ .set = .{ .real = .fromSeconds(-90), .drift_ppm = 100 } } })`
+reads a wall clock ninety seconds slow that gains 100 µs a second, and
+`.drawn` draws each offset and the drift from the source, up to the bounds
+given, so a failing case shrinks to the smallest skew that fails it.
+`.monotonic` offsets the awake and boot clocks, and `step_per_million` steps
+the wall clock, forward or back, at a read of `.real`. `node.stepReal(t)` and
+`node.suspendFor(d)` jump a node's clocks as `Clock`'s do: only the wall clock
+goes back. A timer on a node waits for its reading on that node's clock, so a
+jump fires the timers it passes. `Options.clock.late` makes each timer fire up
+to that late, drawn per timer. Node zero, `sim.io()`'s, keeps the simulation's
+time, which `sim.now` reads; `node.now` reads a node's.
 
 `Sim.Event.node` records the call's Io namespace and `TaskReport.node` records
 task ownership; task IDs remain global. Both are distinct id types

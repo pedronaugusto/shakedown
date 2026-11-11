@@ -293,7 +293,7 @@ const slots = struct {
     pub fn now(userdata: ?*anyopaque, which: Io.Clock) Io.Timestamp {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), true);
-        const at = c.now(which);
+        const at = c.read(which);
         c.record(.now, e, @bitCast(nanoseconds.reading(Core, at).raw()));
         return at;
     }
@@ -588,7 +588,7 @@ fn perform(c: *Core, operation: Io.Operation) Io.Cancelable!Io.Operation.Result 
         else => {},
     }
     if (c.disk(c.nodeId())) |fs| {
-        fs.model.at = c.now(.real);
+        fs.model.at = c.nowHere(.real);
         if (fs_calls.perform(fs.model, operation)) |result| return result;
     }
     return switch (operation) {

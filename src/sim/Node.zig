@@ -1,12 +1,23 @@
 //! A node's stable Io namespace and cooperative lifecycle.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 const Core = @import("Core.zig");
 const Fs = @import("Fs.zig");
 const calls = @import("calls.zig");
 const Routing = @import("routing.zig").Routing;
+const nanoseconds = @import("../nanoseconds.zig");
 const Node = @This();
-pub const Options = struct { addresses: []const Io.net.IpAddress = &.{}, fs: ?Fs.Options = .{} };
+/// A node's clocks against the simulation's: set, or drawn from the source.
+pub const Clock = @import("options.zig").NodeClock;
+pub const Options = struct {
+    addresses: []const Io.net.IpAddress = &.{},
+    fs: ?Fs.Options = .{},
+    /// The node's clocks: by default the simulation's own. Node zero, the
+    /// test's (`Sim.io`), always keeps the simulation's time, which
+    /// `Sim.now` reads.
+    clock: Clock = .{ .set = .{} },
+};
 context: *Core.Context,
 name: []u8,
 outer: ?Routing = null,
@@ -16,6 +27,30 @@ pub fn io(n: *Node) Io {
 }
 pub fn fs(n: *Node) *Fs {
     return &n.context.disk.?;
+}
+/// What `which` reads on this node: the simulation's time, skewed as the
+/// node's clock says. Drawing nothing, it never steps the wall clock.
+pub fn now(n: *Node, which: Io.Clock) Io.Timestamp {
+    return n.context.core.nowOn(n.context.node, which);
+}
+/// A wall-clock step on this node, as NTP or an operator makes it, backwards
+/// too: only its `.real` changes, to read `to`. Timers waiting on its real
+/// time keep the readings they wait for, so a step forward fires those it
+/// passes and one back puts them off. The simulation's time and the other
+/// nodes' clocks do not move.
+pub fn stepReal(n: *Node, to: Io.Timestamp) void {
+    const c = n.context.core;
+    const from = nanoseconds.reading(Core, c.nowOn(n.context.node, .real)).raw();
+    c.jump(n.context.node, .{ 0, 0, nanoseconds.reading(Core, to).raw() -| from });
+}
+/// The node's machine slept for `d`: its boot and real clocks jump forward
+/// by `d`, its awake clock does not, and the timers on boot or real time it
+/// passes fire. Monotonic time never goes back: `d` is not negative. The
+/// simulation's time and the other nodes' clocks do not move.
+pub fn suspendFor(n: *Node, d: Io.Duration) void {
+    const by = nanoseconds.span(d).raw();
+    aegis.assert.invariant(by >= 0, "a machine sleeps forward: monotonic time never goes back");
+    n.context.core.jump(n.context.node, .{ 0, by, by });
 }
 pub fn kill(n: *Node) void {
     const c = n.context.core;

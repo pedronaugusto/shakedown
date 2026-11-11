@@ -310,7 +310,7 @@ fn pipeAnswer(comptime name: []const u8, c: *Core, file: Io.File) Return(name) {
     const R = Return(name);
     if (comptime std.mem.eql(u8, name, "fileStat")) {
         const buffered = c.processes.pipes.buffered(file.handle) catch return error.Unexpected;
-        const now = c.now(.real);
+        const now = c.nowHere(.real);
         return .{
             .inode = @intCast(Pipes.id(file.handle).? + 1),
             .nlink = 1,

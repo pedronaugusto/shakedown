@@ -305,12 +305,48 @@ properties may mark points only some of them ask for. The opposite, a point
 that must never be reached, needs nothing new: the body returns an error, or a
 simulated task does and the run ends `failed`.
 
+## Clocks per node
+
+The simulation keeps one set of clocks, and they drive everything physical:
+timers, latencies, `max_time`, `Sim.now`. A node made with `Sim.node` reads
+them through a skew kept on its own context (a simulated process on the node
+reads its node's): its reading of a clock is the simulation's, plus an offset
+per clock, plus `drift_ppm` millionths of the time since the node was made.
+Node zero, the test's, keeps the simulation's time, so there is one reference
+a test can trust. A skew of zeros is the identity, computed as such, and draws
+nothing: a simulation whose options ask for no skew, no steps and no lateness
+makes the tapes and traces it made before, and the determinism golden holds.
+
+A timeout is read on the clock of the node whose call waits, and kept, as
+before, in the timer queue of its clock kind, at the simulation's reading
+where the node's clock reaches the deadline. The skewed time since the node
+was made is floor(e × (10^6 + drift) / 10^6) of the simulation's e, so that
+reading is an exact ceiling and no search is needed; and since the drift is an
+`i20`, the rate stays above zero and a node's clocks never run backwards. A
+jump (`Node.stepReal`, `Node.suspendFor`, or a drawn step) changes the node's
+offsets, then moves each timer waiting on that node's jumped clocks to where
+the new skew reaches the reading it waits for, firing those already reached.
+Only the wall clock steps back; `suspendFor` refuses a negative span, and the
+monotonic offsets change only forward. A report of a sleeping task gives its
+deadline on its node's clock.
+
+What is drawn is drawn from the run's source and is on its tape: a `.drawn`
+skew when the node is made (each offset and the drift a choice, 0 the
+simplest, then 1, -1, 2, -2, so a shrunk case has the smallest skew that still
+fails), a wall-clock step at a read of `.real` by `step_per_million`, and a
+timer's lateness when its deadline is computed (`Options.clock.late`, the same
+for every node, never for a task of `Sim.at`). The alternative of a lateness
+per node was left out: lateness is the load of the machine running the test,
+not a property of one simulated machine. The test's own setup writes to a
+node's disk (`Fs.write`) stamp the simulation's time; a task's file calls
+stamp its node's.
+
 ## Liveness after faults heal
 
 `Sim.settle` is the pattern TigerBeetle's liveness mode makes of a run:
 faults for a while, then none, then progress within a bound. It ends the
-faults it owns: every partition and hold of the network, and the fault plan,
-which it empties. What a fault left behind stays (a stalled call, a node
+faults it owns: every partition and hold of the network, the fault plan,
+which it empties, and the nodes' drawn wall-clock steps. What a fault left behind stays (a stalled call, a node
 killed or crashed, a damaged disk), as it would on a real system, and the
 links keep their latency and loss, which are the network the test chose. The
 run then goes on in a drive mode of its own, `settle`: one step at a time,

@@ -563,3 +563,207 @@ test "handles each closed once end the run as finished" {
     _ = sim.net();
     try testing.expectEqual(Sim.Outcome.finished, sim.run(ClosedTwice.once, .{sim.io()}));
 }
+
+fn sleepOn(io: Io, seconds: u32, clock: Io.Clock) !void {
+    try io.sleep(.fromSeconds(seconds), clock);
+}
+
+fn elapsed(from: Io.Timestamp, to: Io.Timestamp) i96 {
+    return from.durationTo(to).nanoseconds;
+}
+
+test "a node's clocks read the simulation's skewed by its offsets, and run at its drift" {
+    const sim = try Sim.init(testing.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const fast = try sim.node("fast", .{ .clock = .{ .set = .{ .real = .fromSeconds(-90), .monotonic = .fromSeconds(5), .drift_ppm = 100_000 } } });
+    const plain = try sim.node("plain", .{});
+    try testing.expectEqual(@as(i96, -90 * std.time.ns_per_s), elapsed(sim.now(.real), fast.now(.real)));
+    try testing.expectEqual(@as(i96, 5 * std.time.ns_per_s), elapsed(sim.now(.awake), fast.now(.awake)));
+    try testing.expectEqual(@as(i96, 5 * std.time.ns_per_s), elapsed(sim.now(.boot), fast.now(.boot)));
+    try testing.expectEqual(sim.now(.real).nanoseconds, plain.now(.real).nanoseconds);
+
+    // Eleven of its seconds pass in ten of the simulation's on a node ten
+    // percent fast, and one in two on a node half as fast.
+    const began = sim.now(.awake);
+    const fast_began = fast.now(.awake);
+    try testing.expectEqual(Sim.Outcome.finished, sim.run(sleepOn, .{ fast.io(), 11, .awake }));
+    try testing.expectEqual(@as(i96, 10 * std.time.ns_per_s), elapsed(began, sim.now(.awake)));
+    try testing.expectEqual(@as(i96, 11 * std.time.ns_per_s), elapsed(fast_began, fast.now(.awake)));
+    const second = try Sim.init(testing.allocator, .{ .watchdog = null });
+    defer second.deinit();
+    const half = try second.node("half", .{ .clock = .{ .set = .{ .drift_ppm = -500_000 } } });
+    const second_began = second.now(.awake);
+    try testing.expectEqual(Sim.Outcome.finished, second.run(sleepOn, .{ half.io(), 1, .awake }));
+    try testing.expectEqual(@as(i96, 2 * std.time.ns_per_s), elapsed(second_began, second.now(.awake)));
+}
+
+/// Sleeps until its node's wall clock reads `until`.
+fn sleepUntilReal(io: Io, until: Io.Timestamp) !void {
+    try Io.Timeout.sleep(.{ .deadline = .{ .raw = until, .clock = .real } }, io);
+}
+
+test "a wall-clock step back puts off a real-time deadline, a step forward fires it, and a suspend moves boot and real alone" {
+    const sim = try Sim.init(testing.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const node = try sim.node("n", .{});
+    const began = sim.now(.awake);
+    const real = node.now(.real);
+    try sim.start(sleepUntilReal, .{ node.io(), real.addDuration(.fromSeconds(10)) });
+    try testing.expectEqual(null, sim.runFor(.fromSeconds(5)));
+    node.stepReal(real.subDuration(.fromSeconds(55)));
+    try testing.expectEqual(@as(i96, -55 * std.time.ns_per_s), elapsed(real, node.now(.real)));
+    // Its deadline is now sixty-five seconds away: ten more pass, still asleep.
+    try testing.expectEqual(null, sim.runFor(.fromSeconds(10)));
+    node.stepReal(real.addDuration(.fromSeconds(100)));
+    try testing.expectEqual(Sim.Outcome.finished, sim.runFor(.fromNanoseconds(0)).?);
+    try testing.expectEqual(@as(i96, 15 * std.time.ns_per_s), elapsed(began, sim.now(.awake)));
+
+    const awake = node.now(.awake);
+    const boot = node.now(.boot);
+    const wall = node.now(.real);
+    const sim_boot = sim.now(.boot);
+    node.suspendFor(.fromSeconds(3600));
+    try testing.expectEqual(@as(i96, 0), elapsed(awake, node.now(.awake)));
+    try testing.expectEqual(@as(i96, 3600 * std.time.ns_per_s), elapsed(boot, node.now(.boot)));
+    try testing.expectEqual(@as(i96, 3600 * std.time.ns_per_s), elapsed(wall, node.now(.real)));
+    // The simulation's own clocks did not move.
+    try testing.expectEqual(sim_boot.nanoseconds, sim.now(.boot).nanoseconds);
+}
+
+test "a suspend fires the boot-time timers it passes" {
+    const sim = try Sim.init(testing.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const node = try sim.node("n", .{});
+    try sim.start(sleepOn, .{ node.io(), 1800, .boot });
+    try testing.expectEqual(null, sim.runFor(.fromSeconds(1)));
+    node.suspendFor(.fromSeconds(3600));
+    try testing.expectEqual(Sim.Outcome.finished, sim.runFor(.fromNanoseconds(0)).?);
+}
+
+const Late = struct {
+    worst: i96 = 0,
+    any_late: bool = false,
+
+    fn run(self: *Late, io: Io) !void {
+        for (0..100) |_| {
+            const before = Io.Timestamp.now(io, .awake);
+            try io.sleep(.fromSeconds(1), .awake);
+            const late = before.durationTo(.now(io, .awake)).nanoseconds - std.time.ns_per_s;
+            if (late < 0) return error.Early;
+            self.worst = @max(self.worst, late);
+            self.any_late = self.any_late or late > 0;
+        }
+    }
+};
+
+test "timers fire late within the bound when asked, and on time by default" {
+    const sim = try Sim.init(testing.allocator, .{ .watchdog = null, .seed = 9, .clock = .{ .late = .fromMilliseconds(10) } });
+    defer sim.deinit();
+    var late: Late = .{};
+    try testing.expectEqual(Sim.Outcome.finished, sim.run(Late.run, .{ &late, sim.io() }));
+    try testing.expect(late.any_late);
+    try testing.expect(late.worst <= 10 * std.time.ns_per_ms);
+    const exact = try Sim.init(testing.allocator, .{ .watchdog = null, .seed = 9 });
+    defer exact.deinit();
+    var on_time: Late = .{};
+    try testing.expectEqual(Sim.Outcome.finished, exact.run(Late.run, .{ &on_time, exact.io() }));
+    try testing.expect(!on_time.any_late);
+}
+
+test "a drawn skew comes from the source: a seed repeats it, and a set one draws nothing" {
+    const drawn: Sim.Node.Clock = .{ .drawn = .{ .real = .fromSeconds(3600), .monotonic = .fromSeconds(3600), .drift_ppm = 200 } };
+    var readings: [2]i96 = undefined;
+    for (&readings) |*reading| {
+        const sim = try Sim.init(testing.allocator, .{ .watchdog = null, .seed = 21 });
+        defer sim.deinit();
+        const node = try sim.node("n", .{ .clock = drawn });
+        reading.* = elapsed(sim.now(.real), node.now(.real));
+    }
+    try testing.expectEqual(readings[0], readings[1]);
+    try testing.expect(readings[0] != 0);
+
+    var recording: shakedown.Source = try .initRecording(testing.allocator, .{ .prng = 21 }, .{});
+    defer recording.deinit();
+    const sim = try Sim.init(testing.allocator, .{ .watchdog = null, .source = &recording });
+    defer sim.deinit();
+    _ = try sim.node("set", .{ .clock = .{ .set = .{ .real = .fromSeconds(5), .drift_ppm = 7 } } });
+    try testing.expectEqual(@as(usize, 0), recording.tape().choices.len);
+    _ = try sim.node("drawn", .{ .clock = drawn });
+    try testing.expectEqual(@as(usize, 3), recording.tape().choices.len);
+}
+
+/// Reads a node's clocks a thousand times, a millisecond apart.
+fn readMany(io: Io, out: *[2]bool) !void {
+    var last_awake = Io.Timestamp.now(io, .awake);
+    var last_real = Io.Timestamp.now(io, .real);
+    for (0..1000) |_| {
+        try io.sleep(.fromMilliseconds(1), .awake);
+        const awake = Io.Timestamp.now(io, .awake);
+        const real = Io.Timestamp.now(io, .real);
+        if (awake.nanoseconds < last_awake.nanoseconds) out[0] = true;
+        if (real.nanoseconds < last_real.nanoseconds) out[1] = true;
+        last_awake = awake;
+        last_real = real;
+    }
+}
+
+test "drawn wall-clock steps go back as well as forward, and monotonic time never goes back" {
+    const sim = try Sim.init(testing.allocator, .{ .watchdog = null, .seed = 4 });
+    defer sim.deinit();
+    const node = try sim.node("n", .{ .clock = .{ .set = .{ .drift_ppm = std.math.minInt(i20), .step_per_million = 200_000, .step_max = .fromSeconds(60) } } });
+    var went_back: [2]bool = .{ false, false };
+    try testing.expectEqual(Sim.Outcome.finished, sim.run(readMany, .{ node.io(), &went_back }));
+    try testing.expect(!went_back[0]);
+    try testing.expect(went_back[1]);
+}
+
+/// Two nodes with drawn wall clocks: one stamps the time, the other a
+/// second later, and the property assumes the stamps are ordered, as code
+/// that compares two machines' wall clocks does.
+const Stamps = struct {
+    first: Io.Timestamp = undefined,
+    second: Io.Timestamp = undefined,
+
+    fn stamp(out: *Io.Timestamp, io: Io, delay: u32) !void {
+        try io.sleep(.fromSeconds(delay), .awake);
+        out.* = .now(io, .real);
+    }
+
+    fn main(s: *Stamps, a: Io, b: Io) !void {
+        var later = try b.concurrent(stamp, .{ &s.second, b, 1 });
+        try stamp(&s.first, a, 0);
+        try later.await(b);
+    }
+
+    fn body(_: void, c: *shakedown.Case) !void {
+        const sim = try c.sim(.{});
+        const skew: Sim.Node.Clock = .{ .drawn = .{ .real = .fromSeconds(10) } };
+        const a = try sim.node("a", .{ .clock = skew });
+        const b = try sim.node("b", .{ .clock = skew });
+        var s: Stamps = .{};
+        switch (sim.run(main, .{ &s, a.io(), b.io() })) {
+            .finished => {},
+            .failed => |err| return err,
+            else => return error.Unexpected,
+        }
+        c.note("a stamped {d}, b a second later {d}", .{ s.first.nanoseconds, s.second.nanoseconds });
+        if (s.second.nanoseconds < s.first.nanoseconds) return error.ClockWentBack;
+    }
+};
+
+test "a failing case found through drawn clocks shrinks to the smallest skew and replays to the same failure" {
+    var report: shakedown.CheckReport = undefined;
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, Stamps.body, .{ .seed = 12, .diagnostics = &report, .fuzz = false }));
+    defer report.deinit();
+    try testing.expectEqual(error.ClockWentBack, report.err);
+    var text: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer text.deinit();
+    try text.writer.print("{f}", .{shakedown.Tape{ .choices = report.tape }});
+    var replayed: shakedown.CheckReport = undefined;
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, Stamps.body, .{ .regressions = &.{text.written()}, .cases = 0, .diagnostics = &replayed, .fuzz = false }));
+    defer replayed.deinit();
+    try testing.expectEqual(error.ClockWentBack, replayed.err);
+    try testing.expectEqualSlices(u64, report.tape, replayed.tape);
+    // The report keeps the minimal case's note: the two stamps.
+    try testing.expect(std.mem.find(u8, report.text, "a second later") != null);
+}

@@ -52,6 +52,24 @@ pub const Context = struct {
     disk: ?Fs = null,
     process: ?*Process = null,
     cwd: ?Io.Dir = null,
+    /// A node's clocks against the simulation's, kept on the node's own
+    /// context (`skewOn`); a process's context reads its node's.
+    skew: Skew = .{},
+};
+
+/// A node's clocks against the simulation's: a reading is the simulation's,
+/// plus `offset`, plus `drift_ppm` millionths of the time since `anchor`.
+/// All zero, the node reads the simulation's time and no draw is made.
+pub const Skew = struct {
+    /// The simulation's `.awake` when the node was made.
+    anchor: i64 = 0,
+    /// Per kept clock, the node's reading less the simulation's at `anchor`.
+    offset: [3]i64 = .{ 0, 0, 0 },
+    drift_ppm: i20 = 0,
+    /// Wall-clock steps drawn at reads of `.real`: their chance in a
+    /// million, and the largest.
+    step_per_million: u32 = 0,
+    step_max: i64 = 0,
 };
 
 gpa: Allocator,
@@ -1051,12 +1069,12 @@ fn gatherReports(c: *Core) []const TaskReport {
 /// The report of a task, its stack captured where it stands: called on the
 /// task's own stack.
 pub fn capture(c: *Core, t: *Task) void {
-    _ = c;
     t.report = .{ .id = t.id, .node = t.node, .spawned_at = t.spawned_at, .waiting = switch (t.wait) {
         .none => .none,
         .start => .unstarted,
         .futex => |address| .{ .futex = address },
-        .sleep => .{ .sleep = if (t.timer_armed) .{ .raw = nanoseconds.timestamp(t.timer.key.deadline), .clock = clockOf(t.timer_clock) } else null },
+        // The instant on the clock of the node it sleeps on.
+        .sleep => .{ .sleep = if (t.timer_armed) .{ .raw = nanoseconds.timestamp(c.localAt(c.skewOn(clockNode(t)), t.timer_clock, t.timer.key.deadline)), .clock = clockOf(t.timer_clock) } else null },
         .task => |other| .{ .task = other.id },
         .group => .group,
         .process => |pid| .{ .process = pid },
@@ -1072,15 +1090,136 @@ pub fn capture(c: *Core, t: *Task) void {
 
 // Time.
 
+/// What `which` reads on the simulation's own clocks: node zero's.
 pub fn now(c: *const Core, which: Io.Clock) Io.Timestamp {
     const kept = keptOf(which) orelse return c.options.clock.monotonic;
     return nanoseconds.timestamp(c.clocks[@backingInt(kept)]);
 }
 
+/// What `which` reads on `node`: the simulation's time, skewed as the node's
+/// clock says.
+pub fn nowOn(c: *Core, node: NodeId, which: Io.Clock) Io.Timestamp {
+    const kept = keptOf(which) orelse return c.options.clock.monotonic;
+    return nanoseconds.timestamp(c.localAt(c.skewOn(node), kept, c.clocks[@backingInt(kept)]));
+}
+
+/// What `which` reads on the node of the call being made.
+pub fn nowHere(c: *Core, which: Io.Clock) Io.Timestamp {
+    return c.nowOn(c.nodeId(), which);
+}
+
+/// A read of `which` on the node of the call being made, for the code under
+/// test: first, by the chance the node's clock asks, a wall-clock step.
+pub fn read(c: *Core, which: Io.Clock) Io.Timestamp {
+    const node = c.nodeId();
+    const skew = c.skewOn(node);
+    if (which == .real and c.chance(skew.step_per_million)) c.jump(node, .{ 0, 0, c.signed(skew.step_max) });
+    return c.nowOn(node, which);
+}
+
+/// The clocks of `node`, kept on its own context.
+pub fn skewOn(c: *Core, node: NodeId) *Skew {
+    return if (node == first_node) &c.context.skew else &c.contextOf(node).skew;
+}
+
+/// A node's skew from its clock options: set, or drawn from the source.
+pub fn skewFrom(c: *Core, clock: options_mod.NodeClock) Skew {
+    const given, const drawn = switch (clock) {
+        .set => |v| .{ v, false },
+        .drawn => |v| .{ v, true },
+    };
+    const real = nanoseconds.span(given.real).raw();
+    const monotonic = nanoseconds.span(given.monotonic).raw();
+    var skew: Skew = .{
+        .anchor = c.clocks[@backingInt(Kept.awake)],
+        .offset = .{ monotonic, monotonic, real },
+        .drift_ppm = given.drift_ppm,
+        .step_per_million = given.step_per_million,
+        .step_max = nanoseconds.span(given.step_max).raw(),
+    };
+    if (drawn) {
+        const mono = c.signed(monotonic);
+        skew.offset = .{ mono, mono, c.signed(real) };
+        const drift = c.signed(given.drift_ppm);
+        skew.drift_ppm = @intCast(std.math.clamp(drift, std.math.minInt(i20), std.math.maxInt(i20)));
+    }
+    return skew;
+}
+
+/// A draw in `[-|bound|, |bound|]`: 0 the simplest, then 1, -1, 2, -2.
+fn signed(c: *Core, bound: i64) i64 {
+    const most: u64 = @abs(bound);
+    if (most == 0) return 0;
+    const choice = c.draw(if (most > std.math.maxInt(u64) / 2) std.math.maxInt(u64) else 2 * most);
+    const magnitude: i64 = @intCast(@min(choice / 2 + choice % 2, most, std.math.maxInt(i64)));
+    return if (choice % 2 == 1) magnitude else -magnitude;
+}
+
+/// How far clock `kept` of the simulation reads past `.awake`: the same
+/// at every instant, since the simulation moves its clocks together.
+fn lead(c: *const Core, kept: Kept) i64 {
+    return c.clocks[@backingInt(kept)] -| c.clocks[@backingInt(Kept.awake)];
+}
+
+/// What clock `kept` reads, skewed by `skew`, when the simulation's reads
+/// `global`. Never falls as `global` rises: a drift slower than the
+/// simulation's still moves forward.
+fn localAt(c: *const Core, skew: *const Skew, kept: Kept, global: i64) i64 {
+    const offset = skew.offset[@backingInt(kept)];
+    if (skew.drift_ppm == 0) return global +| offset;
+    const elapsed: i128 = @as(i128, global) - c.lead(kept) - skew.anchor;
+    return saturate(@as(i128, global) + offset + @divFloor(elapsed * skew.drift_ppm, 1_000_000));
+}
+
+/// The first reading of the simulation's clock `kept` at which the skewed
+/// clock reads `local` or later: where a timer waiting for `local` on a
+/// node is kept.
+fn globalAt(c: *const Core, skew: *const Skew, kept: Kept, local: i64) i64 {
+    const offset = skew.offset[@backingInt(kept)];
+    if (skew.drift_ppm == 0) return local -| offset;
+    // The skewed time since the anchor is floor(e * (10^6 + drift) / 10^6)
+    // of the simulation's e, so the first e that reaches r is a ceiling.
+    const base: i128 = @as(i128, c.lead(kept)) + skew.anchor;
+    const r: i128 = @as(i128, local) - offset - base;
+    const rate: i128 = 1_000_000 + @as(i128, skew.drift_ppm);
+    return saturate(base - @divFloor(-r * 1_000_000, rate));
+}
+
+fn saturate(x: i128) i64 {
+    return @intCast(std.math.clamp(x, std.math.minInt(i64), std.math.maxInt(i64)));
+}
+
+/// Moves `node`'s clocks by `by` (awake, boot, real) at once. Timers on
+/// them keep the readings they wait for, so a jump forward fires those it
+/// passes and one back puts them off. A task of `Sim.at` waits on the
+/// simulation's time, not a node's.
+pub fn jump(c: *Core, node: NodeId, by: [3]i64) void {
+    const skew = c.skewOn(node);
+    const old = skew.*;
+    for (&skew.offset, by) |*offset, b| offset.* +|= b;
+    for (c.tasks.items) |t| {
+        if (!t.timer_armed or t.wait == .start or by[@backingInt(t.timer_clock)] == 0) continue;
+        if (clockNode(t) != node) continue;
+        const kept = t.timer_clock;
+        const local = c.localAt(&old, kept, t.timer.key.deadline);
+        c.disarm(t);
+        c.arm(t, kept, @max(c.globalAt(skew, kept, local), c.clocks[@backingInt(kept)]));
+    }
+    c.fireDue();
+}
+
+/// The node whose clocks a task's timer waits on: that of the call it waits in.
+fn clockNode(t: *const Task) NodeId {
+    return if (t.io_context) |ctx| ctx.node else first_node;
+}
+
 /// When a timeout ends: never, already, or at an instant on a kept clock.
 pub const Deadline = union(enum) { never, due, at: struct { clock: Kept, ns: i64 } };
 
-pub fn deadline(c: *const Core, timeout: Io.Timeout) Deadline {
+/// When `timeout` ends for the call being made, read on its node's clock
+/// and kept as the simulation's reading at which that clock gets there,
+/// plus the lateness `Options.clock.late` draws.
+pub fn deadline(c: *Core, timeout: Io.Timeout) Deadline {
     const which, const raw, const relative = switch (timeout) {
         .none => return .never,
         .duration => |d| .{ d.clock, nanoseconds.span(d.raw).raw(), true },
@@ -1091,9 +1230,13 @@ pub fn deadline(c: *const Core, timeout: Io.Timeout) Deadline {
         const frozen = nanoseconds.reading(Core, c.options.clock.monotonic).raw();
         return if ((if (relative) frozen +| raw else raw) <= frozen) .due else .never;
     };
-    const current = c.clocks[@backingInt(kept)];
+    const skew = c.skewOn(c.nodeId());
+    const current = c.localAt(skew, kept, c.clocks[@backingInt(kept)]);
     const at = if (relative) current +| raw else raw;
-    return if (at <= current) .due else .{ .at = .{ .clock = kept, .ns = at } };
+    if (at <= current) return .due;
+    const late = nanoseconds.span(c.options.clock.late).raw();
+    const lateness: i64 = if (late > 0) @intCast(c.draw(@intCast(late))) else 0;
+    return .{ .at = .{ .clock = kept, .ns = c.globalAt(skew, kept, at) +| lateness } };
 }
 
 pub fn arm(c: *Core, t: *Task, clock: Kept, at: i64) void {
@@ -1131,6 +1274,12 @@ fn earliest(c: *Core) ?Earliest {
 /// the clocks reach them.
 fn advance(c: *Core, by: i64) void {
     for (&c.clocks) |*clock| clock.* +|= by;
+    c.fireDue();
+    c.notifyNetwork();
+}
+
+/// Wakes each timer the clocks have reached, in the order they reached them.
+fn fireDue(c: *Core) void {
     while (c.earliest()) |e| {
         if (e.remaining > 0) break;
         c.disarm(e.t);
@@ -1141,7 +1290,6 @@ fn advance(c: *Core, by: i64) void {
             c.makeReady(e.t);
         } else c.wake(e.t, .timeout);
     }
-    c.notifyNetwork();
 }
 
 fn moveTo(c: *Core, awake: i64) void {

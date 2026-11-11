@@ -330,8 +330,9 @@ pub const Settled = union(enum) {
     }
 };
 
-/// The faults are over: every partition and hold of the network is healed
-/// and the fault plan (`Options.faults`) is emptied. Then the run goes on,
+/// The faults are over: every partition and hold of the network is healed,
+/// the fault plan (`Options.faults`) is emptied, and no node's wall clock
+/// steps again (`Node.Clock.Skew.step_per_million`). Then the run goes on,
 /// a step at a time, until `options.until` holds, the run ends, or `.awake`
 /// has moved `options.within`, which it never passes. A property that does
 /// not hold by then is reported with every task still alive, where it waits:
@@ -348,6 +349,8 @@ pub fn settle(s: *Sim, options: Settle) error{OutOfMemory}!Settled {
         while (b < network.node_count) : (b += 1) network.status(.fromRaw(a), .fromRaw(b), false, false);
     }
     s.core.wakeIo();
+    s.core.context.skew.step_per_million = 0;
+    for (s.core.contexts.items) |ctx| ctx.skew.step_per_million = 0;
     if (s.fio) |f| f.setPlan(&.{}) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.FaultNotInErrorSet, error.FaultNotApplicable => unreachable, // unreachable: an empty plan asks for no fault a call could refuse
@@ -485,6 +488,7 @@ pub fn node(s: *Sim, name: []const u8, options: Node.Options) error{OutOfMemory}
     const owned_name = try s.gpa.dupe(u8, name);
     errdefer s.gpa.free(owned_name);
     ctx.node = try s.core.network.addNode(options.addresses);
+    ctx.skew = s.core.skewFrom(options.clock);
     n.* = .{ .context = ctx, .name = owned_name };
     if (s.fio) |fio| n.outer = .init(fio.io(), .{ .context = ctx });
     s.core.contexts.appendAssumeCapacity(ctx);

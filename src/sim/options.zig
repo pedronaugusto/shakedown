@@ -127,6 +127,44 @@ pub const Options = struct {
         /// `.awake` and `.boot` at the start; the CPU clocks stay here.
         monotonic: Io.Timestamp = nanoseconds.seconds(1),
         resolution: Io.Duration = .fromNanoseconds(1),
+        /// How late a timer may fire past its deadline: each timeout's
+        /// lateness is drawn from the source when it is armed, from 0 (on
+        /// time, the simplest) to this, as a sleeper on a loaded machine
+        /// resumes late. Every node's timers, sleeps and timed waits; never a
+        /// task of `Sim.at`, which starts on the instant it names.
+        late: Io.Duration = .zero,
+    };
+};
+
+/// A node's clocks against the simulation's (`Node.Options.clock`).
+pub const NodeClock = union(enum) {
+    /// Off by exactly this skew; by default none, the simulation's own time.
+    set: Skew,
+    /// Off by a skew drawn from the source when the node is made: each
+    /// offset and the drift uniformly up to these, either way, 0 the
+    /// simplest. Steps as `Skew` says.
+    drawn: Skew,
+
+    pub const Skew = struct {
+        /// How far the node's `.real` reads from the simulation's: ahead,
+        /// behind when negative. Wall clocks of two machines disagree.
+        real: Io.Duration = .zero,
+        /// How far its `.awake` and `.boot` read from the simulation's: a
+        /// machine that booted earlier, or later when negative. Code that
+        /// compares one machine's monotonic time with another's is wrong,
+        /// and this shows it.
+        monotonic: Io.Duration = .zero,
+        /// How much faster its clocks run than the simulation's, in parts
+        /// per million: slower when negative. A quartz crystal is off by
+        /// tens; NTP slews by up to 500. Within ±2^19, so a node's clocks
+        /// always run forward.
+        drift_ppm: i20 = 0,
+        /// At each read of the node's `.real` (`Io.Clock.real.now`), the
+        /// chance in a million that the wall clock first steps, as NTP or an
+        /// operator steps it: by a drawn amount of up to `step_max`, forward
+        /// or back. Its monotonic clocks never step.
+        step_per_million: u32 = 0,
+        step_max: Io.Duration = .zero,
     };
 };
 

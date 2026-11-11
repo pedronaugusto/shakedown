@@ -91,7 +91,7 @@ fn invoke(comptime name: []const u8, userdata: ?*anyopaque, args: anytype, ret: 
         return mapped(@typeInfo(R).error_union.error_set, error.Unexpected);
     };
     const fs = disk.model;
-    fs.at = c.now(.real);
+    fs.at = c.nowHere(.real);
     c.touch(Core.Object.disk(e.node), true);
     const local = workingDirectory(c, args);
     const input = inputDigest(fs, local);
