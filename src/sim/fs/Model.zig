@@ -75,6 +75,14 @@ pub const Faults = struct {
     /// it loses data a sync promised. Drawn once per write the file system
     /// makes.
     lost_write_per_million: u32 = 0,
+    /// A sync that lies: a `data` or `full` sync returns success and does
+    /// only what `writeout` does. What it covers reaches the device's
+    /// volatile cache, so an OS crash keeps it, but power loss may keep any
+    /// subset of it in any order the barriers allow (`crashStates`), until
+    /// a later honest `data` or `full` sync on the disk persists it, as a
+    /// device flush drains the cache. Barriers stay honoured. Drawn once
+    /// per sync; `EveryCrashOptions.lying_syncs` explores lies instead.
+    sync_lie_per_million: u32 = 0,
 };
 /// What a stat carries that `std.Io`'s does not: the device of the file's
 /// volume and its owner and group.
@@ -94,6 +102,10 @@ handles: std.ArrayList(Handle) = .empty,
 next_handle: u32 = 1,
 lock_epoch: u32 = 0,
 maps: std.ArrayList([]align(std.heap.page_size_min) u8) = .empty,
+/// The `data` and `full` syncs made so far, honest or not.
+syncs: u32 = 0,
+/// Private: syncs from this one on lie, as `everyCrash` explores them.
+lie_from: ?u32 = null,
 
 pub const Handle = struct {
     id: u32,
@@ -861,6 +873,8 @@ pub fn flushInode(fs: *Model, id: u32, kind: Flush) !void {
         fs.root.barrier = fs.root.serial;
         return;
     }
+    // A lying sync has done what writeout does.
+    if (fs.lies()) return;
     // A device flush also persists what earlier writeouts handed to this disk.
     // Data-only flushes do not upgrade unrelated metadata to full.
     for (fs.root.pending.items) |*r| {
@@ -891,6 +905,16 @@ pub fn flushInode(fs: *Model, id: u32, kind: Flush) !void {
     }
     fs.root.pending.items.len = kept;
     fs.collect();
+}
+/// Whether this `data` or `full` sync lies: by `Faults.sync_lie_per_million`,
+/// or from sync `lie_from` on. Every sync is counted and draws its chance,
+/// so a run makes the same draws whichever syncs lie.
+fn lies(fs: *Model) bool {
+    const ordinal = fs.syncs;
+    fs.syncs +|= 1;
+    const drawn = fs.source.chance(fs.options.faults.sync_lie_per_million);
+    const forced = if (fs.lie_from) |from| ordinal >= from else false;
+    return drawn or forced;
 }
 // Ordered metadata cannot become durable ahead of the data it publishes,
 // including when a directory sync forces it instead of a crash choosing it.

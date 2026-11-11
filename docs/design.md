@@ -82,13 +82,39 @@ writes apart, and they are recorded. This is the fault that loses data a
 sync promised. A torn write keeps only some sectors of a write no sync has
 covered yet, and a crash before a sync loses what was never promised.
 
+A sync that lies returns success and does only what `writeout` does. What it
+covered reaches the device's volatile cache, so an OS crash keeps it. Power
+loss may keep any subset of it, in any order the barriers allow, until a later
+honest `data` or `full` sync on the disk persists it, as a device flush
+drains its cache. That is the bound of the lie: exactly the effects pending
+when the sync was made, and no longer than the next honest sync. Barriers
+stay honoured. A drawn lie is a choice like any other. `everyCrash` explores
+lies instead of drawing them. With `lying_syncs = k`, each crash point is
+also run with its last 1 to k `data` or `full` syncs lying (the model counts
+them, and a run is told which ordinal the lies begin at), and the images
+each leaves are recovered like any other. An honest sync persists what
+earlier lies left, so the images of any set of lies are among those of the
+run of last syncs that begins at its earliest lie. A point after `m` syncs
+is run `1 + min(m, k)` times, with at most `max_states` images each. The
+digest still recovers each distinct image once. A lie changes nothing the
+code under test can see before a crash: reads come from the cache, and read
+faults draw over sectors whose writes have been handed to the device, which
+a lying sync and an honest one leave alike. So every run of a point makes
+the calls the clean run made, and the prefix check holds.
+
 What the model rests on, and where it is taken from: device read errors that
 persist until the sector is rewritten, and silent corruption, as field
 studies of disk fleets report them (Bairavasundaram et al., SIGMETRICS 2007
 and FAST 2008). Misdirected and lost writes as Krioukov et al. define them (FAST
 2008: a misdirected write lands at the wrong location and the intended one
 keeps old data; a lost write is reported done and never written). A drive remapping a pending sector when it is written, as drive
-vendors and smartmontools describe. These are recalled, not re-read. The
+vendors and smartmontools describe. These are recalled, not re-read. Syncs that lie: macOS documents that
+`fsync` does not ask the drive to empty its cache and that `F_FULLFSYNC`
+does (Apple's fsync(2) manual page). On Linux, a failed writeback can mark
+the pages clean, so a later `fsync` succeeds with the data never stored
+(LWN, "PostgreSQL's fsync() surprise", 2018). The model's lie is the first
+kind, a device cache that a flush did not drain. The second is a lost write
+seen through the cache. The
 faults are opt-in and the defaults are honest storage, so no existing test
 draws a new choice.
 

@@ -1292,3 +1292,90 @@ test "Fs a lost write reads back until a crash, no sync makes it durable, and a 
     try fs.crash(.lose_all);
     try bytesEqual(fs, "file", "nld\x00\x00\x00\x00");
 }
+
+test "Fs a lying sync drawn from a seed loses a synced record at power loss, found, shrunk and replayed" {
+    try foundShrunkReplayed(Durable(.{ .sync_lie_per_million = 100_000 }).property, Durable(.{}).property, error.AcknowledgedLost, 1);
+}
+
+test "Fs a lying sync is a writeout: an OS crash keeps it, power loss need not, an honest sync persists it" {
+    const sim = try Sim.init(t.allocator, .{ .fs = .{ .faults = .{ .sync_lie_per_million = 1_000_000 } }, .watchdog = null });
+    defer sim.deinit();
+    const fs = sim.fs();
+    try fs.write("a", "old");
+    try fs.write("b", "old");
+    const a = try fs.model.resolve(0, "a", true);
+    const b = try fs.model.resolve(0, "b", true);
+    _ = try fs.model.put(a, 0, "new");
+    try fs.model.flushInode(a, .full);
+    try t.expectEqual(@as(u32, 1), fs.model.syncs);
+    const lied = try fs.snapshot();
+    defer lied.deinit();
+    try fs.crash(.os_crash);
+    try bytesEqual(fs, "a", "new");
+    fs.restore(lied);
+    try fs.crash(.lose_all);
+    try bytesEqual(fs, "a", "old");
+    // The next honest sync, of another file, drains what the lie left.
+    fs.restore(lied);
+    fs.model.options.faults.sync_lie_per_million = 0;
+    _ = try fs.model.put(b, 0, "new");
+    try fs.model.flushInode(b, .data);
+    try fs.crash(.lose_all);
+    try bytesEqual(fs, "a", "new");
+    try bytesEqual(fs, "b", "new");
+}
+
+/// Commits a record by writing it and syncing, then publishes it by writing
+/// and syncing an index that says it is there. The check: an index that
+/// says so has its record. Honest syncs keep that; one lying sync lets power
+/// loss keep the index without the record.
+pub const Published = struct {
+    /// When set, the check accepts any image: the sweep's counts alone.
+    tolerant: bool = false,
+    pub fn setUp(_: *Published, sim: *Sim) !void {
+        try sim.fs().write("record", "");
+        try sim.fs().write("index", "0");
+    }
+    pub fn run(_: *Published, io: Io) !void {
+        const cwd = Io.Dir.cwd();
+        const record = try cwd.openFile(io, "record", .{ .mode = .read_write });
+        defer record.close(io);
+        try record.writePositionalAll(io, "payload", 0);
+        try record.sync(io);
+        const index = try cwd.openFile(io, "index", .{ .mode = .read_write });
+        defer index.close(io);
+        try index.writePositionalAll(io, "1", 0);
+        try index.sync(io);
+    }
+    pub fn recover(_: *Published, _: Io) !void {}
+    pub fn check(ctx: *Published, io: Io) !void {
+        if (ctx.tolerant) return;
+        const cwd = Io.Dir.cwd();
+        const index = try cwd.readFileAlloc(io, "index", t.allocator, .limited(8));
+        defer t.allocator.free(index);
+        if (!std.mem.eql(u8, index, "1")) return;
+        const record = try cwd.readFileAlloc(io, "record", t.allocator, .limited(16));
+        defer t.allocator.free(record);
+        if (!std.mem.eql(u8, record, "payload")) return error.PublishedWithoutRecord;
+    }
+};
+
+test "Fs everyCrash explores the images lying syncs leave, and a publish ordered by syncs breaks on one lie" {
+    var ctx: Published = .{};
+    _ = try shakedown.everyCrash(t.allocator, &ctx, .{ .sim = .{ .watchdog = null } });
+    // The record's sync lies and the index's write reaches storage first.
+    var report: shakedown.EveryFaultReport = .{};
+    try t.expectError(error.CheckFailed, shakedown.everyCrash(t.allocator, &ctx, .{ .sim = .{ .watchdog = null }, .lying_syncs = 1, .diagnostics = &report }));
+    defer report.deinit();
+    try t.expectEqual(error.PublishedWithoutRecord, report.failure.?.err);
+    // Each lie explored is one more prefix run at each point after enough
+    // syncs, and adds images; the points before any sync add nothing.
+    var tolerant: Published = .{ .tolerant = true };
+    var reports: [3]shakedown.EveryFaultReport = undefined;
+    for (&reports, 0..) |*r, lies| r.* = try shakedown.everyCrash(t.allocator, &tolerant, .{ .sim = .{ .watchdog = null }, .lying_syncs = @intCast(lies) });
+    for (reports[1..], reports[0..2]) |more, fewer| {
+        try t.expectEqual(fewer.steps, more.steps);
+        try t.expectEqual(@as(u64, 0), more.bounded);
+        try t.expect(more.runs + more.repeated > fewer.runs + fewer.repeated);
+    }
+}

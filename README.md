@@ -450,7 +450,8 @@ previous writeouts before subsequent effects, `data` persists contents and
 length, and `full` persists metadata too. A device flush also persists earlier
 writeouts on this disk. `writeout` includes retrieval metadata, as Darwin
 `fsync` and Windows `NO_SYNC` do; Linux `sync_file_range` must not map to it.
-The model represents one device, and assumes a successful barrier is honoured.
+The model represents one device. It honours a successful barrier, and a
+successful sync unless `Options.fs.faults.sync_lie_per_million` makes one lie.
 std's Threaded currently reports `OperationUnsupported` for both hard-link
 slots on Windows; the shared conformance checks accept that contract while
 checking hard-link identity wherever the operation succeeds.
@@ -474,7 +475,9 @@ match the clean trace. `max_states` bounds images per point; the returned report
 contiguous ranges of the points, so a long operation's sweep runs as several
 tests; a range keeps together the points that leave the same states, so shards
 seldom repeat each other's recoveries (a state two ranges reach is recovered in
-each). `diagnostics` records a failed recovery's crash point, error and trace. Optional `ctx.tearDown()` releases state
+each). `lying_syncs = k` also explores, at every point, the images left if
+its last 1 to k `data` or `full` syncs lied: a point after `m` syncs runs
+`1 + min(m, k)` times, each with up to `max_states` images. `diagnostics` records a failed recovery's crash point, error and trace. Optional `ctx.tearDown()` releases state
 owned by the context. Abandoned tasks do not execute defers, including with an
 root-namespace `IoFault.crash` plan, which requires its filesystem enabled.
 Explicit nodes use cooperative cancellation through their crash/kill lifecycle.
@@ -489,7 +492,9 @@ the sectors at rest a read reaches (at most one of each per read), and
 `misdirect_per_million` per write, which lands at another sector of the same
 file. `lost_write_per_million` makes a write the device reports done and
 never stores: reads return it until a crash drops the cache, and no sync makes
-it durable. Each is a choice on the tape, so `check` shrinks a failure to the faults
+it durable. `sync_lie_per_million` makes a `data` or `full` sync return success
+and do only what a writeout does: an OS crash keeps what it covered, power loss
+need not, and the next honest sync on the disk persists it. Each is a choice on the tape, so `check` shrinks a failure to the faults
 it needs and `SHAKEDOWN_TAPE` replays them. All are off by default.
 
 `corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
