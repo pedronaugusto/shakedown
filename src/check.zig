@@ -23,6 +23,7 @@ const shrinker = @import("shrink.zig");
 const target = @import("target.zig");
 const corpus = @import("corpus.zig");
 const Sim = @import("Sim.zig");
+const swarm_mod = @import("swarm.zig");
 
 /// One run of a property's body.
 pub const Case = struct {
@@ -99,6 +100,22 @@ pub const Case = struct {
         const s = try Sim.init(c.gpa, with);
         c.runner.sims.appendAssumeCapacity(s);
         return s;
+    }
+
+    /// A simulation as `sim` makes one, with its knobs drawn from this
+    /// case's source within `bounds` (`swarm.zig`): network latency, loss,
+    /// duplication and reordering, timer lateness, node clock skew, storage
+    /// fault rates, spurious wakes, yields, `async` starts, and how many
+    /// tasks the test starts. Each knob is off or on and drawn, so the case
+    /// shrinks toward `base` with `bounds.tasks.min` tasks. The knobs that
+    /// are on go into the case's notes.
+    ///
+    /// Under `explore` it draws nothing and gives `base`: a search spans
+    /// the schedule, and knobs drawn on its chooser would multiply it.
+    pub fn swarm(c: *Case, base: Sim.Options, bounds: swarm_mod.Swarm) Sim.InitError!swarm_mod.Swarmed {
+        const drawn = if (c.runner.bounded != null) swarm_mod.plain(base, bounds) else swarm_mod.draw(c.source, base, bounds);
+        c.note("swarm: {f}", .{drawn.knobs});
+        return .{ .sim = try c.sim(drawn.options), .tasks = drawn.knobs.tasks, .knobs = drawn.knobs, .skew = bounds.skew };
     }
 };
 

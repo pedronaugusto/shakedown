@@ -68,6 +68,10 @@ pub const CheckOptions = @import("check.zig").CheckOptions;
 pub const CheckError = @import("check.zig").CheckError;
 /// How a property failed: its minimal tape and its report.
 pub const CheckReport = @import("check.zig").CheckReport;
+/// A simulation's knobs drawn per case within declared bounds (`Case.swarm`).
+pub const Swarm = @import("swarm.zig").Swarm;
+/// What `Case.swarm` gives: the simulation, the task count and the knobs drawn.
+pub const Swarmed = @import("swarm.zig").Swarmed;
 /// A property run once for every way its choices can go: schedules within a
 /// preemption bound, with partial-order reduction.
 pub const explore = @import("explore.zig").explore;
