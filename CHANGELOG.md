@@ -6,6 +6,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking
+
+- `Sim.Outcome` gains `double_close`: a task that closes a handle it already closed (a pipe end, a file, a directory, a socket, a simulated process's standard handle) ends the run there, with the task's report and its stack where it closed. The second close was ignored, so a real double close, which on a real system may shut whatever reused the number, never showed in a test. A switch over `Sim.Outcome` names the new tag. A close outside the simulation's tasks panics.
+
 ### Added
 
 - Targeted search: `Case.target(score, label)` reports how far a case got toward something `check` should steer toward. Once half of the cases have run, `check` climbs each label's highest-scoring case. Each scan first writes each span's children twice (a list's elements doubled, in one replay), then from the last choice back each choice jumps to its bound and to 0, then steps up and down by the largest step that raises the score (an exponential, then a binary search); after a rise the scan starts again. The climb works on the tape, so it steers a property's inputs and its simulations' schedules, faults and latencies alike. Its replays count as cases, a failure it finds is shrunk as any other, and the report names the highest score each label reached.

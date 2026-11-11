@@ -265,15 +265,19 @@ fn closeSlot(comptime inner: @FieldType(Io.VTable, "fileClose")) @FieldType(Io.V
                 var real = file;
                 if (process) |p| if (standardIndex(file.handle)) |i| {
                     const s = &p.stdio[i];
-                    if (!s.open) continue;
+                    if (!s.open) c.doubleClose();
                     s.open = false;
                     if (!s.owned) continue;
                     real = s.file;
                 };
                 if (Pipes.id(real.handle)) |end| {
                     h.update(std.mem.asBytes(&std.mem.nativeToLittle(u64, end)));
+                    _ = c.processes.pipes.end(real.handle) catch c.doubleClose();
                     c.processes.pipes.close(real.handle);
-                } else if (disk) |d| d.model.close(real.handle);
+                } else if (disk) |d| {
+                    _ = d.model.handle(real.handle) catch c.doubleClose();
+                    d.model.close(real.handle);
+                }
             }
             if (disk) |d| c.wakeLocks(d.model);
             c.wakeIo();

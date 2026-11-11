@@ -30,6 +30,12 @@ with aegis in its own graph and shakedown share it. Without bay, pin the aegis
 release shakedown pins, so Zig fetches it once, and ask for shakedown and aegis
 with the same target and mode: Zig keys a package instance by its options too.
 
+## Stability
+
+shakedown is 0.x and tracks Zig 0.17.x. A breaking change comes only in a minor release
+(0.6 to 0.7), with a CHANGELOG entry saying what changed and what to write instead; a
+patch release never breaks.
+
 ## Usage
 
 [examples/usage.zig](examples/usage.zig) tests a retry loop that backs off one second, then two.

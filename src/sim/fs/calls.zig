@@ -298,7 +298,10 @@ const slots = struct {
         return file;
     }
     pub fn dirClose(c: *Core, fs: *Fs, dirs: []const Io.Dir) void {
-        for (dirs) |d| fs.close(d.handle);
+        for (dirs) |d| {
+            _ = fs.handle(d.handle) catch c.doubleClose();
+            fs.close(d.handle);
+        }
         wakeLocks(c, fs);
     }
     pub fn dirRead(_: *Core, fs: *Fs, r: *Io.Dir.Reader, out: []Io.Dir.Entry) !usize {
@@ -380,7 +383,10 @@ const slots = struct {
         return fs.root.nodes.items[(try fs.handle(file.handle)).inode].live.size;
     }
     pub fn fileClose(c: *Core, fs: *Fs, files: []const Io.File) void {
-        for (files) |f| fs.close(f.handle);
+        for (files) |f| {
+            _ = fs.handle(f.handle) catch c.doubleClose();
+            fs.close(f.handle);
+        }
         wakeLocks(c, fs);
     }
     pub fn fileReadPositional(_: *Core, fs: *Fs, file: Io.File, buffers: []const []u8, offset: u64) !usize {

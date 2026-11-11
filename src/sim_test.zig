@@ -521,3 +521,45 @@ test "a cancel the process's Io answers a simulation's write to standard output 
     if (outcome == .failed and outcome.failed == error.ExecutorUnavailable) return error.SkipZigTest;
     try testing.expectEqual(Sim.Outcome{ .failed = error.Canceled }, outcome);
 }
+
+const ClosedTwice = struct {
+    fn file(io: Io) !void {
+        const f = try Io.Dir.cwd().createFile(io, "twice", .{});
+        f.close(io);
+        f.close(io);
+    }
+    fn socket(io: Io) !void {
+        const pair = try Io.net.Socket.createPair(io, .{});
+        pair[1].close(io);
+        pair[0].close(io);
+        pair[0].close(io);
+    }
+    fn once(io: Io) !void {
+        const f = try Io.Dir.cwd().createFile(io, "once", .{});
+        f.close(io);
+        const pair = try Io.net.Socket.createPair(io, .{});
+        pair[0].close(io);
+        pair[1].close(io);
+    }
+};
+
+test "a task that closes a file or a socket twice ends the run as a double close, its stack where it closed" {
+    inline for (.{ ClosedTwice.file, ClosedTwice.socket }) |body| {
+        const sim = try Sim.init(testing.allocator, .{ .watchdog = null });
+        defer sim.deinit();
+        _ = sim.net();
+        const report = switch (sim.run(body, .{sim.io()})) {
+            .double_close => |r| r,
+            else => return error.TestUnexpectedResult,
+        };
+        try testing.expectEqual(shakedown.TaskId.fromRaw(1), report.id);
+        try testing.expect(report.len > 0);
+    }
+}
+
+test "handles each closed once end the run as finished" {
+    const sim = try Sim.init(testing.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    _ = sim.net();
+    try testing.expectEqual(Sim.Outcome.finished, sim.run(ClosedTwice.once, .{sim.io()}));
+}

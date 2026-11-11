@@ -186,8 +186,9 @@ pub fn end(p: *Pipes, handle: Io.File.Handle) HandleError!*End {
     return e;
 }
 
-/// Closes an end; a closed or unknown handle is ignored, as a double close
-/// of a descriptor is a bug the kernel only reports.
+/// Closes an end; a closed or unknown handle is ignored here. A task's own
+/// close of one is a double close, which the simulation's close slot reports
+/// (`Core.doubleClose`) before it gets here.
 pub fn close(p: *Pipes, handle: Io.File.Handle) void {
     const e = p.end(handle) catch return;
     e.open = false;

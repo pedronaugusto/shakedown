@@ -216,4 +216,10 @@ pub const Outcome = union(enum) {
     /// cannot be stopped: once it could run another watchdog time, the
     /// process is aborted, with the report printed first.
     stuck: TaskReport,
+    /// A task closed a handle it had already closed: a pipe end, a file, a
+    /// directory, a socket or a simulated process's standard handle. A real
+    /// system may have handed the number to whatever opened next, so the
+    /// second close shuts that instead. The task's report, its stack where it
+    /// closed.
+    double_close: TaskReport,
 };

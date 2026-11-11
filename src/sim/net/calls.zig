@@ -158,7 +158,14 @@ const slots = struct {
     }
     pub fn netClose(c: *Core, node: NodeId, sockets: []const Io.net.Socket) void {
         const m = begin(c);
-        for (sockets) |s| if (m.sockets.get(s.handle)) |live| if (live.node == node) m.close(s.handle);
+        for (sockets) |s| {
+            // Sockets keep their numbers for the run: one that is gone, or
+            // closed, was closed before.
+            const live = m.sockets.get(s.handle) orelse c.doubleClose();
+            if (live.node != node) continue;
+            if (live.closed) c.doubleClose();
+            m.close(s.handle);
+        }
         c.notifyNetwork();
     }
     pub fn netShutdown(c: *Core, node: NodeId, handle: Io.net.Socket.Handle, how: Io.net.ShutdownHow) !void {

@@ -882,6 +882,14 @@ pub fn yield(c: *Core, t: *Task) void {
     c.decision = mine;
 }
 
+/// Ends the run as a double close: the running task closed a handle it had
+/// closed already. Outside the tasks there is no run to end, so it panics.
+pub fn doubleClose(c: *Core) noreturn {
+    const t = c.current orelse @panic("shakedown: a handle was closed twice outside the simulation's tasks");
+    c.capture(t);
+    c.abandon(t, .{ .double_close = t.report });
+}
+
 /// Ends the run as `outcome` from inside `t`, which never runs again.
 pub fn abandon(c: *Core, t: *Task, outcome: Outcome) noreturn {
     c.outcome = outcome;
