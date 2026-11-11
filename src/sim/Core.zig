@@ -1069,16 +1069,21 @@ fn gatherReports(c: *Core) []const TaskReport {
 /// The report of a task, its stack captured where it stands: called on the
 /// task's own stack.
 pub fn capture(c: *Core, t: *Task) void {
-    t.report = .{ .id = t.id, .node = t.node, .spawned_at = t.spawned_at, .waiting = switch (t.wait) {
-        .none => .none,
-        .start => .unstarted,
-        .futex => |address| .{ .futex = address },
-        // The instant on the clock of the node it sleeps on.
-        .sleep => .{ .sleep = if (t.timer_armed) .{ .raw = nanoseconds.timestamp(c.localAt(c.skewOn(clockNode(t)), t.timer_clock, t.timer.key.deadline)), .clock = clockOf(t.timer_clock) } else null },
-        .task => |other| .{ .task = other.id },
-        .group => .group,
-        .process => |pid| .{ .process = pid },
-    } };
+    t.report = .{
+        .id = t.id,
+        .node = t.node,
+        .spawned_at = t.spawned_at,
+        .waiting = switch (t.wait) {
+            .none => .none,
+            .start => .unstarted,
+            .futex => |address| .{ .futex = address },
+            // The instant on the clock of the node it sleeps on.
+            .sleep => .{ .sleep = if (t.timer_armed) .{ .raw = nanoseconds.timestamp(c.localAt(c.skewOn(clockNode(t)), t.timer_clock, t.timer.key.deadline)), .clock = clockOf(t.timer_clock) } else null },
+            .task => |other| .{ .task = other.id },
+            .group => .group,
+            .process => |pid| .{ .process = pid },
+        },
+    };
     const first: ?usize = if (t.call_site != 0) t.call_site else null;
     // A fiber's stack is walked inside its own bounds; a thread's is the system's to unwind.
     const len = if (t.ctx.kind == .fibers)
