@@ -281,6 +281,30 @@ search. The jump exists because shakedown draws a yes-or-no decision as a
 threshold inside a wide range (`more`, `chance`): crossing it by steps costs
 some forty replays, and one jump does it.
 
+## Points to reach
+
+A property can pass without testing what it was written for: the retry
+never ran, the partition never met a write. `CheckOptions.reach` names the
+points a run must reach and `Case.reached` marks one. The table lives in the
+`Runner`, as the targets do, so nothing outlives the run: per label, whether
+the current case reached it and whether a passing case has. A case's marks
+count once it passes; a discarded case is not a case, and a failing one ends
+the run anyway. Marking draws nothing, so the tape of a case and its
+shrinking are the same with points or without them. Once every case has
+passed, `check` and `explore` fail with `error.PropertyFailed`, the report
+(or `CheckReport`, its `err` `error.Unreached` and its tape empty) naming the
+points no case reached. Under `explore` a point counts in any run, so the
+search proves a point reachable within its bounds, or, complete, that no run
+within them reaches it.
+
+The points are declared in the options rather than registered by their first
+mark (Antithesis's `sometimes(condition, label)`): a point whose code never
+runs would never be registered, and that is the case this exists for. A mark
+of a label the options do not name is not kept, so a helper shared by several
+properties may mark points only some of them ask for. The opposite, a point
+that must never be reached, needs nothing new: the body returns an error, or a
+simulated task does and the run ends `failed`.
+
 ## Simulated processes
 
 The process model (`sim/programs/Model.zig`) sits below the core and knows no

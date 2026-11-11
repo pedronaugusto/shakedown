@@ -316,3 +316,28 @@ test "a search through choices drawn under schedule choices completes" {
     try t.expect(reduced.complete and full.complete);
     try t.expect(reduced.runs <= full.runs);
 }
+
+/// `Counter` with the lost update as a point to reach rather than a
+/// failure: a search with a preemption reaches it, one without does not.
+const LostUpdate = struct {
+    fn body(_: void, c: *Case) !void {
+        var counter: Counter = .{};
+        const sim = try c.sim(.{});
+        switch (sim.run(Counter.twice, .{ &counter, sim.io() })) {
+            .finished => {},
+            .failed => |err| if (err == error.LostUpdate) c.reached("a lost update") else return err,
+            else => return error.Unexpected,
+        }
+    }
+};
+
+test "a point one interleaving reaches is reached by the search, and one no run reaches fails it" {
+    const found = try explored(LostUpdate.body, {}, .{ .preemptions = 1, .reach = &.{"a lost update"} });
+    try t.expect(found.complete);
+    var report: shakedown.CheckReport = undefined;
+    try t.expectError(error.PropertyFailed, explored(LostUpdate.body, {}, .{ .preemptions = 0, .reach = &.{"a lost update"}, .diagnostics = &report }));
+    defer report.deinit();
+    try t.expectEqual(error.Unreached, report.err);
+    try t.expect(std.mem.find(u8, report.text, "a complete search") != null);
+    try t.expect(std.mem.find(u8, report.text, "    a lost update\n") != null);
+}

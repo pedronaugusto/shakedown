@@ -57,6 +57,10 @@ pub const ExploreOptions = struct {
     max_choices: u32 = 1 << 16,
     /// Replays the shrinker may make of a failing run.
     max_shrink_runs: u32 = 5_000,
+    /// Points the search's passing runs must reach, each at least once, as
+    /// `CheckOptions.reach` has them: the search fails if any is reached by
+    /// none.
+    reach: []const []const u8 = &.{},
     /// Filled when a run fails, if given, as `check` fills it.
     diagnostics: ?*checking.CheckReport = null,
 };
@@ -76,7 +80,8 @@ pub const Exploration = struct {
     held: u64,
 };
 
-/// `PropertyFailed`: a run failed (reported). `Nondeterministic`: a run
+/// `PropertyFailed`: a run failed, or no passing run reached a point the
+/// options' `reach` names (reported). `Nondeterministic`: a run
 /// made the same choices as an earlier one and was offered others, so the
 /// search cannot trust a tape: the body depends on something besides its
 /// source. `InvalidTape`: `SHAKEDOWN_TAPE` is not a tape.
@@ -105,6 +110,7 @@ pub fn explore(
         return .{ .runs = 1, .redundant = 0, .complete = false, .held = 0 };
     }
 
+    if (options.reach.len > 0) runner.reach = try .init(gpa, options.reach);
     var search: Search = .init(gpa, options);
     defer search.deinit();
     while (true) {
@@ -117,8 +123,11 @@ pub fn explore(
             .pass, .discard => {},
         }
         try search.end();
-        if (!try search.advance()) return search.summary(true);
-        if (search.runs >= options.max_runs) return search.summary(false);
+        const complete = !try search.advance();
+        if (complete or search.runs >= options.max_runs) {
+            try runner.unreached(.{ .explore = .{ .complete = complete } });
+            return search.summary(complete);
+        }
     }
 }
 

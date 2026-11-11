@@ -173,3 +173,133 @@ fn groupWork(_: void, c: *Case) !void {
 test "a case's Io runs its group's tasks, and under the fuzzer they end with the input" {
     try shakedown.check(testing.allocator, {}, groupWork, .{ .cases = 64 });
 }
+
+/// Draws a digit and marks what it reached: below five, and, never, past
+/// a hundred.
+const Digits = struct {
+    cases: u32 = 0,
+
+    fn body(self: *Digits, c: *Case) !void {
+        self.cases += 1;
+        const digit = c.source.below(9);
+        if (digit < 5) c.reached("a digit below five");
+        if (digit > 100) c.reached("a digit past a hundred");
+        c.reached("a label no option names");
+    }
+};
+
+test "a point no passing case reaches fails the run, naming it, after every case ran" {
+    var ctx: Digits = .{};
+    var report: shakedown.CheckReport = undefined;
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, &ctx, Digits.body, .{
+        .cases = 50,
+        .seed = 4,
+        .reach = &.{ "a digit below five", "a digit past a hundred" },
+        .diagnostics = &report,
+        .fuzz = false,
+    }));
+    defer report.deinit();
+    try testing.expectEqual(@as(u32, 50), ctx.cases);
+    try testing.expectEqual(error.Unreached, report.err);
+    try testing.expectEqual(@as(usize, 0), report.tape.len);
+    try testing.expect(std.mem.find(u8, report.text, "1 of 2 points") != null);
+    try testing.expect(std.mem.find(u8, report.text, "never reached:\n    a digit past a hundred\n") != null);
+    try testing.expect(std.mem.find(u8, report.text, "below five") == null);
+
+    // The same seed reports the same way.
+    var again: shakedown.CheckReport = undefined;
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, &ctx, Digits.body, .{
+        .cases = 50,
+        .seed = 4,
+        .reach = &.{ "a digit below five", "a digit past a hundred" },
+        .diagnostics = &again,
+        .fuzz = false,
+    }));
+    defer again.deinit();
+    try testing.expectEqualStrings(report.text, again.text);
+}
+
+test "every point reached passes, and a label the options do not name is not kept" {
+    var ctx: Digits = .{};
+    try shakedown.check(testing.allocator, &ctx, Digits.body, .{ .cases = 50, .seed = 4, .reach = &.{"a digit below five"}, .fuzz = false });
+    // With no points named, marking costs nothing and fails nothing.
+    try shakedown.check(testing.allocator, &ctx, Digits.body, .{ .cases = 50, .seed = 4, .fuzz = false });
+}
+
+/// Marks a point only in cases it then discards: a discarded case's points
+/// do not count.
+fn reachesThenDiscards(_: void, c: *Case) !void {
+    if (c.source.below(1) == 1) {
+        c.reached("only discarded");
+        return error.Unsatisfiable;
+    }
+}
+
+test "a point reached only by discarded cases is not reached" {
+    var report: shakedown.CheckReport = undefined;
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, reachesThenDiscards, .{ .cases = 40, .seed = 2, .reach = &.{"only discarded"}, .diagnostics = &report, .fuzz = false }));
+    defer report.deinit();
+    try testing.expectEqual(error.Unreached, report.err);
+}
+
+/// A simulated task marks the point: a waiter woken by a timeout rather
+/// than by its signal, which happens only when the signaller sleeps long.
+const TimedOut = struct {
+    fn waiter(c: *Case, io: std.Io, event: *std.Io.Event) !void {
+        event.waitTimeout(io, .{ .duration = .{ .raw = .fromMilliseconds(5), .clock = .awake } }) catch |err| switch (err) {
+            error.Timeout => c.reached("the waiter timed out"),
+            else => |e| return e,
+        };
+    }
+
+    fn main(c: *Case, io: std.Io, delay: u64) !void {
+        var event: std.Io.Event = .unset;
+        var task = try io.concurrent(waiter, .{ c, io, &event });
+        try io.sleep(.fromMilliseconds(@intCast(delay)), .awake);
+        event.set(io);
+        try task.await(io);
+    }
+
+    fn body(_: void, c: *Case) !void {
+        const delay = c.source.below(9);
+        const sim = try c.sim(.{});
+        switch (sim.run(main, .{ c, sim.io(), delay })) {
+            .finished => {},
+            .failed => |err| return err,
+            else => return error.Unexpected,
+        }
+    }
+};
+
+test "a simulated task marks a point, and the run counts it" {
+    try shakedown.check(testing.allocator, {}, TimedOut.body, .{ .cases = 30, .seed = 6, .reach = &.{"the waiter timed out"}, .fuzz = false });
+}
+
+/// `sumBelow300` with a point: a list of three elements or more.
+fn sumBelow300Reaching(_: void, c: *Case) !void {
+    const list = try gen.slice(c.source, u8, byteList, c.gpa, .{});
+    if (list.len >= 3) c.reached("a long list");
+    var sum: u32 = 0;
+    for (list) |x| sum += x;
+    if (sum >= 300) return error.SumTooLarge;
+}
+
+test "a failing case found with points to reach shrinks as without them and replays to the same failure" {
+    var plain: shakedown.CheckReport = undefined;
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, sumBelow300, .{ .seed = 7, .diagnostics = &plain, .fuzz = false }));
+    defer plain.deinit();
+    var reaching: shakedown.CheckReport = undefined;
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, sumBelow300Reaching, .{ .seed = 7, .reach = &.{"a long list"}, .diagnostics = &reaching, .fuzz = false }));
+    defer reaching.deinit();
+    // Marking draws nothing: the same cases, the same minimal tape.
+    try testing.expectEqual(error.SumTooLarge, reaching.err);
+    try testing.expectEqualSlices(u64, plain.tape, reaching.tape);
+    var text: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer text.deinit();
+    try text.writer.print("{f}", .{shakedown.Tape{ .choices = reaching.tape }});
+    var replayed: shakedown.CheckReport = undefined;
+    try testing.expectError(error.PropertyFailed, shakedown.check(testing.allocator, {}, sumBelow300Reaching, .{ .regressions = &.{text.written()}, .cases = 0, .reach = &.{"a long list"}, .diagnostics = &replayed, .fuzz = false }));
+    defer replayed.deinit();
+    try testing.expectEqual(error.SumTooLarge, replayed.err);
+    try testing.expectEqualSlices(u64, reaching.tape, replayed.tape);
+}

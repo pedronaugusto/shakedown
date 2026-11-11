@@ -69,6 +69,20 @@ pub const Case = struct {
         targets.observe(score, label) catch {};
     }
 
+    /// This case reached the point `label` names: a state the property was
+    /// written to test, a branch of a fake, a fault taken. Each label in
+    /// the options' `reach` must be reached by at least one passing case of
+    /// the run, or the run fails naming the points no case reached, so a
+    /// property cannot pass without testing what it was written for. A label
+    /// the options do not name is not kept. It draws nothing, so a case's
+    /// tape is the same with it or without it, and a task of the case's
+    /// simulations may call it. Under `SHAKEDOWN_TAPE` and the fuzzer, which
+    /// run cases one at a time, it does nothing.
+    pub fn reached(c: *Case, label: []const u8) void {
+        const reach = &(c.runner.reach orelse return);
+        reach.mark(label);
+    }
+
     /// A simulation whose every decision comes from this case's source, so
     /// its schedules, faults and timings shrink with the case's inputs. It
     /// is torn down when the case ends. Unless the options name one, it
@@ -100,6 +114,9 @@ pub const CheckOptions = struct {
     max_shrink_runs: u32 = 5_000,
     /// The most choices a case may draw; a larger one is discarded.
     max_choices: u32 = 1 << 16,
+    /// Points the run's passing cases must reach, each at least once: the
+    /// labels `Case.reached` marks. The run fails if any is reached by none.
+    reach: []const []const u8 = &.{},
     /// Filled when a case fails, if given, and then nothing is printed.
     /// Free with `CheckReport.deinit`.
     diagnostics: ?*CheckReport = null,
@@ -111,9 +128,10 @@ pub const CheckOptions = struct {
 
 /// How a property failed: its minimal tape, and the report `check` prints.
 pub const CheckReport = struct {
-    /// What the minimal case returned.
+    /// What the minimal case returned; `error.Unreached` when every case
+    /// passed and a point of `reach` was reached by none.
     err: anyerror,
-    /// The minimal failing tape.
+    /// The minimal failing tape; empty for `error.Unreached`.
     tape: []u64,
     /// Replays the shrinker made.
     shrink_runs: u32,
@@ -129,7 +147,8 @@ pub const CheckReport = struct {
     }
 };
 
-/// `PropertyFailed`: a case failed (printed). `Unsatisfiable`: fewer than
+/// `PropertyFailed`: a case failed, or no passing case reached a point the
+/// options' `reach` names (printed). `Unsatisfiable`: fewer than
 /// `cases` valid cases came of ten times as many tries. `InvalidTape`: a
 /// regression or `SHAKEDOWN_TAPE` is not a tape.
 pub const CheckError = error{ PropertyFailed, OutOfMemory, Unsatisfiable, InvalidTape };
@@ -160,6 +179,7 @@ pub fn check(
     }
     runner.targets = .init(gpa);
     const targets = &runner.targets.?;
+    if (options.reach.len > 0) runner.reach = try .init(gpa, options.reach);
     for (options.regressions, 0..) |text, i| {
         const choices = Tape.parse(gpa, text) catch |err| return invalid(err);
         defer gpa.free(choices);
@@ -196,6 +216,7 @@ pub fn check(
             .fail => |err| return runner.failed(err, .{ .case = .{ .seed = seed, .index = index, .passed = run.valid } }),
         }
     }
+    return runner.unreached(.{ .check = seed });
 }
 
 /// Where a `check` stands: the cases that passed, the runs tried.
@@ -333,6 +354,75 @@ pub const Origin = union(enum) {
     targeted: struct { label: []const u8, run: u64, passed: u64 },
 };
 
+/// How a run that reached every case's end ran, for the report of the
+/// points it never reached.
+pub const Ran = union(enum) {
+    /// `check`'s cases, from this seed.
+    check: u64,
+    /// `explore`'s runs, and whether its search was complete.
+    explore: struct { complete: bool },
+};
+
+/// The points the options name to reach (`CheckOptions.reach`), borrowed:
+/// which the current case reached, and which any passing case has.
+pub const Reach = struct {
+    gpa: Allocator,
+    labels: []const []const u8,
+    /// Per label: reached by the current case.
+    case: []bool,
+    /// Per label: reached by a passing case.
+    ever: []bool,
+    /// The passing cases so far.
+    cases: u64 = 0,
+
+    pub fn init(gpa: Allocator, labels: []const []const u8) Allocator.Error!Reach {
+        const case = try gpa.alloc(bool, labels.len);
+        errdefer gpa.free(case);
+        const ever = try gpa.alloc(bool, labels.len);
+        @memset(case, false);
+        @memset(ever, false);
+        return .{ .gpa = gpa, .labels = labels, .case = case, .ever = ever };
+    }
+
+    pub fn deinit(r: *Reach) void {
+        r.gpa.free(r.case);
+        r.gpa.free(r.ever);
+        r.* = undefined;
+    }
+
+    fn startCase(r: *Reach) void {
+        @memset(r.case, false);
+    }
+
+    fn mark(r: *Reach, label: []const u8) void {
+        for (r.labels, r.case) |have, *reached| if (std.mem.eql(u8, have, label)) {
+            reached.* = true;
+        };
+    }
+
+    /// The current case passed: what it reached counts.
+    fn passed(r: *Reach) void {
+        for (r.case, r.ever) |now, *ever| ever.* = ever.* or now;
+        r.cases += 1;
+    }
+
+    fn all(r: *const Reach) bool {
+        return std.mem.allEqual(bool, r.ever, true);
+    }
+
+    fn print(r: *const Reach, w: *std.Io.Writer, ran: Ran) std.Io.Writer.Error!void {
+        var missed: usize = 0;
+        for (r.ever) |ever| missed += @intFromBool(!ever);
+        try w.print("shakedown: {d} of {d} points to reach were reached by no passing case", .{ missed, r.labels.len });
+        switch (ran) {
+            .check => |seed| try w.print(", in {d} passing cases (seed 0x{x})", .{ r.cases, seed }),
+            .explore => |e| try w.print(", in {d} passing runs of {s} search", .{ r.cases, if (e.complete) "a complete" else "an incomplete" }),
+        }
+        try w.writeAll(": error.Unreached\n  never reached:\n");
+        for (r.labels, r.ever) |label, ever| if (!ever) try w.print("    {s}\n", .{label});
+    }
+};
+
 /// The state of one `check` or `explore`: the recording source and the
 /// arena every case reuses, and the notes of the final run.
 pub const Runner = struct {
@@ -349,6 +439,9 @@ pub const Runner = struct {
     bounded: ?Sim.Schedule.Bounded = null,
     /// Under `check`'s own cases: the scores they reported (`Case.target`).
     targets: ?target.Targets = null,
+    /// Under `check` and `explore`, when the options name points to reach:
+    /// which the current case reached, and which a passing case has.
+    reach: ?Reach = null,
     /// Whether the test runner handed `check`'s fuzz function an input of its
     /// own: it does not fuzz.
     probed: bool = false,
@@ -383,6 +476,7 @@ pub const Runner = struct {
         r.watchdog.deinit();
         if (r.notes) |*n| n.deinit(r.gpa);
         if (r.targets) |*t| t.deinit();
+        if (r.reach) |*reach| reach.deinit();
         r.* = undefined;
     }
 
@@ -391,6 +485,7 @@ pub const Runner = struct {
         r.source.restart(backend);
         _ = r.arena.reset(.retain_capacity);
         if (r.targets) |*t| t.startCase();
+        if (r.reach) |*reach| reach.startCase();
         var c: Case = .{ .source = &r.source, .gpa = r.arena.allocator(), .runner = r };
         if (@errorReturnTrace()) |t| t.index = 0;
         const result = r.body.run(r.body.ctx, &c);
@@ -402,7 +497,33 @@ pub const Runner = struct {
             error.Unsatisfiable => .discard,
             else => .{ .fail = err },
         };
+        if (r.reach) |*reach| reach.passed();
         return .pass;
+    }
+
+    /// Every case passed: the run fails, reported as a case's failure is,
+    /// when a point the options name to reach was reached by none.
+    pub fn unreached(r: *Runner, ran: Ran) CheckError!void {
+        const reach = &(r.reach orelse return);
+        if (reach.all()) return;
+        var text: std.Io.Writer.Allocating = .init(r.gpa);
+        defer text.deinit();
+        reach.print(&text.writer, ran) catch return error.OutOfMemory;
+        const diagnostics = r.options.diagnostics orelse {
+            var buffer: [256]u8 = undefined;
+            const stderr = std.debug.lockStderr(&buffer).terminal();
+            defer std.debug.unlockStderr();
+            // glint-ignore: Z026 -- a report stderr cannot take is lost; the error still fails the test
+            stderr.writer.writeAll(text.written()) catch {};
+            return error.PropertyFailed;
+        };
+        const tape = r.gpa.alloc(u64, 0) catch return error.OutOfMemory;
+        const owned = text.toOwnedSlice() catch {
+            r.gpa.free(tape);
+            return error.OutOfMemory;
+        };
+        diagnostics.* = .{ .err = error.Unreached, .tape = tape, .shrink_runs = 0, .text = owned, .gpa = r.gpa };
+        return error.PropertyFailed;
     }
 
     pub fn replayOnly(r: *Runner, choices: []const u64) CheckError!void {

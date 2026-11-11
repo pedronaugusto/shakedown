@@ -312,6 +312,18 @@ exact up to 2^53. A score that only says whether a state was reached has no
 slope to climb, so give it a measure of distance. `explore`, `SHAKEDOWN_TAPE`
 and the fuzzer ignore targets.
 
+### Points to reach
+
+A property can pass without reaching the state it was written to test: a
+retry that never ran, a timeout that never fired. `.reach = &.{"a retry"}`
+names a point the run must reach, and `case.reached("a retry")` marks it, in
+the body or in a task of its simulation. Once every case has passed, a point
+no passing case reached fails the run, and the report names it. `explore`
+takes `.reach` too: a point counts in any run of the search. Marking draws
+nothing, so tapes and shrinking are what they were, and a label the options do
+not name is not kept. `SHAKEDOWN_TAPE` and the fuzzer ignore points. A point
+that must never be reached is an error the body returns.
+
 ### Continuous fuzzing
 
 `shakedown-fuzz` (an artifact of the package, as `shakedown-bench-compare` is)
