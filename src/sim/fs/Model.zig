@@ -65,6 +65,16 @@ pub const Faults = struct {
     /// another such sector. The model holds no other file's blocks, so a
     /// write never lands in another file.
     misdirect_per_million: u32 = 0,
+    /// A lost write: the device reports a write done and never stores its
+    /// bytes. The write returns success and reads go on returning it, as
+    /// the page cache holds it, until the cache is dropped, which here is
+    /// a crash. No sync makes it durable, since the file system believes
+    /// the device has it; a later write over the same bytes does reach
+    /// storage. The file's size and timestamps do, as metadata the file
+    /// system writes apart. Unlike a torn write or a crash before a sync,
+    /// it loses data a sync promised. Drawn once per write the file system
+    /// makes.
+    lost_write_per_million: u32 = 0,
 };
 /// What a stat carries that `std.Io`'s does not: the device of the file's
 /// volume and its owner and group.
@@ -520,29 +530,50 @@ fn store(fs: *Model, inode: u32, requested_offset: u64, bytes: []const u8, drawn
     const n = fs.root.nodes.items[inode];
     if (n.kind == .directory) return error.IsDir;
     const requested_end = std.math.add(u64, requested_offset, bytes.len) catch return error.NoSpaceLeft;
-    const offset = n.misdirect orelse if (drawn) fs.misdirected(n.live.size, requested_offset, bytes.len) else requested_offset;
+    // A lost write lands nowhere; the next write the test misdirected is
+    // spent on it all the same.
+    const lost = drawn and fs.source.chance(fs.options.faults.lost_write_per_million);
+    const offset = if (lost) requested_offset else n.misdirect orelse if (drawn) fs.misdirected(n.live.size, requested_offset, bytes.len) else requested_offset;
     const end = std.math.add(u64, offset, bytes.len) catch return error.NoSpaceLeft;
     // The size is what the write asked for, wherever its bytes landed.
     const size = @max(n.live.size, @max(requested_end, end));
     if (fs.options.capacity) |cap| if (size - n.live.size > cap -| fs.used()) return error.NoSpaceLeft;
     const next = try n.live.edit(fs.gpa, size, offset, bytes);
     errdefer next.release(fs.gpa);
+    // The device's own image: a lost write gives it the size and not the
+    // bytes; a write after one reaches both.
+    const medium: ?*Image = if (lost)
+        try (n.medium orelse n.live).edit(fs.gpa, size, 0, &.{})
+    else if (n.medium) |m|
+        try m.edit(fs.gpa, size, offset, bytes)
+    else
+        null;
+    errdefer if (medium) |m| m.release(fs.gpa);
     try fs.unique();
     try fs.root.unreadable.ensureUnusedCapacity(fs.gpa, 1);
     var meta = n.meta;
     meta.mtime = fs.rounded(fs.at);
     meta.ctime = meta.mtime;
-    const written: Effect = .{ .write = .{ .inode = inode, .offset = offset, .len = bytes.len, .image = next } };
-    // A write that landed short of the end it asked for grows the file
-    // past its bytes, as a length change does.
-    const grown: Effect = .{ .length = .{ .inode = inode, .image = next } };
-    try fs.recordData(if (size > @max(n.live.size, end)) &.{ grown, written } else &.{written}, inode, meta);
+    if (lost) {
+        // Nothing of it reaches storage but its size and timestamps.
+        const grown: Effect = .{ .length = .{ .inode = inode, .image = medium.? } };
+        const effects: []const Effect = if (size > n.live.size) &.{grown} else &.{};
+        try fs.recordData(effects, inode, meta);
+    } else {
+        const written: Effect = .{ .write = .{ .inode = inode, .offset = offset, .len = bytes.len, .image = next } };
+        // A write that landed short of the end it asked for grows the file
+        // past its bytes, as a length change does.
+        const grown: Effect = .{ .length = .{ .inode = inode, .image = next } };
+        try fs.recordData(if (size > @max(n.live.size, end)) &.{ grown, written } else &.{written}, inode, meta);
+    }
     const node = &fs.root.nodes.items[inode];
     node.live.release(fs.gpa);
     node.live = next;
+    if (node.medium) |m| m.release(fs.gpa);
+    node.medium = medium;
     node.misdirect = null;
     node.meta = meta;
-    fs.readable(inode, offset, end);
+    if (!lost) fs.readable(inode, offset, end);
     return bytes.len;
 }
 /// Where a write of `len` bytes at `requested` lands: another sector of the
@@ -568,6 +599,8 @@ pub fn setLength(fs: *Model, inode: u32, size: u64) Error!void {
     if (fs.options.capacity) |cap| if (size -| n.live.size > cap -| fs.used()) return error.NoSpaceLeft;
     const next = try n.live.edit(fs.gpa, size, 0, &.{});
     errdefer next.release(fs.gpa);
+    const medium = if (n.medium) |m| try m.edit(fs.gpa, size, 0, &.{}) else null;
+    errdefer if (medium) |m| m.release(fs.gpa);
     try fs.unique();
     var meta = n.meta;
     meta.mtime = fs.rounded(fs.at);
@@ -576,6 +609,8 @@ pub fn setLength(fs: *Model, inode: u32, size: u64) Error!void {
     const node = &fs.root.nodes.items[inode];
     node.live.release(fs.gpa);
     node.live = next;
+    if (node.medium) |m| m.release(fs.gpa);
+    node.medium = medium;
     node.meta = meta;
     // What the file no longer holds is no longer bad.
     fs.readable(inode, size, std.math.maxInt(u64));
@@ -676,6 +711,9 @@ fn syncSetup(fs: *Model) !void {
         n.disk.release(fs.gpa);
         n.disk = n.live.retain();
         n.disk_meta = n.meta;
+        // Setup makes durable what the test sees.
+        if (n.medium) |m| m.release(fs.gpa);
+        n.medium = null;
     }
     try fs.root.disk_entries.ensureTotalCapacity(fs.gpa, fs.root.entries.items.len);
     for (fs.root.disk_entries.items) |e| e.name.release(fs.gpa);
@@ -699,26 +737,33 @@ pub fn corrupt(fs: *Model, path: []const u8, offset: u64, len: u32) !void {
 /// return and in the durable image: media corruption, which already durable
 /// data and every later read meet.
 fn flip(fs: *Model, id: u32, offset: u64, len: u64) Error!void {
-    const image = fs.root.nodes.items[id].live;
+    const n = fs.root.nodes.items[id];
+    // The bytes the file holds; storage past them is not the file's.
+    const reach = @min(len, n.live.size -| offset);
+    const next = try fs.inverted(n.live, offset, reach);
+    errdefer next.release(fs.gpa);
+    const durable = try fs.inverted(n.disk, offset, reach);
+    errdefer durable.release(fs.gpa);
+    const medium = if (n.medium) |m| try fs.inverted(m, offset, reach) else null;
+    errdefer if (medium) |m| m.release(fs.gpa);
+    try fs.unique();
+    const node = &fs.root.nodes.items[id];
+    node.live.release(fs.gpa);
+    node.disk.release(fs.gpa);
+    if (node.medium) |m| m.release(fs.gpa);
+    node.live = next;
+    node.disk = durable;
+    node.medium = medium;
+}
+/// `image` with every bit of `[offset, offset + len)` inverted, as far as
+/// it reaches.
+fn inverted(fs: *Model, image: *Image, offset: u64, len: u64) Error!*Image {
     const count: usize = @intCast(@min(len, image.size -| offset));
     const bytes = try fs.gpa.alloc(u8, count);
     defer fs.gpa.free(bytes);
     _ = image.read(offset, bytes);
     for (bytes) |*b| b.* ^= 0xff;
-    const next = try image.edit(fs.gpa, image.size, offset, bytes);
-    errdefer next.release(fs.gpa);
-    const disk = fs.root.nodes.items[id].disk;
-    const disk_count: usize = @intCast(@min(count, disk.size -| offset));
-    _ = disk.read(offset, bytes[0..disk_count]);
-    for (bytes[0..disk_count]) |*v| v.* ^= 0xff;
-    const durable = try disk.edit(fs.gpa, disk.size, offset, bytes[0..disk_count]);
-    errdefer durable.release(fs.gpa);
-    try fs.unique();
-    const n = &fs.root.nodes.items[id];
-    n.live.release(fs.gpa);
-    n.disk.release(fs.gpa);
-    n.live = next;
-    n.disk = durable;
+    return image.edit(fs.gpa, image.size, offset, bytes);
 }
 pub fn failReads(fs: *Model, path: []const u8, offset: u64, len: u32) !void {
     const id = try fs.resolve(0, path, true);
@@ -834,7 +879,8 @@ pub fn flushInode(fs: *Model, id: u32, kind: Flush) !void {
     }
     const n = &fs.root.nodes.items[id];
     n.disk.release(fs.gpa);
-    n.disk = n.live.retain();
+    // What the device holds: a lost write's bytes never reached it.
+    n.disk = (n.medium orelse n.live).retain();
     if (kind == .full) n.disk_meta = n.meta;
     var kept: usize = 0;
     for (fs.root.pending.items) |r| {
@@ -959,6 +1005,8 @@ fn crashed(fs: *Model) !void {
         n.live = n.disk.retain();
         n.meta = n.disk_meta;
         n.misdirect = null;
+        if (n.medium) |m| m.release(fs.gpa);
+        n.medium = null;
     }
     for (fs.root.pending.items) |r| r.op.release(fs.gpa);
     fs.root.pending.clearRetainingCapacity();

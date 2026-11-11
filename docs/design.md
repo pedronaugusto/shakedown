@@ -72,12 +72,22 @@ the write asked for: a misdirected append leaves zeros where its bytes
 should be, and a crash may keep the growth without the bytes. The model holds
 no other file's blocks, so a write never lands in another file.
 
+A lost write is one the device reports done and never stores. The model
+writes it to the cache image and keeps a third image per file: what the
+device would hold once every write reached it. A sync makes that image
+durable, not the cache. A later write reaches both, so it does persist, and a
+crash drops the third image with the cache. A lost write records no effect
+for a crash to keep. Its size and timestamps are metadata the file system
+writes apart, and they are recorded. This is the fault that loses data a
+sync promised. A torn write keeps only some sectors of a write no sync has
+covered yet, and a crash before a sync loses what was never promised.
+
 What the model rests on, and where it is taken from: device read errors that
 persist until the sector is rewritten, and silent corruption, as field
 studies of disk fleets report them (Bairavasundaram et al., SIGMETRICS 2007
-and FAST 2008). Misdirected writes as Krioukov et al. define them (FAST
-2008: the write lands at the wrong location, the intended one keeps old
-data). A drive remapping a pending sector when it is written, as drive
+and FAST 2008). Misdirected and lost writes as Krioukov et al. define them (FAST
+2008: a misdirected write lands at the wrong location and the intended one
+keeps old data; a lost write is reported done and never written). A drive remapping a pending sector when it is written, as drive
 vendors and smartmontools describe. These are recalled, not re-read. The
 faults are opt-in and the defaults are honest storage, so no existing test
 draws a new choice.

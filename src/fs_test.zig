@@ -1215,3 +1215,80 @@ test "Fs read faults fall only on sectors at rest, and setup draws none" {
     try fs.model.flushInode(id, .writeout);
     try t.expectError(error.InputOutput, fs.model.get(id, 0, &four));
 }
+
+/// A program that commits a record to a file and syncs it: once `commit`
+/// returns, the record is promised durable. The property crashes the disk
+/// as power loss does, keeping nothing pending, and reads the record back
+/// on a fresh simulation of the same storage.
+fn Durable(comptime faults: Sim.Fs.Faults) type {
+    return struct {
+        const record = "acknowledged";
+
+        fn commit(io: Io) !void {
+            const file = try Io.Dir.cwd().openFile(io, "log", .{ .mode = .read_write });
+            defer file.close(io);
+            try file.writePositionalAll(io, record, 0);
+            try file.sync(io);
+        }
+
+        fn readBack(io: Io) !void {
+            var back: [record.len]u8 = undefined;
+            const file = try Io.Dir.cwd().openFile(io, "log", .{});
+            defer file.close(io);
+            const n = try file.readPositional(io, &.{&back}, 0);
+            if (n != record.len or !std.mem.eql(u8, &back, record)) return error.AcknowledgedLost;
+        }
+
+        fn property(_: void, c: *shakedown.Case) !void {
+            const before = try c.sim(.{ .fs = .{ .faults = faults } });
+            try before.fs().write("log", "");
+            try finished(before.run(commit, .{before.io()}));
+            try before.fs().crash(.lose_all);
+            const storage = try before.fs().snapshot();
+            defer storage.deinit();
+            const after = try c.sim(.{ .fs = .{ .faults = faults } });
+            after.fs().restore(storage);
+            try finished(after.run(readBack, .{after.io()}));
+        }
+
+        fn finished(outcome: Sim.Outcome) !void {
+            switch (outcome) {
+                .finished => {},
+                .failed => |err| return err,
+                else => return error.Unexpected,
+            }
+        }
+    };
+}
+
+test "Fs a lost write drawn from a seed loses a synced record at power loss, found, shrunk and replayed" {
+    try foundShrunkReplayed(Durable(.{ .lost_write_per_million = 100_000 }).property, Durable(.{}).property, error.AcknowledgedLost, 1);
+}
+
+test "Fs a lost write reads back until a crash, no sync makes it durable, and a later write over it does" {
+    const sim = try Sim.init(t.allocator, .{ .fs = .{ .faults = .{ .lost_write_per_million = 1_000_000 } }, .watchdog = null });
+    defer sim.deinit();
+    const fs = sim.fs();
+    try fs.write("file", "old");
+    const id = try fs.model.resolve(0, "file", true);
+    _ = try fs.model.put(id, 0, "new");
+    // The cache holds it.
+    try bytesEqual(fs, "file", "new");
+    const lost = try fs.snapshot();
+    defer lost.deinit();
+    // Not even a crash that keeps every pending effect has it.
+    try fs.crash(.keep_all);
+    try bytesEqual(fs, "file", "old");
+    fs.restore(lost);
+    try fs.model.flushInode(id, .full);
+    try fs.crash(.lose_all);
+    try bytesEqual(fs, "file", "old");
+    // A lost append: the size reaches storage, the bytes do not.
+    _ = try fs.model.put(id, 3, "tail");
+    try bytesEqual(fs, "file", "oldtail");
+    fs.model.options.faults.lost_write_per_million = 0;
+    _ = try fs.model.put(id, 0, "n");
+    try fs.model.flushInode(id, .full);
+    try fs.crash(.lose_all);
+    try bytesEqual(fs, "file", "nld\x00\x00\x00\x00");
+}

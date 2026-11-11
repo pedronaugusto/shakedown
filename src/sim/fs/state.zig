@@ -45,16 +45,22 @@ pub const Node = struct {
     disk_meta: Meta,
     target: ?*Name = null,
     misdirect: ?u64 = null,
+    /// What the device would hold once every write reached it, where a
+    /// lost write left it apart from `live`; null where the two agree. A
+    /// sync makes this durable, not `live`; a crash drops it.
+    medium: ?*Image = null,
     pub fn retain(n: Node) Node {
         _ = n.live.retain();
         _ = n.disk.retain();
         if (n.target) |t| _ = t.retain();
+        if (n.medium) |m| _ = m.retain();
         return n;
     }
     pub fn release(n: Node, gpa: Allocator) void {
         n.live.release(gpa);
         n.disk.release(gpa);
         if (n.target) |t| t.release(gpa);
+        if (n.medium) |m| m.release(gpa);
     }
 };
 pub const Entry = struct {

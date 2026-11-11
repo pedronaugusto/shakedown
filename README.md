@@ -487,7 +487,9 @@ simulation's source, each a chance in a million, as the code under test reads
 and writes through `Io`: `rot_per_million` and `latent_error_per_million` on
 the sectors at rest a read reaches (at most one of each per read), and
 `misdirect_per_million` per write, which lands at another sector of the same
-file. Each is a choice on the tape, so `check` shrinks a failure to the faults
+file. `lost_write_per_million` makes a write the device reports done and
+never stores: reads return it until a crash drops the cache, and no sync makes
+it durable. Each is a choice on the tape, so `check` shrinks a failure to the faults
 it needs and `SHAKEDOWN_TAPE` replays them. All are off by default.
 
 `corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
