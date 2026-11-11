@@ -188,6 +188,51 @@ test "Net DNS case folding family port unknown names and queue close" {
     try finished(sim.run(Work.run, .{sim.io()}));
 }
 
+test "Net DNS answers localhost and its subdomains with the loopback addresses, the asking node's own" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const Work = struct {
+        fn addresses(io: Io, name: []const u8, family: ?Io.net.IpAddress.Family) ![2]?Io.net.IpAddress {
+            var storage: [16]Io.net.HostName.LookupResult = undefined;
+            var queue = Io.Queue(Io.net.HostName.LookupResult).init(&storage);
+            try io.vtable.netLookup(io.userdata, try .init(name), &queue, .{ .port = 8080, .family = family });
+            var found: [2]?Io.net.IpAddress = .{ null, null };
+            var n: usize = 0;
+            while (queue.getOne(io)) |result| switch (result) {
+                .address => |a| {
+                    found[n] = a;
+                    n += 1;
+                },
+                .canonical_name => {},
+            } else |err| try t.expectEqual(error.Closed, err);
+            return found;
+        }
+
+        fn run(io: Io) !void {
+            // RFC 6761 §6.3: IPv4's loopback first, then IPv6's, on the port asked.
+            for ([_][]const u8{ "localhost", "LocalHost.", "api.localhost" }) |name| {
+                const both = try addresses(io, name, null);
+                try t.expect(both[0].?.eql(&try .parse("127.0.0.1", 8080)));
+                try t.expect(both[1].?.eql(&try .parse("::1", 8080)));
+            }
+            const six = try addresses(io, "localhost", .ip6);
+            try t.expect(six[0].?.eql(&try .parse("::1", 8080)));
+            try t.expect(six[1] == null);
+            // The name reaches a server on the node's own loopback.
+            var listener = try (try Io.net.IpAddress.parse("127.0.0.1", 8080)).listen(io, .{});
+            defer listener.deinit(io);
+            const stream = try (try Io.net.HostName.init("localhost")).connect(io, 8080, .{ .mode = .stream });
+            stream.close(io);
+            (try listener.accept(io)).close(io);
+            // A name that only ends in the letters is no subdomain.
+            var storage: [4]Io.net.HostName.LookupResult = undefined;
+            var queue = Io.Queue(Io.net.HostName.LookupResult).init(&storage);
+            try t.expectError(error.UnknownHostName, io.vtable.netLookup(io.userdata, try .init("notlocalhost"), &queue, .{ .port = 1 }));
+        }
+    };
+    try finished(sim.run(Work.run, .{sim.io()}));
+}
+
 test "Net partition expires streams hold releases and canceled connect frees packets" {
     const sim = try Sim.init(t.allocator, .{ .watchdog = null, .schedule = .fifo, .net = .{ .max_packets = 2 } });
     defer sim.deinit();

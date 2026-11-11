@@ -190,15 +190,25 @@ const slots = struct {
         const bytes = std.mem.trimEnd(u8, host.bytes, ".");
         for (bytes, 0..) |b, i| normalized[i] = std.ascii.toLower(b);
         const m = begin(c);
-        const node = m.names.get(normalized[0..bytes.len]) orelse return error.UnknownHostName;
+        const name = normalized[0..bytes.len];
+        // RFC 6761 §6.3: localhost and its subdomains are the asking node's
+        // loopback, answered without a lookup, IPv4's first.
+        const loopback = std.mem.eql(u8, name, "localhost") or std.mem.endsWith(u8, name, ".localhost");
+        const node = if (loopback) null else m.names.get(name) orelse return error.UnknownHostName;
         var canonical = host;
         if (o.canonical_name_buffer) |buffer| {
-            @memcpy(buffer[0..bytes.len], normalized[0..bytes.len]);
+            @memcpy(buffer[0..bytes.len], name);
             canonical = try Io.net.HostName.init(buffer[0..bytes.len]);
         }
         try queue.putOne(io, .{ .canonical_name = canonical });
         var count: usize = 0;
-        for (m.addresses.items) |item| if (item.node == node) {
+        if (loopback) {
+            for ([_]Io.net.IpAddress{ .{ .ip4 = .loopback(o.port) }, .{ .ip6 = .loopback(o.port) } }) |address| {
+                if (o.family) |f| if (std.meta.activeTag(address) != f) continue;
+                try queue.putOne(io, .{ .address = address });
+                count += 1;
+            }
+        } else for (m.addresses.items) |item| if (item.node == node.?) {
             if (o.family) |f| if (std.meta.activeTag(item.address) != f) continue;
             var address = item.address;
             address.setPort(o.port);
