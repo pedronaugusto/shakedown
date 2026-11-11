@@ -341,9 +341,20 @@ pub fn pair(m: *Model, a: NodeId, b: NodeId, local: bool) Error![2]*Socket {
 pub fn connect(m: *Model, node: NodeId, addr: Address) Error!*Socket {
     const destination = m.route(node, addr) orelse return error.ConnectionRefused;
     const listener = m.bound(destination, addr, .listener) orelse return error.ConnectionRefused;
-    return m.connectListener(node, listener, false);
+    // A connection to a loopback address comes from that loopback address,
+    // as a kernel's does, not from the node's own.
+    const source: ?Address = if (sameIp(addr, .{ .ip4 = .loopback(0) }))
+        .{ .ip4 = .loopback(0) }
+    else if (sameIp(addr, .{ .ip6 = .loopback(0) }))
+        .{ .ip6 = .loopback(0) }
+    else
+        null;
+    return m.connectFrom(node, listener, false, source);
 }
 pub fn connectListener(m: *Model, node: NodeId, listener: *Socket, local: bool) Error!*Socket {
+    return m.connectFrom(node, listener, local, null);
+}
+fn connectFrom(m: *Model, node: NodeId, listener: *Socket, local: bool, source: ?Address) Error!*Socket {
     var count: usize = 0;
     var it = m.sockets.valueIterator();
     while (it.next()) |s| if (s.*.listener == listener.handle and !s.*.accepted) {
@@ -355,6 +366,7 @@ pub fn connectListener(m: *Model, node: NodeId, listener: *Socket, local: bool) 
         m.abort(endpoints[0].handle);
         m.abort(endpoints[1].handle);
     }
+    if (source) |a| endpoints[0].address = a;
     endpoints[0].address.setPort(m.next_port);
     m.next_port = if (m.next_port == 65535) 49152 else m.next_port + 1;
     endpoints[1].address = listener.address;

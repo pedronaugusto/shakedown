@@ -233,6 +233,30 @@ test "Net DNS answers localhost and its subdomains with the loopback addresses, 
     try finished(sim.run(Work.run, .{sim.io()}));
 }
 
+test "Net a connection to a loopback address comes from the same loopback address, as a kernel's does" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const node = try sim.node("host", .{ .addresses = &.{try Io.net.IpAddress.parseIp4("10.0.0.9", 0)} });
+    const Work = struct {
+        fn run(io: Io) !void {
+            for ([_][]const u8{ "127.0.0.1", "::1" }) |loopback| {
+                var listener = try (try Io.net.IpAddress.parse(loopback, 80)).listen(io, .{});
+                defer listener.deinit(io);
+                const stream = try (try Io.net.IpAddress.parse(loopback, 80)).connect(io, .{ .mode = .stream });
+                defer stream.close(io);
+                const accepted = try listener.accept(io);
+                defer accepted.close(io);
+                // The server sees the client at the loopback address it dialed, not the node's own.
+                var peer = accepted.socket.address;
+                try t.expect(peer.getPort() != 0);
+                peer.setPort(80);
+                try t.expect(peer.eql(&try .parse(loopback, 80)));
+            }
+        }
+    };
+    try finished(sim.run(Work.run, .{node.io()}));
+}
+
 test "Net partition expires streams hold releases and canceled connect frees packets" {
     const sim = try Sim.init(t.allocator, .{ .watchdog = null, .schedule = .fifo, .net = .{ .max_packets = 2 } });
     defer sim.deinit();
