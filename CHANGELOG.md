@@ -27,6 +27,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The reap test's reached flag is an aegis `Atomic` of a two-state enum, where it was a `std.atomic.Value(bool)`. Tests only.
 - `assert.invariant` where `assert.pre` was, as aegis 0.3.0 keeps one name for the always-on contract. Pins aegis breaking-0.3 (7bdb587).
 
 ### Fixed

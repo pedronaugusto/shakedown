@@ -1,5 +1,6 @@
 //! Tasks a test started, reaped on its way out.
 const std = @import("std");
+const aegis = @import("aegis");
 
 /// Cancels the task behind `future` and reads what it returned. Being cancelled is the reaping
 /// itself; any other failure is a second one, printed beside the test's own rather than dropped.
@@ -14,16 +15,19 @@ pub fn Result(comptime function: anytype) type {
     return @typeInfo(@TypeOf(function)).@"fn".return_type.?;
 }
 
-fn waitForCancel(io: std.Io, reached: *std.atomic.Value(bool)) std.Io.Cancelable!void {
-    reached.store(true, .release);
+/// Whether the test's task reached its wait.
+const Reached = enum(u32) { no, yes };
+
+fn waitForCancel(io: std.Io, reached: *aegis.Atomic(Reached)) std.Io.Cancelable!void {
+    reached.store(.yes, .release);
     try io.sleep(.fromSeconds(60), .awake);
 }
 
 test "a reaped task is cancelled and its cancel is its end" {
     const io = std.testing.io;
-    var reached: std.atomic.Value(bool) = .init(false);
+    var reached: aegis.Atomic(Reached) = .init(.no);
     var future: std.Io.Future(Result(waitForCancel)) = io.concurrent(waitForCancel, .{ io, &reached }) catch return error.SkipZigTest;
-    while (!reached.load(.acquire)) try io.sleep(.fromMilliseconds(1), .awake);
+    while (reached.load(.acquire) == .no) try io.sleep(.fromMilliseconds(1), .awake);
     reap(Result(waitForCancel), io, &future);
-    try std.testing.expect(reached.load(.acquire));
+    try std.testing.expect(reached.load(.acquire) == .yes);
 }
