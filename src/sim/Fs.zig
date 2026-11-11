@@ -7,6 +7,7 @@ const nanoseconds = @import("../nanoseconds.zig");
 const Fs = @This();
 
 pub const Options = Model.Options;
+pub const Faults = Model.Faults;
 pub const Durability = Model.Durability;
 pub const CrashPolicy = Model.CrashPolicy;
 pub const Flush = Model.Flush;
@@ -68,12 +69,24 @@ pub fn snapshot(fs: *Fs) error{OutOfMemory}!Snapshot {
 pub fn restore(fs: *Fs, snap: Snapshot) void {
     fs.model.restore(snap);
 }
+/// Bit rot over `[offset, offset + len)` of the file at `path`: every bit
+/// inverted, in what reads return and in the durable image. The fault
+/// `Faults.rot_per_million` draws, made by hand.
 pub fn corrupt(fs: *Fs, path: []const u8, offset: u64, len: u32) StorageError!void {
     return fs.model.corrupt(path, offset, len);
 }
+/// A latent sector error over `[offset, offset + len)` of the file at
+/// `path`: a read that reaches it fails with `InputOutput`, after a crash
+/// too, until a write covers it. A file may hold several such ranges; a
+/// zero `len` clears them all. The fault `Faults.latent_error_per_million`
+/// draws, made by hand.
 pub fn failReads(fs: *Fs, path: []const u8, offset: u64, len: u32) StorageError!void {
     return fs.model.failReads(path, offset, len);
 }
+/// The next write to the file at `path` lands at `to_offset` instead of
+/// where it was asked to; the file's size is what the write asked for, or
+/// more if it lands past that. The fault `Faults.misdirect_per_million`
+/// draws, made by hand.
 pub fn misdirectNextWrite(fs: *Fs, path: []const u8, to_offset: u64) StorageError!void {
     return fs.model.misdirectNextWrite(path, to_offset);
 }

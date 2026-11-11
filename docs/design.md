@@ -34,6 +34,54 @@ IPv6 bindings remain separate; dual-stack UDP and interface discovery are
 unsupported. The model supports limited IPv4 broadcast, not subnet-directed
 broadcast. Reader and HTTP adapters use the supported Io surfaces directly.
 
+## Storage faults
+
+The disk model holds two images per file: what reads return (the page cache)
+and what storage holds durably, with the pending effects between them that a
+crash may keep. Device faults are one model with two ways to drive it. A test
+names a file and a range (`corrupt`, `failReads`, `misdirectNextWrite`), or
+`Fs.Options.faults` sets a chance in a million for each kind, and the calls
+the code under test makes through the simulation's `Io` draw them from the
+run's source. Either way they go through the same three operations: invert a
+range in both images, mark a range unreadable, land a write elsewhere. A drawn
+fault is a choice on the tape. A failing case therefore shrinks to the faults it
+needs and replays them, and a choice of 0 is always no fault. Setup and the
+test's own `read` draw nothing, so a test's fixtures are what it wrote.
+
+Faults on reads fall on sectors at rest: those of the file that no write or
+length change waits over for writeout. A sector the cache holds dirty is read
+from the cache, and a device fault beneath it cannot reach the read. A
+read draws at most one new fault of each kind. Its chance is the rate times
+the sectors at rest it reaches, and a second choice picks the sector. So a
+megabyte read costs two choices, not two thousand, and a tape stays within
+`max_choices`. Bit rot inverts every bit of the sector in both images, which
+is what `corrupt` does to a range. A latent sector error adds the sector to
+the file's bad ranges, as `failReads` does. Bad ranges are part of storage:
+they survive a crash, a snapshot holds them, and a digest tells two trees
+apart by them. A write that covers bad bytes makes them readable again, as
+a drive remaps a sector when it is written, and a truncation drops what the
+file no longer holds. A file's ranges are kept disjoint and in order, so a
+write splits at most one.
+
+A misdirected write lands whole at another sector of the same file, at the
+same offset within its sector, inside the size the file has after the write.
+It is drawn once per write the file system makes, and only when the file has
+another such sector, so a write to a one-sector file draws nothing. The
+bytes it should have replaced keep what they held. The file's size is what
+the write asked for: a misdirected append leaves zeros where its bytes
+should be, and a crash may keep the growth without the bytes. The model holds
+no other file's blocks, so a write never lands in another file.
+
+What the model rests on, and where it is taken from: device read errors that
+persist until the sector is rewritten, and silent corruption, as field
+studies of disk fleets report them (Bairavasundaram et al., SIGMETRICS 2007
+and FAST 2008). Misdirected writes as Krioukov et al. define them (FAST
+2008: the write lands at the wrong location, the intended one keeps old
+data). A drive remapping a pending sector when it is written, as drive
+vendors and smartmontools describe. These are recalled, not re-read. The
+faults are opt-in and the defaults are honest storage, so no existing test
+draws a new choice.
+
 ## Measurement contracts
 
 `bench.Row(Context, WorkloadError)` declares callback, `fixture` and `stage` /

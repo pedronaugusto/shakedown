@@ -479,8 +479,16 @@ owned by the context. Abandoned tasks do not execute defers, including with an
 root-namespace `IoFault.crash` plan, which requires its filesystem enabled.
 Explicit nodes use cooperative cancellation through their crash/kill lifecycle.
 Application heap state that must survive abandonment belongs to the context.
-`corrupt`, `failReads` and `misdirectNextWrite` inject storage faults by inode;
-a zero-length `failReads` clears the current bad range.
+`corrupt`, `failReads` and `misdirectNextWrite` inject storage faults by path:
+bit rot over a range, a range reads cannot return until a write covers it (a
+file may hold several; a zero-length `failReads` clears them), and a next write
+that lands elsewhere. `Options.fs.faults` draws the same faults from the
+simulation's source, each a chance in a million, as the code under test reads
+and writes through `Io`: `rot_per_million` and `latent_error_per_million` on
+the sectors at rest a read reaches (at most one of each per read), and
+`misdirect_per_million` per write, which lands at another sector of the same
+file. Each is a choice on the tape, so `check` shrinks a failure to the faults
+it needs and `SHAKEDOWN_TAPE` replays them. All are off by default.
 
 `corpus.entry` builds one length-prefixed entry for `std.testing.Smith`'s slice
 draws, `corpus.entries` a whole fuzz corpus of them, and `corpus.encode` a whole

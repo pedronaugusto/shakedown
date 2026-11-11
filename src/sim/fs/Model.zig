@@ -32,6 +32,39 @@ pub const Options = struct {
     /// them, and a set-owner call changes a file's.
     uid: u32 = 1000,
     gid: u32 = 1000,
+    /// Storage faults drawn from the simulation's source as the code under
+    /// test reads and writes through its `Io`. All off by default.
+    faults: Faults = .{},
+};
+/// Faults of the device beneath the file system, each a chance in a million,
+/// drawn from the simulation's source and kept on its tape, so a failing
+/// case shrinks to the faults it needs and replays them. Only calls through
+/// the simulation's `Io` meet them; setup (`write`, `mkdir`) and the test's
+/// own `read` do not.
+///
+/// A read draws only over sectors at rest: sectors of the file it reaches
+/// that no write or length change waits over for writeout. A read meets at
+/// most one new fault of each kind, with the rate times the sectors at rest
+/// it reaches as its chance, so a long read draws two choices, not one per
+/// sector.
+pub const Faults = struct {
+    /// Bit rot: a sector at rest a read reaches has every bit inverted, in
+    /// what reads return and in the durable image, as `corrupt` does. The
+    /// read returns the damage; nothing reports it.
+    rot_per_million: u32 = 0,
+    /// A latent sector error: a sector at rest a read reaches can no longer
+    /// be read, as `failReads` marks it. That read fails with
+    /// `InputOutput`, and so does every later read of the sector, after a
+    /// crash too, until a write covers it.
+    latent_error_per_million: u32 = 0,
+    /// A misdirected write: a write lands whole at another sector of the
+    /// same file, at the same offset within its sector, inside the size
+    /// the file has after the write. The bytes it should have replaced keep
+    /// what they held; the file's size is what the write asked for. Drawn
+    /// once per write the file system makes, and only where the file has
+    /// another such sector. The model holds no other file's blocks, so a
+    /// write never lands in another file.
+    misdirect_per_million: u32 = 0,
 };
 /// What a stat carries that `std.Io`'s does not: the device of the file's
 /// volume and its owner and group.
@@ -297,7 +330,7 @@ fn record(fs: *Model, effect: Effect) !void {
     }
     fs.root.pending.appendAssumeCapacity(.{ .op = op });
 }
-fn recordData(fs: *Model, effect: Effect, inode: u32, meta: state.Meta) !void {
+fn recordData(fs: *Model, effects: []const Effect, inode: u32, meta: state.Meta) !void {
     const before = fs.root.pending.items.len;
     const serial = fs.root.serial;
     errdefer {
@@ -307,7 +340,7 @@ fn recordData(fs: *Model, effect: Effect, inode: u32, meta: state.Meta) !void {
         }
         fs.root.serial = serial;
     }
-    try fs.record(effect);
+    for (effects) |effect| try fs.record(effect);
     if (!std.meta.eql(meta, fs.root.nodes.items[inode].meta)) try fs.record(.{ .metadata = .{ .inode = inode, .meta = meta } });
 }
 fn change(fs: *Model, entries: *std.ArrayList(Entry), c: Change) !void {
@@ -476,27 +509,58 @@ fn used(fs: *const Model) u64 {
     }
     return size;
 }
+/// A write the code under test makes through the simulation's `Io`: the
+/// write faults `Options.faults` asks for are drawn here.
 pub fn put(fs: *Model, inode: u32, requested_offset: u64, bytes: []const u8) Error!usize {
+    return fs.store(inode, requested_offset, bytes, true);
+}
+/// A write; `drawn` draws the faults the options ask for, which setup does not.
+fn store(fs: *Model, inode: u32, requested_offset: u64, bytes: []const u8, drawn: bool) Error!usize {
     if (bytes.len == 0) return 0;
     const n = fs.root.nodes.items[inode];
     if (n.kind == .directory) return error.IsDir;
-    const offset = n.misdirect orelse requested_offset;
+    const requested_end = std.math.add(u64, requested_offset, bytes.len) catch return error.NoSpaceLeft;
+    const offset = n.misdirect orelse if (drawn) fs.misdirected(n.live.size, requested_offset, bytes.len) else requested_offset;
     const end = std.math.add(u64, offset, bytes.len) catch return error.NoSpaceLeft;
-    const size = @max(n.live.size, end);
+    // The size is what the write asked for, wherever its bytes landed.
+    const size = @max(n.live.size, @max(requested_end, end));
     if (fs.options.capacity) |cap| if (size - n.live.size > cap -| fs.used()) return error.NoSpaceLeft;
     const next = try n.live.edit(fs.gpa, size, offset, bytes);
     errdefer next.release(fs.gpa);
     try fs.unique();
+    try fs.root.unreadable.ensureUnusedCapacity(fs.gpa, 1);
     var meta = n.meta;
     meta.mtime = fs.rounded(fs.at);
     meta.ctime = meta.mtime;
-    try fs.recordData(.{ .write = .{ .inode = inode, .offset = offset, .len = bytes.len, .image = next } }, inode, meta);
+    const written: Effect = .{ .write = .{ .inode = inode, .offset = offset, .len = bytes.len, .image = next } };
+    // A write that landed short of the end it asked for grows the file
+    // past its bytes, as a length change does.
+    const grown: Effect = .{ .length = .{ .inode = inode, .image = next } };
+    try fs.recordData(if (size > @max(n.live.size, end)) &.{ grown, written } else &.{written}, inode, meta);
     const node = &fs.root.nodes.items[inode];
     node.live.release(fs.gpa);
     node.live = next;
     node.misdirect = null;
     node.meta = meta;
+    fs.readable(inode, offset, end);
     return bytes.len;
+}
+/// Where a write of `len` bytes at `requested` lands: another sector of the
+/// file, at the same offset within it and inside the size the file will
+/// have, by `Faults.misdirect_per_million`; else where it was asked to.
+fn misdirected(fs: *Model, size: u64, requested: u64, len: usize) u64 {
+    const rate = fs.options.faults.misdirect_per_million;
+    if (rate == 0) return requested;
+    const sector = fs.options.sector;
+    const limit = @max(size, requested + len);
+    const within = requested % sector;
+    // The last sector a write of this length can begin in; there are
+    // `last` others than the one asked for.
+    const last = (limit - within - len) / sector;
+    if (last == 0 or !fs.source.chance(rate)) return requested;
+    const asked = requested / sector;
+    const other = fs.source.below(last - 1);
+    return (if (other < asked) other else other + 1) * sector + within;
 }
 pub fn setLength(fs: *Model, inode: u32, size: u64) Error!void {
     const n = fs.root.nodes.items[inode];
@@ -508,20 +572,79 @@ pub fn setLength(fs: *Model, inode: u32, size: u64) Error!void {
     var meta = n.meta;
     meta.mtime = fs.rounded(fs.at);
     meta.ctime = meta.mtime;
-    try fs.recordData(.{ .length = .{ .inode = inode, .image = next } }, inode, meta);
+    try fs.recordData(&.{.{ .length = .{ .inode = inode, .image = next } }}, inode, meta);
     const node = &fs.root.nodes.items[inode];
     node.live.release(fs.gpa);
     node.live = next;
     node.meta = meta;
+    // What the file no longer holds is no longer bad.
+    fs.readable(inode, size, std.math.maxInt(u64));
 }
+/// A read the code under test makes through the simulation's `Io`: the
+/// read faults `Options.faults` asks for are drawn here, over the sectors
+/// at rest it reaches.
 pub fn get(fs: *Model, inode: u32, offset: u64, out: []u8) Error!usize {
     if (out.len == 0) return 0;
     const n = fs.root.nodes.items[inode];
     if (n.kind == .directory) return error.IsDir;
     if (offset >= n.live.size) return 0;
     const end = offset +| @min(@as(u64, out.len), n.live.size -| offset);
-    if (n.bad_len != 0 and offset < n.bad_start +| n.bad_len and end > n.bad_start) return error.InputOutput;
+    try fs.drawReadFaults(inode, offset, end);
+    return fs.fetch(inode, offset, out);
+}
+/// A read, failing where a bad range meets it; nothing is drawn.
+fn fetch(fs: *Model, inode: u32, offset: u64, out: []u8) Error!usize {
+    if (out.len == 0) return 0;
+    const n = fs.root.nodes.items[inode];
+    if (n.kind == .directory) return error.IsDir;
+    if (offset >= n.live.size) return 0;
+    const end = offset +| @min(@as(u64, out.len), n.live.size -| offset);
+    for (fs.root.unreadable.items) |u| if (u.inode == inode and offset < u.start +| u.len and end > u.start) return error.InputOutput;
     return n.live.read(offset, out);
+}
+/// Bit rot and latent sector errors, by `Options.faults`, over the sectors
+/// at rest that `[offset, end)` reaches: at most one of each, with a chance
+/// of the rate times those sectors.
+fn drawReadFaults(fs: *Model, inode: u32, offset: u64, end: u64) Error!void {
+    const faults = fs.options.faults;
+    if (faults.rot_per_million == 0 and faults.latent_error_per_million == 0) return;
+    const sector = fs.options.sector;
+    const first = offset / sector;
+    const last = (end - 1) / sector;
+    var resting: u64 = 0;
+    for (first..last + 1) |s| resting += @intFromBool(fs.atRest(inode, s));
+    if (resting == 0) return;
+    if (fs.source.chance(scaled(faults.rot_per_million, resting))) {
+        const s = fs.restingSector(inode, first, fs.source.below(resting - 1));
+        try fs.flip(inode, s * sector, sector);
+    }
+    if (fs.source.chance(scaled(faults.latent_error_per_million, resting))) {
+        const s = fs.restingSector(inode, first, fs.source.below(resting - 1));
+        try fs.markUnreadable(inode, s * sector, sector);
+    }
+}
+fn scaled(per_million: u32, sectors: u64) u32 {
+    return @intCast(@min(1_000_000, @as(u64, per_million) *| sectors));
+}
+/// Whether sector `s` of `inode` is at rest: no write over it, and no
+/// change of the file's length, waits for writeout.
+fn atRest(fs: *const Model, inode: u32, s: u64) bool {
+    const sector = fs.options.sector;
+    for (fs.root.pending.items) |r| if (!r.written) switch (r.op.effect) {
+        .write => |w| if (w.inode == inode and w.offset < (s + 1) * sector and w.offset + w.len > s * sector) return false,
+        .length => |l| if (l.inode == inode) return false,
+        else => {},
+    };
+    return true;
+}
+/// The sector at rest numbered `index` among those from sector `first` on.
+fn restingSector(fs: *const Model, inode: u32, first: u64, index: u64) u64 {
+    var s = first;
+    var left = index;
+    while (true) : (s += 1) if (fs.atRest(inode, s)) {
+        if (left == 0) return s;
+        left -= 1;
+    };
 }
 pub fn metadata(fs: *Model, inode: u32, meta: state.Meta) !void {
     try fs.unique();
@@ -533,7 +656,7 @@ pub fn write(fs: *Model, path: []const u8, bytes: []const u8) !void {
     try fs.setupParents(path);
     const id = try fs.openOrCreate(0, path, .default_file, false);
     try fs.setLength(id, 0);
-    _ = try fs.put(id, 0, bytes);
+    _ = try fs.store(id, 0, bytes, false);
     try fs.syncSetup();
 }
 pub fn mkdir(fs: *Model, path: []const u8) !void {
@@ -566,11 +689,16 @@ pub fn read(fs: *Model, gpa: Allocator, path: []const u8) ![]u8 {
     const image = fs.root.nodes.items[id].live;
     const bytes = try gpa.alloc(u8, @intCast(image.size));
     errdefer gpa.free(bytes);
-    _ = try fs.get(id, 0, bytes);
+    _ = try fs.fetch(id, 0, bytes);
     return bytes;
 }
 pub fn corrupt(fs: *Model, path: []const u8, offset: u64, len: u32) !void {
-    const id = try fs.resolve(0, path, true);
+    try fs.flip(try fs.resolve(0, path, true), offset, len);
+}
+/// Inverts every bit of `[offset, offset + len)` of a file, in what reads
+/// return and in the durable image: media corruption, which already durable
+/// data and every later read meet.
+fn flip(fs: *Model, id: u32, offset: u64, len: u64) Error!void {
     const image = fs.root.nodes.items[id].live;
     const count: usize = @intCast(@min(len, image.size -| offset));
     const bytes = try fs.gpa.alloc(u8, count);
@@ -591,13 +719,62 @@ pub fn corrupt(fs: *Model, path: []const u8, offset: u64, len: u32) !void {
     n.disk.release(fs.gpa);
     n.live = next;
     n.disk = durable;
-    // Latent media corruption affects already durable and subsequent reads.
 }
 pub fn failReads(fs: *Model, path: []const u8, offset: u64, len: u32) !void {
     const id = try fs.resolve(0, path, true);
+    if (len == 0) {
+        try fs.unique();
+        fs.readable(id, 0, std.math.maxInt(u64));
+    } else try fs.markUnreadable(id, offset, len);
+}
+/// Makes `[start, start + len)` of a file unreadable, joined with the bad
+/// ranges it meets or touches, so a file's ranges stay disjoint and in
+/// order.
+fn markUnreadable(fs: *Model, id: u32, start: u64, len: u64) Error!void {
     try fs.unique();
-    fs.root.nodes.items[id].bad_start = offset;
-    fs.root.nodes.items[id].bad_len = len;
+    try fs.root.unreadable.ensureUnusedCapacity(fs.gpa, 1);
+    const list = &fs.root.unreadable;
+    var low = start;
+    var high = start +| len;
+    var i: usize = 0;
+    while (i < list.items.len) {
+        const u = list.items[i];
+        if (u.inode == id and u.start <= high and u.start +| u.len >= low) {
+            low = @min(low, u.start);
+            high = @max(high, u.start +| u.len);
+            _ = list.orderedRemove(i);
+        } else i += 1;
+    }
+    var at: usize = 0;
+    while (at < list.items.len and (list.items[at].inode < id or (list.items[at].inode == id and list.items[at].start < low))) at += 1;
+    list.insertAssumeCapacity(at, .{ .inode = id, .start = low, .len = high - low });
+}
+/// `[start, end)` of a file reads again: a write covered it, as a drive
+/// remaps a sector it is written, or the file no longer holds it. Leaves
+/// at most one range more, which the caller has room for.
+fn readable(fs: *Model, id: u32, start: u64, end: u64) void {
+    const list = &fs.root.unreadable;
+    var i: usize = 0;
+    while (i < list.items.len) {
+        const u = list.items[i];
+        const u_end = u.start +| u.len;
+        if (u.inode != id or u.start >= end or u_end <= start) {
+            i += 1;
+            continue;
+        }
+        if (u.start < start and u_end > end) {
+            list.items[i].len = start - u.start;
+            list.insertAssumeCapacity(i + 1, .{ .inode = id, .start = end, .len = u_end - end });
+            return;
+        }
+        if (u.start < start) {
+            list.items[i].len = start - u.start;
+            i += 1;
+        } else if (u_end > end) {
+            list.items[i] = .{ .inode = id, .start = end, .len = u_end - end };
+            i += 1;
+        } else _ = list.orderedRemove(i);
+    }
 }
 pub fn misdirectNextWrite(fs: *Model, path: []const u8, to_offset: u64) !void {
     const id = try fs.resolve(0, path, true);
@@ -725,6 +902,12 @@ fn collect(fs: *Model) void {
             }
         }
         fs.root.pending.items.len = kept;
+        var bad: usize = 0;
+        for (fs.root.unreadable.items) |u| if (u.inode != id) {
+            fs.root.unreadable.items[bad] = u;
+            bad += 1;
+        };
+        fs.root.unreadable.items.len = bad;
         const meta = n.meta;
         n.release(fs.gpa);
         const empty = fs.root.nodes.items[0].live;
@@ -866,7 +1049,7 @@ pub const Snapshot = struct {
         @memset(order, std.math.maxInt(u32));
         var w: Walk = .{ .snap = snap, .images = images, .sorted = sorted, .first = first, .order = order };
         order[0] = 0;
-        try w.node(tree.nodes.items[0]);
+        try w.node(0);
         try w.directory(0);
         return w.h.final();
     }
@@ -907,19 +1090,24 @@ pub const Snapshot = struct {
                 w.h.update(std.mem.asBytes(&w.order[e.inode]));
                 if (!new) continue;
                 const n = w.snap.root.nodes.items[e.inode];
-                try w.node(n);
+                try w.node(e.inode);
                 if (n.kind == .directory) try w.directory(e.inode);
             }
             // Where this directory's entries end.
             w.h.update(&.{0xff});
         }
 
-        fn node(w: *Walk, n: Node) error{OutOfMemory}!void {
+        fn node(w: *Walk, id: u32) error{OutOfMemory}!void {
+            const n = w.snap.root.nodes.items[id];
             w.h.update(std.mem.asBytes(&n.kind));
             std.hash.autoHash(&w.h.a, n.meta);
             std.hash.autoHash(&w.h.b, n.meta);
-            w.h.update(std.mem.asBytes(&n.bad_start));
-            w.h.update(std.mem.asBytes(&n.bad_len));
+            // Its bad ranges, in offset order, then where they end.
+            for (w.snap.root.unreadable.items) |u| if (u.inode == id) {
+                w.h.update(std.mem.asBytes(&u.start));
+                w.h.update(std.mem.asBytes(&u.len));
+            };
+            w.h.update(&.{0xff});
             const target = if (n.target) |t| t.bytes else "";
             w.h.update(std.mem.asBytes(&target.len));
             w.h.update(target);

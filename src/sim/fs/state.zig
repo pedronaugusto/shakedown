@@ -44,8 +44,6 @@ pub const Node = struct {
     meta: Meta,
     disk_meta: Meta,
     target: ?*Name = null,
-    bad_start: u64 = 0,
-    bad_len: u32 = 0,
     misdirect: ?u64 = null,
     pub fn retain(n: Node) Node {
         _ = n.live.retain();
@@ -72,6 +70,9 @@ pub const Entry = struct {
         return e;
     }
 };
+/// Bytes of a file a read cannot return: a latent sector error, until
+/// written again. A file's ranges are disjoint and kept in offset order.
+pub const Unreadable = struct { inode: u32, start: u64, len: u64 };
 pub const Change = struct { parent: u32, name: *Name, inode: ?u32 };
 pub const Effect = union(enum) {
     write: struct { inode: u32, offset: u64, len: u64, image: *Image },
@@ -107,6 +108,9 @@ pub const State = struct {
     entries: std.ArrayList(Entry) = .empty,
     disk_entries: std.ArrayList(Entry) = .empty,
     pending: std.ArrayList(Record) = .empty,
+    /// The bad ranges of every file, as storage holds them: they survive a
+    /// crash.
+    unreadable: std.ArrayList(Unreadable) = .empty,
     serial: u64 = 0,
     barrier: u64 = 0,
     /// The next entry's cookie.
@@ -122,6 +126,7 @@ pub const State = struct {
         s.entries.deinit(gpa);
         s.disk_entries.deinit(gpa);
         s.pending.deinit(gpa);
+        s.unreadable.deinit(gpa);
         gpa.destroy(s);
     }
     pub fn clone(s: *State, gpa: Allocator) !*State {
@@ -139,6 +144,7 @@ pub const State = struct {
             _ = r.op.retain();
             next.pending.appendAssumeCapacity(r);
         }
+        try next.unreadable.appendSlice(gpa, s.unreadable.items);
         return next;
     }
 };

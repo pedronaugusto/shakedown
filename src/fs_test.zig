@@ -1039,3 +1039,179 @@ test "Fs ownership by default: one volume, an ordinary user's owner and group" {
     try t.expect(sim.run(Work.run, .{ sim.io(), &stat }) == .finished);
     try t.expectEqual(Sim.Fs.Ownership{ .device = 1, .uid = 1000, .gid = 1000 }, sim.fs().ownership(stat.inode).?);
 }
+
+// Storage faults drawn from the source. Each program is correct on honest
+// storage; `check` finds the fault that breaks it from a seed, shrinks the
+// case to that one fault, and the shrunk tape replays the same failure.
+
+/// Runs `property` under `check` from seed 2026, after `regressions`: the
+/// shrunk failure, which the caller frees, or null when every case passed.
+fn storageFailure(comptime property: anytype, regressions: []const []const u8, cases: u32) !?shakedown.CheckReport {
+    var report: shakedown.CheckReport = undefined;
+    shakedown.check(t.allocator, {}, property, .{ .seed = 2026, .cases = cases, .regressions = regressions, .diagnostics = &report, .fuzz = false }) catch |err| switch (err) {
+        error.PropertyFailed => return report,
+        else => return err,
+    };
+    return null;
+}
+
+/// Finds `property`'s failure, expects it to be `expected` on a tape of at
+/// most `most` choices other than 0, replays the tape to the same failure,
+/// and expects `clean`, the same program on honest storage, to pass.
+fn foundShrunkReplayed(comptime property: anytype, comptime clean: anytype, expected: anyerror, most: usize) !void {
+    var found = (try storageFailure(property, &.{}, 200)) orelse return error.FaultNotFound;
+    defer found.deinit();
+    try t.expectEqual(expected, found.err);
+    try t.expect(found.tape.len - std.mem.count(u64, found.tape, &.{0}) <= most);
+    var text: Io.Writer.Allocating = .init(t.allocator);
+    defer text.deinit();
+    try text.writer.print("{f}", .{shakedown.Tape{ .choices = found.tape }});
+    var replayed = (try storageFailure(property, &.{text.written()}, 0)) orelse return error.ReplayPassed;
+    defer replayed.deinit();
+    try t.expectEqual(expected, replayed.err);
+    try t.expectEqualSlices(u64, found.tape, replayed.tape);
+    try t.expectEqual(@as(?shakedown.CheckReport, null), try storageFailure(clean, &.{}, 200));
+}
+
+/// A program that writes a record, syncs it and reads it back, trusting
+/// what it reads, under `faults`.
+fn ReadBack(comptime faults: Sim.Fs.Faults) type {
+    return struct {
+        const record = "committed record";
+
+        fn work(io: Io) !void {
+            const file = try Io.Dir.cwd().createFile(io, "record", .{ .read = true });
+            defer file.close(io);
+            try file.writePositionalAll(io, record, 0);
+            try file.sync(io);
+            var back: [record.len]u8 = undefined;
+            const n = try file.readPositional(io, &.{&back}, 0);
+            if (n != record.len or !std.mem.eql(u8, &back, record)) return error.RecordChanged;
+        }
+
+        fn property(_: void, c: *shakedown.Case) !void {
+            const sim = try c.sim(.{ .fs = .{ .faults = faults } });
+            switch (sim.run(work, .{sim.io()})) {
+                .finished => {},
+                .failed => |err| return err,
+                else => return error.Unexpected,
+            }
+        }
+    };
+}
+
+test "Fs bit rot drawn from a seed is found, shrunk to one rotten sector and replayed" {
+    try foundShrunkReplayed(ReadBack(.{ .rot_per_million = 100_000 }).property, ReadBack(.{}).property, error.RecordChanged, 1);
+}
+
+test "Fs a latent sector error drawn from a seed is found, shrunk and replayed" {
+    try foundShrunkReplayed(ReadBack(.{ .latent_error_per_million = 100_000 }).property, ReadBack(.{}).property, error.InputOutput, 1);
+}
+
+/// A program that writes two records into two sectors of one file and
+/// reads both back, under `faults`.
+fn TwoRecords(comptime faults: Sim.Fs.Faults) type {
+    return struct {
+        fn work(io: Io) !void {
+            const file = try Io.Dir.cwd().createFile(io, "records", .{ .read = true });
+            defer file.close(io);
+            try file.writePositionalAll(io, "first record", 0);
+            try file.writePositionalAll(io, "second record", 512);
+            var first: [12]u8 = undefined;
+            var second: [13]u8 = undefined;
+            _ = try file.readPositional(io, &.{&first}, 0);
+            _ = try file.readPositional(io, &.{&second}, 512);
+            if (!std.mem.eql(u8, &first, "first record") or !std.mem.eql(u8, &second, "second record")) return error.RecordChanged;
+        }
+
+        fn property(_: void, c: *shakedown.Case) !void {
+            const sim = try c.sim(.{ .fs = .{ .faults = faults } });
+            switch (sim.run(work, .{sim.io()})) {
+                .finished => {},
+                .failed => |err| return err,
+                else => return error.Unexpected,
+            }
+        }
+    };
+}
+
+test "Fs a misdirected write drawn from a seed is found, shrunk and replayed" {
+    try foundShrunkReplayed(TwoRecords(.{ .misdirect_per_million = 100_000 }).property, TwoRecords(.{}).property, error.RecordChanged, 1);
+}
+
+test "Fs a misdirected append lands in another sector of the file, which keeps the size it asked for" {
+    const sim = try Sim.init(t.allocator, .{ .fs = .{ .faults = .{ .misdirect_per_million = 1_000_000 } }, .watchdog = null });
+    defer sim.deinit();
+    const fs = sim.fs();
+    try fs.write("file", "first record");
+    const id = try fs.model.resolve(0, "file", true);
+    // The only other sector the write fits in, inside 525 bytes, is the first.
+    _ = try fs.model.put(id, 512, "second record");
+    var expected: [525]u8 = @splat(0);
+    @memcpy(expected[0..13], "second record");
+    try bytesEqual(fs, "file", &expected);
+    // A crash may keep the bytes, the growth, both or neither.
+    var states = try fs.crashStates(16);
+    defer states.deinit();
+    var sizes: u8 = 0;
+    while (try states.next()) |snap| {
+        defer snap.deinit();
+        const size = snap.root.nodes.items[id].live.size;
+        if (size == 12) sizes |= 1;
+        if (size == 13) sizes |= 2;
+        if (size == 525) sizes |= 4;
+    }
+    try t.expectEqual(@as(u8, 7), sizes);
+    // A write that fits nowhere else lands where it was asked to.
+    try fs.write("small", "x");
+    _ = try fs.model.put(try fs.model.resolve(0, "small", true), 0, "y");
+    try bytesEqual(fs, "small", "y");
+}
+
+test "Fs bad ranges join, read again once written, survive a crash and are dropped with their file" {
+    const sim = try Sim.init(t.allocator, .{ .fs = .{ .sector = 4 }, .watchdog = null });
+    defer sim.deinit();
+    const fs = sim.fs();
+    try fs.write("file", "0123456789abcdef");
+    const id = try fs.model.resolve(0, "file", true);
+    try fs.failReads("file", 2, 2);
+    try fs.failReads("file", 4, 2);
+    try fs.failReads("file", 10, 2);
+    try t.expectEqual(@as(usize, 2), fs.model.root.unreadable.items.len);
+    var one: [1]u8 = undefined;
+    try t.expectError(error.InputOutput, fs.model.get(id, 5, &one));
+    // A write over the middle of a range splits it.
+    _ = try fs.model.put(id, 3, "x");
+    try t.expectEqual(1, try fs.model.get(id, 3, &one));
+    try t.expectError(error.InputOutput, fs.model.get(id, 2, &one));
+    try t.expectError(error.InputOutput, fs.model.get(id, 4, &one));
+    try fs.crash(.lose_all);
+    try t.expectError(error.InputOutput, fs.model.get(id, 10, &one));
+    // Truncation drops what the file no longer holds.
+    try fs.model.setLength(id, 4);
+    try fs.model.setLength(id, 16);
+    try t.expectEqual(1, try fs.model.get(id, 10, &one));
+    try t.expectError(error.InputOutput, fs.model.get(id, 2, &one));
+    try fs.failReads("file", 0, 0);
+    try t.expectEqual(1, try fs.model.get(id, 2, &one));
+    try fs.failReads("file", 0, 1);
+    try fs.model.remove(0, "file", false);
+    try fs.flushDir(Io.Dir.cwd().handle, .full);
+    try t.expectEqual(@as(usize, 0), fs.model.root.unreadable.items.len);
+}
+
+test "Fs read faults fall only on sectors at rest, and setup draws none" {
+    const sim = try Sim.init(t.allocator, .{ .fs = .{ .sector = 4, .faults = .{ .latent_error_per_million = 1_000_000 } }, .watchdog = null });
+    defer sim.deinit();
+    const fs = sim.fs();
+    try fs.write("file", "0123456789");
+    try bytesEqual(fs, "file", "0123456789");
+    const id = try fs.model.resolve(0, "file", true);
+    // A sector a write waits over is read from the cache.
+    _ = try fs.model.put(id, 0, "abcd");
+    var four: [4]u8 = undefined;
+    try t.expectEqual(4, try fs.model.get(id, 0, &four));
+    try t.expectError(error.InputOutput, fs.model.get(id, 4, &four));
+    try fs.model.flushInode(id, .writeout);
+    try t.expectError(error.InputOutput, fs.model.get(id, 0, &four));
+}
