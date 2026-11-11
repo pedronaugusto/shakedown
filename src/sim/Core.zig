@@ -135,7 +135,9 @@ stuck: aegis.Atomic(Watchdog.Stuck) = .init(.running),
 const max_depth = 16;
 const bucket_count = 256;
 
-pub const Mode = enum { run, until, step };
+/// How far a drive goes: to the end of the run, to an instant, one step,
+/// or one step never past an instant (`Sim.settle`'s).
+pub const Mode = enum { run, until, step, settle };
 
 pub const Kept = enum(u2) { awake, boot, real };
 
@@ -703,6 +705,11 @@ fn readyCount(c: *const Core) usize {
     return c.ready.items.len - c.ready_head;
 }
 
+/// Whether a task is ready to run.
+pub fn anyReady(c: *const Core) bool {
+    return c.readyCount() > 0;
+}
+
 /// The next task to run, drawn among the ready ones per the schedule.
 fn pickReady(c: *Core) ?*Task {
     const n = c.readyCount();
@@ -802,7 +809,7 @@ pub fn dispatch(c: *Core, from: *executor.Context) void {
 fn next(c: *Core) ?*Task {
     while (true) {
         if (c.outcome != null) return null;
-        if (c.mode == .step and c.step_taken) return null;
+        if ((c.mode == .step or c.mode == .settle) and c.step_taken) return null;
         c.notifyNetwork();
         if (c.pickReady()) |t| {
             c.step_taken = true;
@@ -822,7 +829,7 @@ fn next(c: *Core) ?*Task {
         };
         if (remaining) |by| {
             const at = c.clocks[@backingInt(Kept.awake)] +| by;
-            if (c.mode == .until and at > c.until) {
+            if ((c.mode == .until or c.mode == .settle) and at > c.until) {
                 c.moveTo(c.until);
                 return null;
             }
@@ -831,13 +838,13 @@ fn next(c: *Core) ?*Task {
                 return null;
             }
             c.advance(by);
-            if (c.mode == .step) {
+            if (c.mode == .step or c.mode == .settle) {
                 c.step_taken = true;
                 return null;
             }
             continue;
         }
-        if (c.mode == .until) {
+        if (c.mode == .until or c.mode == .settle) {
             c.moveTo(c.until);
             return null;
         }
@@ -1005,8 +1012,22 @@ pub fn drive(c: *Core, mode: Mode, until: i64) executor.CreateError!?Outcome {
     return c.outcome;
 }
 
-/// The reports of every task still waiting, each with its stack, which the
-/// task captures itself when the driver switches to it.
+/// The reports of every task still alive, from the driver while the run is
+/// paused, as a deadlock's are gathered: a waiting task with its stack, a
+/// ready one without. Valid until the next report is gathered.
+pub fn reportAlive(c: *Core) []const TaskReport {
+    c.driver = executor.initDriver(c.kind);
+    c.runner.store(c.driver.thread.os, .monotonic);
+    const previous = running_core;
+    running_core = c;
+    defer running_core = previous;
+    return c.gatherReports();
+}
+
+/// The reports of every task still alive, a waiting one with its stack,
+/// which the task captures itself when the driver switches to it. A ready
+/// task, which a deadlock never has, is reported without one: switching to
+/// it would run it.
 fn gatherReports(c: *Core) []const TaskReport {
     c.reports.clearRetainingCapacity();
     c.reports.ensureTotalCapacity(c.gpa, c.live) catch return &.{};
@@ -1020,7 +1041,8 @@ fn gatherReports(c: *Core) []const TaskReport {
                 c.reports.appendAssumeCapacity(t.report);
             },
             .deferred => c.reports.appendAssumeCapacity(.{ .id = t.id, .node = t.node, .spawned_at = t.spawned_at, .waiting = .unstarted }),
-            .idle, .ready, .running, .done, .abandoned => {},
+            .ready => c.reports.appendAssumeCapacity(.{ .id = t.id, .node = t.node, .spawned_at = t.spawned_at, .waiting = .none }),
+            .idle, .running, .done, .abandoned => {},
         }
     }
     return c.reports.items;

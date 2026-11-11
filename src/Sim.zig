@@ -258,6 +258,116 @@ pub fn at(s: *Sim, t: Io.Timestamp, hook: *Hook) error{ OutOfMemory, SystemResou
     } else s.core.arm(task, .awake, when);
 }
 
+/// What `settle` waits for once the faults are over.
+pub const Settle = struct {
+    /// How far `.awake` may move before `until` must hold.
+    within: Io.Duration,
+    /// What must hold by then.
+    until: Until = .finished,
+
+    pub const Until = union(enum) {
+        /// Every task ends: the run finishes.
+        finished,
+        /// The test's own predicate turns true.
+        holds: *Progress,
+    };
+};
+
+/// A predicate over the test's own state, for `settle`: a field of that
+/// state, which `holds` recovers by `@fieldParentPtr("progress", progress)`,
+/// as a `Hook`'s state is. It is called from the driver between steps, while
+/// no task runs; it reads the state and makes no `Io` call.
+pub const Progress = struct {
+    holds: *const fn (progress: *Progress) bool,
+};
+
+/// How a `settle` ended.
+pub const Settled = union(enum) {
+    /// It held, this long after the faults ended.
+    live: Io.Duration,
+    /// `within` passed and it did not hold. Every task still alive: what
+    /// it waits on (`none` for a task ready to run), where it was started,
+    /// and, for a waiting one, its stack. Valid until the run goes on. The
+    /// run itself has not ended, and may be driven further.
+    stalled: []const TaskReport,
+    /// The run ended first, without it holding: a deadlock with its
+    /// reports, the root's error, a limit, a stuck task, a double close, or
+    /// every task ended while the predicate stayed false.
+    ended: Outcome,
+
+    /// What held, or what was still blocked and where, for a failing test
+    /// to print or to keep as a note.
+    pub fn format(r: Settled, w: *Io.Writer) Io.Writer.Error!void {
+        switch (r) {
+            .live => |d| try w.print("live {d} ns after the faults ended\n", .{d.nanoseconds}),
+            .stalled => |reports| {
+                try w.print("not live: the bound passed with {d} tasks alive\n", .{reports.len});
+                try printReports(w, reports);
+            },
+            .ended => |outcome| switch (outcome) {
+                .finished => try w.writeAll("not live: every task ended and the predicate did not hold\n"),
+                .failed => |err| try w.print("not live: the run failed with error.{t}\n", .{err}),
+                .deadlock => |reports| {
+                    try w.print("not live: the run deadlocked with {d} tasks waiting\n", .{reports.len});
+                    try printReports(w, reports);
+                },
+                .step_limit => try w.writeAll("not live: the run reached its step limit\n"),
+                .time_limit => try w.writeAll("not live: the run reached its time limit\n"),
+                .stuck => |report| {
+                    try w.writeAll("not live: a task ran without an Io call\n");
+                    try printReports(w, &.{report});
+                },
+                .double_close => |report| {
+                    try w.writeAll("not live: a task closed a handle twice\n");
+                    try printReports(w, &.{report});
+                },
+            },
+        }
+    }
+
+    fn printReports(w: *Io.Writer, reports: []const TaskReport) Io.Writer.Error!void {
+        for (reports) |report| try w.print("  node {d}: {f}", .{ report.node.raw(), report });
+    }
+};
+
+/// The faults are over: every partition and hold of the network is healed
+/// and the fault plan (`Options.faults`) is emptied. Then the run goes on,
+/// a step at a time, until `options.until` holds, the run ends, or `.awake`
+/// has moved `options.within`, which it never passes. A property that does
+/// not hold by then is reported with every task still alive, where it waits:
+/// liveness after faults heal, as a test asks for it after a run of faults.
+/// What a fault left in effect stays (a stalled call, a node killed or
+/// crashed, a damaged disk), and links keep their latency and loss: set
+/// them first where they stand for a fault. The schedule's own choices
+/// (spurious wakes, which task runs) are not faults and go on.
+pub fn settle(s: *Sim, options: Settle) error{OutOfMemory}!Settled {
+    const network = &s.core.network;
+    var a: u32 = 0;
+    while (a < network.node_count) : (a += 1) {
+        var b = a;
+        while (b < network.node_count) : (b += 1) network.status(.fromRaw(a), .fromRaw(b), false, false);
+    }
+    s.core.wakeIo();
+    if (s.fio) |f| f.setPlan(&.{}) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.FaultNotInErrorSet, error.FaultNotApplicable => unreachable, // unreachable: an empty plan asks for no fault a call could refuse
+    };
+    const began = s.core.clocks[@backingInt(Core.Kept.awake)];
+    const bound = began +| nanoseconds.span(options.within).raw();
+    while (true) {
+        const awake = s.core.clocks[@backingInt(Core.Kept.awake)];
+        const held = switch (options.until) {
+            .finished => if (s.core.outcome) |o| o == .finished else false,
+            .holds => |progress| progress.holds(progress),
+        };
+        if (held) return .{ .live = .fromNanoseconds(awake - began) };
+        if (s.core.outcome) |o| return .{ .ended = o };
+        // What is due at the bound itself runs before the verdict.
+        if (awake >= bound and !s.core.anyReady()) return .{ .stalled = s.core.reportAlive() };
+        _ = s.drive(.settle, bound);
+    }
+}
+
 /// What `which` reads now.
 pub fn now(s: *const Sim, which: Io.Clock) Io.Timestamp {
     return s.core.now(which);

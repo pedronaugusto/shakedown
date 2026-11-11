@@ -305,6 +305,32 @@ properties may mark points only some of them ask for. The opposite, a point
 that must never be reached, needs nothing new: the body returns an error, or a
 simulated task does and the run ends `failed`.
 
+## Liveness after faults heal
+
+`Sim.settle` is the pattern TigerBeetle's liveness mode makes of a run:
+faults for a while, then none, then progress within a bound. It ends the
+faults it owns: every partition and hold of the network, and the fault plan,
+which it empties. What a fault left behind stays (a stalled call, a node
+killed or crashed, a damaged disk), as it would on a real system, and the
+links keep their latency and loss, which are the network the test chose. The
+run then goes on in a drive mode of its own, `settle`: one step at a time,
+as `step` takes them, but never moving time past the bound, as `runUntil`
+does not. Between steps the driver asks whether the property holds: every
+task ended, or the test's `Progress`, a predicate recovered from the test's
+state by `@fieldParentPtr` as a `Hook` is. What is due at the bound itself
+runs before the verdict, so a bound of ten seconds admits a timer of ten.
+
+A property that does not hold by the bound is `stalled`, with a report of
+every task still alive, gathered as a deadlock's is: the driver switches to
+each waiting task, which captures its own stack. A ready task is reported
+without one, since switching to it would run it. The run is paused, not
+ended: a test may drive it further, or settle again with a longer bound. A
+run that ends first is `ended` with its outcome, a deadlock's reports
+included. The result is data, as `Outcome` is, and formats as a report a
+`check` body keeps as a note before returning its error, so a failing case
+shrinks and replays like any other: the faults it drew before the settle are
+on its tape.
+
 ## Simulated processes
 
 The process model (`sim/programs/Model.zig`) sits below the core and knows no

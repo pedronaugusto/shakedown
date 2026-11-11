@@ -4,6 +4,7 @@ const Io = std.Io;
 const t = std.testing;
 const Source = @import("Source.zig");
 const Model = @import("sim/net/Model.zig");
+const shakedown = @import("shakedown.zig");
 
 test "Net local pair preserves bytes and half close" {
     const sim = try Sim.init(t.allocator, .{ .watchdog = null });
@@ -732,4 +733,190 @@ test "Net file transfer honors headers limits partial writes EOF and cancellatio
         }
     };
     try finished(sim.run(Work.run, .{sim.io()}));
+}
+
+/// A client that connects through a partition, retrying every second, and
+/// a server that answers one byte. With `give_up_after`, the client has a
+/// bug: after that many tries it waits for a reply to a request it never
+/// sent, for ever.
+const Retry = struct {
+    done: bool = false,
+    tries: u32 = 0,
+    give_up_after: ?u32 = null,
+    progress: Sim.Progress = .{ .holds = holds },
+
+    fn holds(p: *Sim.Progress) bool {
+        const r: *Retry = @fieldParentPtr("progress", p);
+        return r.done;
+    }
+
+    fn client(r: *Retry, io: Io, addr: Io.net.IpAddress) !void {
+        while (true) {
+            r.tries += 1;
+            if (addr.connect(io, .{ .mode = .stream, .timeout = timeout(std.time.ns_per_s) })) |stream| {
+                defer stream.close(io);
+                _ = try write(io, stream, "x");
+                var byte: [1]u8 = undefined;
+                _ = try read(io, stream, &byte);
+                r.done = true;
+                return;
+            } else |err| switch (err) {
+                error.Timeout, error.ConnectionRefused => {},
+                else => |e| return e,
+            }
+            if (r.give_up_after) |n| if (r.tries >= n) {
+                var reply: Io.Event = .unset;
+                try reply.wait(io);
+            };
+            try io.sleep(.fromSeconds(1), .awake);
+        }
+    }
+
+    fn serve(io: Io, server: *Io.net.Server) !void {
+        const peer = try server.accept(io);
+        defer peer.close(io);
+        var byte: [1]u8 = undefined;
+        _ = try read(io, peer, &byte);
+        _ = try write(io, peer, &byte);
+    }
+
+    fn main(r: *Retry, left: Io, right: Io, addr: Io.net.IpAddress) !void {
+        var server = try addr.listen(right, .{});
+        defer server.deinit(right);
+        var answering = try right.concurrent(serve, .{ right, &server });
+        try r.client(left, addr);
+        try answering.await(right);
+    }
+
+    /// Two nodes, partitioned for `partitioned`, then the faults end.
+    fn run(r: *Retry, sim: *Sim, partitioned: Io.Duration, within: Io.Duration, until: Sim.Settle.Until) !Sim.Settled {
+        const address = try Io.net.IpAddress.parseIp4("10.9.0.2", 8000);
+        const a = try sim.node("a", .{});
+        const b = try sim.node("b", .{ .addresses = &.{address} });
+        sim.net().partition(&.{a}, &.{b});
+        try sim.start(main, .{ r, a.io(), b.io(), address });
+        try t.expectEqual(null, sim.runFor(partitioned));
+        return sim.settle(.{ .within = within, .until = until });
+    }
+};
+
+test "settle heals a partition, and a client that retries finishes within the bound" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null, .seed = 1 });
+    defer sim.deinit();
+    var r: Retry = .{};
+    const settled = try r.run(sim, .fromSeconds(10), .fromSeconds(30), .finished);
+    try t.expect(!r.done or r.tries > 1);
+    try t.expect(settled == .live);
+    // A connect timeout and a backoff at most after the heal.
+    try t.expect(settled.live.nanoseconds <= 2 * std.time.ns_per_s);
+    try t.expect(r.done);
+    try t.expect(r.tries > 5);
+}
+
+test "settle reports a client that gave up as stalled, where it waits, at exactly the bound" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null, .seed = 1 });
+    defer sim.deinit();
+    var r: Retry = .{ .give_up_after = 3 };
+    const before = sim.now(.awake).nanoseconds;
+    const settled = try r.run(sim, .fromSeconds(10), .fromSeconds(30), .{ .holds = &r.progress });
+    try t.expect(settled == .stalled);
+    try t.expectEqual(@as(i96, 40 * std.time.ns_per_s), sim.now(.awake).nanoseconds - before);
+    // The client waits on its reply, the server's task on the network.
+    try t.expectEqual(@as(usize, 2), settled.stalled.len);
+    for (settled.stalled) |report| {
+        try t.expect(report.waiting == .futex);
+        try t.expect(report.len > 0);
+    }
+    var text: std.Io.Writer.Allocating = .init(t.allocator);
+    defer text.deinit();
+    try text.writer.print("{f}", .{settled});
+    try t.expect(std.mem.find(u8, text.written(), "not live: the bound passed with 2 tasks alive") != null);
+    try t.expect(std.mem.find(u8, text.written(), "waiting on the futex") != null);
+}
+
+test "settle empties the fault plan, so a connect refused by plan goes through" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null, .seed = 2, .faults = &.{.{
+        .at = .{ .chance = .{ .call = .netConnectIp, .per_million = 1_000_000 } },
+        .fault = .{ .fail = error.ConnectionRefused },
+        .times = 0,
+    }} });
+    defer sim.deinit();
+    var r: Retry = .{};
+    const settled = try r.run(sim, .fromSeconds(5), .fromSeconds(30), .finished);
+    try t.expect(settled == .live);
+    try t.expect(r.done);
+}
+
+/// Counts to ten, a second a count.
+const Ticks = struct {
+    count: u32 = 0,
+    goal: u32 = 10,
+    progress: Sim.Progress = .{ .holds = holds },
+
+    fn holds(p: *Sim.Progress) bool {
+        const self: *Ticks = @fieldParentPtr("progress", p);
+        return self.count >= self.goal;
+    }
+
+    fn run(self: *Ticks, io: Io) !void {
+        for (0..10) |_| {
+            try io.sleep(.fromSeconds(1), .awake);
+            self.count += 1;
+        }
+    }
+};
+
+test "settle stops at its bound with the run alive, and goes on from there when asked again" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    var ticks: Ticks = .{};
+    try sim.start(Ticks.run, .{ &ticks, sim.io() });
+    const short = try sim.settle(.{ .within = .fromSeconds(5), .until = .{ .holds = &ticks.progress } });
+    try t.expect(short == .stalled);
+    try t.expectEqual(@as(usize, 1), short.stalled.len);
+    try t.expect(short.stalled[0].waiting == .sleep);
+    try t.expectEqual(@as(u32, 5), ticks.count);
+    const long = try sim.settle(.{ .within = .fromSeconds(20), .until = .{ .holds = &ticks.progress } });
+    try t.expectEqual(@as(i96, 5 * std.time.ns_per_s), long.live.nanoseconds);
+    const ended = try sim.settle(.{ .within = .fromSeconds(1), .until = .finished });
+    try t.expectEqual(@as(i96, 0), ended.live.nanoseconds);
+}
+
+test "settle reports a run that ended without its predicate holding" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    var ticks: Ticks = .{ .goal = 11 };
+    try sim.start(Ticks.run, .{ &ticks, sim.io() });
+    const settled = try sim.settle(.{ .within = .fromSeconds(60), .until = .{ .holds = &ticks.progress } });
+    try t.expect(settled == .ended);
+    try t.expect(settled.ended == .finished);
+}
+
+/// The client that gives up after four tries, partitioned for a drawn
+/// number of seconds: past about seven it gives up before the heal.
+fn settlesAfterPartition(_: void, c: *shakedown.Case) !void {
+    const seconds = c.source.below(9);
+    const sim = try c.sim(.{});
+    var r: Retry = .{ .give_up_after = 4 };
+    const settled = try r.run(sim, .fromSeconds(@intCast(seconds)), .fromSeconds(30), .{ .holds = &r.progress });
+    if (settled != .live) {
+        c.note("partitioned {d} s: {f}", .{ seconds, settled });
+        return error.NotLive;
+    }
+}
+
+test "a case that is not live after faults heal is found, shrinks, and replays to the same failure" {
+    var report: shakedown.CheckReport = undefined;
+    try t.expectError(error.PropertyFailed, shakedown.check(t.allocator, {}, settlesAfterPartition, .{ .cases = 100, .seed = 5, .diagnostics = &report, .fuzz = false }));
+    defer report.deinit();
+    try t.expectEqual(error.NotLive, report.err);
+    try t.expect(std.mem.find(u8, report.text, "not live") != null);
+    var text: std.Io.Writer.Allocating = .init(t.allocator);
+    defer text.deinit();
+    try text.writer.print("{f}", .{shakedown.Tape{ .choices = report.tape }});
+    var replayed: shakedown.CheckReport = undefined;
+    try t.expectError(error.PropertyFailed, shakedown.check(t.allocator, {}, settlesAfterPartition, .{ .regressions = &.{text.written()}, .cases = 0, .diagnostics = &replayed, .fuzz = false }));
+    defer replayed.deinit();
+    try t.expectEqual(error.NotLive, replayed.err);
+    try t.expectEqualSlices(u64, report.tape, replayed.tape);
 }
