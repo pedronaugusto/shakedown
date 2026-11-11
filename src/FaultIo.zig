@@ -768,12 +768,17 @@ noinline fn slow(f: *FaultIo, comptime name: []const u8, args: anytype) Return(n
     return result;
 }
 
-/// Fails slot `name` with `err` in place of the call, first giving the caller
-/// what the slot's own error path would have: a call that was not made still
-/// keeps its contract.
+/// Fails slot `name` with `err` in place of the call, giving the caller what
+/// the slot's own error path would have: a call that was not made still
+/// keeps its contract. The fault is recorded first: what the owed part sets
+/// off (a group's members canceled, their calls returning `Canceled`)
+/// follows the fault, and its records come after the fault's, where the
+/// determinism check excuses a call that was waiting when it fired.
 fn unmade(f: *FaultIo, comptime name: []const u8, args: anytype, step: u64, event: *IoEvent, err: anyerror) Return(name) {
+    event.outcome = .{ .err = err };
+    f.record(step, event.*);
     f.owed(name, args);
-    return f.failed(name, step, event, err);
+    return answer(name, err);
 }
 
 /// What slot `name` owes its caller on every return, an error included, when
@@ -797,6 +802,11 @@ fn owed(f: *FaultIo, comptime name: []const u8, args: anytype) void {
 fn failed(f: *FaultIo, comptime name: []const u8, step: u64, event: *IoEvent, err: anyerror) Return(name) {
     event.outcome = .{ .err = err };
     f.record(step, event.*);
+    return answer(name, err);
+}
+
+/// `err` as slot `name`'s return type gives it.
+fn answer(comptime name: []const u8, err: anyerror) Return(name) {
     if (comptime io_call.failSet(@field(IoCall, name))) |E| return failAs(Return(name), E, err);
     unreachable; // unreachable: only a call that can fail is failed, as setPlan and decide check
 }

@@ -568,3 +568,50 @@ test "a call that returned before the fault fired, differently from the clean ru
     try testing.expectError(error.Nondeterministic, shakedown.everyFault(testing.allocator, testing.io, &growing, .{ .diagnostics = &report, .short = false, .alloc = false }));
     try testing.expect(report.failure.?.difference != null);
 }
+
+/// A group's member waits long on a sleep while the root makes short ones,
+/// then awaits the group: a cancel in place of the await goes to the member,
+/// whose sleep returns `Canceled` as the fault's own consequence.
+pub const Members = struct {
+    pub fn setUp(_: *Members, _: *FaultIo) !void {}
+
+    fn member(io: Io) void {
+        io.sleep(.fromSeconds(10), .awake) catch |err| switch (err) {
+            error.Canceled => {},
+        };
+    }
+
+    pub fn run(_: *Members, io: Io) !void {
+        var group: Io.Group = .init;
+        defer group.cancel(io);
+        try group.concurrent(io, member, .{io});
+        for (0..2) |_| try io.sleep(.fromMilliseconds(1), .awake);
+        try group.await(io);
+    }
+
+    pub fn check(_: *Members, _: Io, result: anyerror!void, _: ?shakedown.Injected) !void {
+        result catch |err| if (err != error.Canceled) return err;
+    }
+
+    pub fn tearDown(_: *Members) void {}
+};
+
+test "a group's await canceled in place of the call: what its members return for the cancel follows the fault, and is no nondeterminism" {
+    const sim = try shakedown.Sim.init(testing.allocator, .{ .watchdog = null, .schedule = .fifo });
+    defer sim.deinit();
+    const Work = struct {
+        fn run(base: Io) !void {
+            var members: Members = .{};
+            var report: shakedown.EveryFaultReport = .{};
+            defer report.deinit();
+            var done = shakedown.everyFault(testing.allocator, base, &members, .{ .errors = &.{}, .short = false, .alloc = false, .diagnostics = &report }) catch |err| {
+                if (report.failure) |f| std.debug.print("{t} at {any}, first difference {any}\n{s}\n", .{ f.err, f.injected, f.difference, f.trace });
+                return err;
+            };
+            defer done.deinit();
+            // The member's sleep, still waiting when the await's cancel fired, was excused.
+            try testing.expect(done.excused > 0);
+        }
+    };
+    try simFinished(sim.run(Work.run, .{sim.io()}));
+}
