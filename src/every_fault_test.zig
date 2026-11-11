@@ -383,3 +383,44 @@ test "lost answers are tried where asked, and a save through a rename survives t
     // The write and the sync can lose their answer with InputOutput.
     try testing.expectEqual(without.runs + 2, with.runs);
 }
+
+/// Reads a whole file positionally: every faulted run either fails or reads
+/// it all, since a short positional read is followed by another.
+pub const PositionalRead = struct {
+    dir: Io.Dir,
+
+    pub fn setUp(p: *PositionalRead, fio: *FaultIo) !void {
+        _ = fio;
+        try p.dir.writeFile(testing.io, .{ .sub_path = "whole", .data = "read to the end" });
+    }
+
+    pub fn run(p: *PositionalRead, io: Io) !void {
+        const file = try p.dir.openFile(io, "whole", .{});
+        defer file.close(io);
+        var buffer: [32]u8 = undefined;
+        const n = try file.readPositionalAll(io, &buffer, 0);
+        if (!std.mem.eql(u8, buffer[0..n], "read to the end")) return error.ShortFile;
+    }
+
+    pub fn check(p: *PositionalRead, io: Io, result: anyerror!void, injected: ?shakedown.Injected) !void {
+        _ = p;
+        _ = io;
+        if (result) |_| {} else |err| {
+            if (err == error.ShortFile) return err;
+            if (injected == null) return err;
+        }
+    }
+
+    pub fn tearDown(p: *PositionalRead) void {
+        _ = p;
+    }
+};
+
+test "no fault makes a positional read end before the end of the file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var read: PositionalRead = .{ .dir = tmp.dir };
+    var report: shakedown.EveryFaultReport = .{};
+    defer report.deinit();
+    _ = try shakedown.everyFault(testing.allocator, testing.io, &read, .{ .diagnostics = &report });
+}

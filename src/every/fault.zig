@@ -43,7 +43,8 @@ pub const Shard = struct {
 pub const EveryFaultOptions = struct {
     /// Errors tried at every step whose call can return them.
     errors: []const anyerror = &.{ error.InputOutput, error.NoSpaceLeft, error.AccessDenied },
-    /// Reads and writes that moved bytes: `short(0)`, and `short(half)`.
+    /// Reads and writes that moved bytes: `short(0)` (not on a positional
+    /// read, where it is the end of the file), and `short(half)`.
     short: bool = true,
     /// `cancel` at every cancelation point. A run whose cancel could not
     /// land, under blocked cancel protection, is checked as a clean run.
@@ -236,8 +237,11 @@ fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, 
     }
     if (options.short and io_call.shortable(call)) switch (record.event.outcome) {
         .ok => |moved| if (moved > 0) {
-            if (len < buffer.len) {
-                buffer[len] = .{ .short = 0 };
+            // No progress, where moving nothing is not the end of the file.
+            if (len < buffer.len) none: {
+                const fault: IoFault = .{ .short = 0 };
+                fault.check(call) catch break :none;
+                buffer[len] = fault;
                 len += 1;
             }
             if (moved > 1 and len < buffer.len) {

@@ -28,6 +28,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - A simulation's write to standard output returns a cancel the process's Io answers it with, where the cancel was dropped and the write failed with `error.Unexpected` against the simulated disk: a simulation run in a task of a real Io that was canceled lost that cancel. An operation and a batch's await carry it to their caller, and a batch keeps the submissions not yet completed.
+- `short(0)` is refused on `fileReadPositional` (`FaultNotApplicable`), and `everyFault` no longer tries it there: a positional read that moves nothing is the end of the file, so the fault faked a short file the code under test could not tell from a real one, where a streaming read's 0 is no progress. A faulted positional read is an error (`fail`, `fail_after`) or a real short read (`short(n)`, n > 0).
 
 ## [0.6.0] - 2026-10-28
 

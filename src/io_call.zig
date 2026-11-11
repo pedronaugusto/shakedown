@@ -197,7 +197,8 @@ pub const IoFault = union(enum) {
     /// release (a file, a socket, a process, a task, a lock).
     fail_after: anyerror,
     /// Reads and writes: move at most this many bytes, through the real
-    /// call. 0 = no progress, without making the call.
+    /// call. 0 = no progress, without making the call; refused on a
+    /// positional read, where moving nothing is the end of the file.
     short: u32,
     /// A cancel lands here, as std delivers one: at a cancelation point of
     /// a task whose cancel protection is unblocked, the call returns
@@ -243,7 +244,12 @@ pub const IoFault = union(enum) {
                 if (kind == .allocation or keeps(call) or err == error.Canceled) return error.FaultNotApplicable;
                 if (!canFail(call, err)) return error.FaultNotInErrorSet;
             },
-            .short => if (!shortable(call)) return error.FaultNotApplicable,
+            .short => |n| {
+                if (!shortable(call)) return error.FaultNotApplicable;
+                // A positional read that moves nothing reports the end of
+                // the file: no progress there would fake one.
+                if (n == 0 and call == .fileReadPositional) return error.FaultNotApplicable;
+            },
             .cancel, .stall => if (!cancelable(call)) return error.FaultNotApplicable,
             .spurious_wake => if (!waits(call)) return error.FaultNotApplicable,
             .delay => if (kindAt(call) == .foreign) return error.FaultNotApplicable,
@@ -331,6 +337,9 @@ test "a fault is checked against the call it targets" {
     try std.testing.expectError(error.FaultNotApplicable, IoFault.check(.cancel, .futexWaitUncancelable));
     try std.testing.expectError(error.FaultNotApplicable, IoFault.check(.cancel, .fileClose));
     try IoFault.check(.{ .short = 3 }, .fileReadPositional);
+    try std.testing.expectError(error.FaultNotApplicable, IoFault.check(.{ .short = 0 }, .fileReadPositional));
+    try IoFault.check(.{ .short = 0 }, .fileWritePositional);
+    try IoFault.check(.{ .short = 0 }, .file_read_streaming);
     try std.testing.expectError(error.FaultNotApplicable, IoFault.check(.{ .short = 3 }, .fileSync));
     try IoFault.check(.crash, .fileSync);
     try IoFault.check(.{ .delay = .fromSeconds(1) }, .fileSync);

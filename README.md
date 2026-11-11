@@ -183,7 +183,8 @@ matching call with a seeded chance. A fault returns an error from the call's own
 error set in place of the call (`fail`), or makes the call and loses its answer,
 returning the error after it took effect (`fail_after`, as a write that reached
 the disk and then reported `InputOutput`); cuts a read or write short (0 bytes is
-no progress, not the end of a stream); lands a cancel; wakes a futex wait with no
+no progress, not the end of a stream, and is refused on a positional read, where
+it would be the end of the file); lands a cancel; wakes a futex wait with no
 one waking it (`spurious_wake`); stalls the call until a cancel ends it, as a read
 of a silent terminal does; sleeps on the base first; or runs test code at that
 point, and then makes the call or injects the fault its `then` names. A plan that

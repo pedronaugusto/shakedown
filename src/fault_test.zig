@@ -97,8 +97,8 @@ test "short reads and writes move at most n bytes, and short(0) moves none" {
     try tmp.dir.writeFile(testing.io, .{ .sub_path = "data", .data = "0123456789abcdef" });
     const plan = [_]IoPlan.Entry{
         .{ .at = .{ .nth = .{ .call = .fileReadPositional, .n = 1 } }, .fault = .{ .short = 5 } },
-        .{ .at = .{ .nth = .{ .call = .fileReadPositional, .n = 2 } }, .fault = .{ .short = 0 } },
-        .{ .at = .{ .nth = .{ .call = .fileWritePositional, .n = 1 } }, .fault = .{ .short = 7 } },
+        .{ .at = .{ .nth = .{ .call = .fileWritePositional, .n = 1 } }, .fault = .{ .short = 0 } },
+        .{ .at = .{ .nth = .{ .call = .fileWritePositional, .n = 2 } }, .fault = .{ .short = 7 } },
     };
     const fio = try FaultIo.init(testing.allocator, testing.io, .{ .plan = &plan, .trace = .all });
     defer fio.deinit();
@@ -109,8 +109,8 @@ test "short reads and writes move at most n bytes, and short(0) moves none" {
     // One buffer: Windows reads only the first of several, short or not.
     try testing.expectEqual(@as(usize, 5), try file.readPositional(io, &.{&b}, 0));
     try testing.expectEqualStrings("01234", b[0..5]);
-    try testing.expectEqual(@as(usize, 0), try file.readPositional(io, &.{&b}, 0));
     try testing.expectEqual(@as(usize, 12), try file.readPositional(io, &.{&b}, 4));
+    try testing.expectEqual(@as(usize, 0), try file.writePositional(io, &.{"moves nothing"}, 0));
     // Ten bytes cut to seven. One buffer: Windows writes only the first of
     // several; the cutting of headers, buffers and splats is tested in
     // FaultIo.zig.
@@ -130,6 +130,33 @@ fn writeStreaming(io: Io, file: Io.File, bytes: []const u8) !usize {
 fn readStreaming(io: Io, file: Io.File, buffer: []u8) !usize {
     var data = [_][]u8{buffer};
     return (try io.operate(.{ .file_read_streaming = .{ .file = file, .data = &data } })).file_read_streaming;
+}
+
+test "a faulted positional read is an error, never the end of the file" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "data", .data = "0123456789" });
+    // A positional read that moves nothing is the end of the file: short(0)
+    // there would fake one, so it is refused.
+    try testing.expectError(error.FaultNotApplicable, FaultIo.init(testing.allocator, testing.io, .{ .plan = &.{
+        .{ .at = .{ .nth = .{ .call = .fileReadPositional, .n = 1 } }, .fault = .{ .short = 0 } },
+    } }));
+    const plan = [_]IoPlan.Entry{
+        .{ .at = .{ .nth = .{ .call = .fileReadPositional, .n = 1 } }, .fault = .{ .fail = error.InputOutput } },
+        .{ .at = .{ .nth = .{ .call = .fileReadPositional, .n = 2 } }, .fault = .{ .short = 1 } },
+    };
+    const fio = try FaultIo.init(testing.allocator, testing.io, .{ .plan = &plan });
+    defer fio.deinit();
+    const io = fio.io();
+    const file = try tmp.dir.openFile(io, "data", .{});
+    defer file.close(io);
+    var b: [16]u8 = undefined;
+    try testing.expectError(error.InputOutput, file.readPositional(io, &.{&b}, 0));
+    try testing.expectEqual(@as(usize, 1), try file.readPositional(io, &.{&b}, 0));
+    // Unfaulted: the bytes there, then the real end of the file.
+    try testing.expectEqual(@as(usize, 10), try file.readPositional(io, &.{&b}, 0));
+    try testing.expectEqualStrings("0123456789", b[0..10]);
+    try testing.expectEqual(@as(usize, 0), try file.readPositional(io, &.{&b}, 10));
 }
 
 test "operations are faulted one by one through operate" {
