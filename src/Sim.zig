@@ -331,8 +331,9 @@ pub const Settled = union(enum) {
 };
 
 /// The faults are over: every partition and hold of the network is healed,
-/// the fault plan (`Options.faults`) is emptied, and no node's wall clock
-/// steps again (`Node.Clock.Skew.step_per_million`). Then the run goes on,
+/// the fault plan (`Options.faults`) is emptied, no node's wall clock
+/// steps again (`Node.Clock.Skew.step_per_million`), and no disk draws
+/// another storage fault (`Fs.Options.faults`). Then the run goes on,
 /// a step at a time, until `options.until` holds, the run ends, or `.awake`
 /// has moved `options.within`, which it never passes. A property that does
 /// not hold by then is reported with every task still alive, where it waits:
@@ -351,6 +352,11 @@ pub fn settle(s: *Sim, options: Settle) error{OutOfMemory}!Settled {
     s.core.wakeIo();
     s.core.context.skew.step_per_million = 0;
     for (s.core.contexts.items) |ctx| ctx.skew.step_per_million = 0;
+    // No disk draws another storage fault; the damage done stays.
+    if (s.core.fs) |*disk| disk.model.options.faults = .{};
+    for (s.core.contexts.items) |ctx| if (ctx.disk) |*disk| {
+        disk.model.options.faults = .{};
+    };
     if (s.fio) |f| f.setPlan(&.{}) catch |err| return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
         error.FaultNotInErrorSet, error.FaultNotApplicable => unreachable, // unreachable: an empty plan asks for no fault a call could refuse

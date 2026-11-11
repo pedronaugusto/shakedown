@@ -430,8 +430,10 @@ stamp its node's.
 `Sim.settle` is the pattern TigerBeetle's liveness mode makes of a run:
 faults for a while, then none, then progress within a bound. It ends the
 faults it owns: every partition and hold of the network, the fault plan,
-which it empties, and the nodes' drawn wall-clock steps. What a fault left behind stays (a stalled call, a node
-killed or crashed, a damaged disk), as it would on a real system, and the
+which it empties, the nodes' drawn wall-clock steps, and every disk's drawn
+storage faults, whose rates it sets to 0. What a fault left behind stays (a stalled call, a node
+killed or crashed, a damaged disk: rotten or unreadable sectors, a lost
+write's bytes), as it would on a real system, and the
 links keep their latency and loss, which are the network the test chose. The
 run then goes on in a drive mode of its own, `settle`: one step at a time,
 as `step` takes them, but never moving time past the bound, as `runUntil`

@@ -541,14 +541,14 @@ until old live tasks have ended and `SimulationEnded` after a final outcome.
 
 `sim.settle(.{ .within = .fromSeconds(30) })` says the faults are over: it
 heals every partition and hold, empties the fault plan and stops drawn
-wall-clock steps, then runs the simulation on, never past thirty seconds of
+wall-clock steps and drawn storage faults, then runs the simulation on, never past thirty seconds of
 `.awake`, until every task has ended, or, with `.until = .{ .holds = &state.progress }`, until the test's own
 predicate holds. The result is `live` with the time it took, `stalled` with a
 report of every task still alive and where it waits (the run paused, free to
 go on), or `ended` with the outcome that came first. It formats as a report, so
 a `check` body notes it and returns an error: a case that is not live after its
 faults heal shrinks and replays like any other. What a fault left behind (a
-stalled call, a crashed node) stays, and links keep their latency and loss.
+stalled call, a crashed node, a damaged sector) stays, and links keep their latency and loss.
 
 Batches probe every submitted operation and retain blocked submissions. A timed
 await returns `Timeout`; `batch.cancel` removes pending work. Canceling a connect

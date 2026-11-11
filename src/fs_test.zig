@@ -1379,3 +1379,31 @@ test "Fs everyCrash explores the images lying syncs leave, and a publish ordered
         try t.expect(more.runs + more.repeated > fewer.runs + fewer.repeated);
     }
 }
+
+test "Fs settle ends drawn storage faults: a writer that retries until its records read back is live after it" {
+    const sim = try Sim.init(t.allocator, .{ .fs = .{ .faults = .{ .misdirect_per_million = 1_000_000 } }, .watchdog = null });
+    defer sim.deinit();
+    const Writer = struct {
+        fn run(io: Io) !void {
+            const file = try Io.Dir.cwd().createFile(io, "records", .{ .read = true });
+            defer file.close(io);
+            while (true) {
+                try file.writePositionalAll(io, "first record", 0);
+                try file.writePositionalAll(io, "second record", 512);
+                var first: [12]u8 = undefined;
+                var second: [13]u8 = undefined;
+                _ = try file.readPositional(io, &.{&first}, 0);
+                _ = try file.readPositional(io, &.{&second}, 512);
+                if (std.mem.eql(u8, &first, "first record") and std.mem.eql(u8, &second, "second record")) return;
+                try io.sleep(.fromSeconds(1), .awake);
+            }
+        }
+    };
+    try sim.start(Writer.run, .{sim.io()});
+    // Every second record lands on the first while the faults go on.
+    try t.expectEqual(null, sim.runFor(.fromSeconds(10)));
+    const settled = try sim.settle(.{ .within = .fromSeconds(10) });
+    try t.expect(settled == .live);
+    try t.expect(settled.live.nanoseconds <= std.time.ns_per_s);
+    try t.expectEqual(@as(u32, 0), sim.fs().model.options.faults.misdirect_per_million);
+}
