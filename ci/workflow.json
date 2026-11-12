@@ -11,5 +11,7 @@
   ],
   "compile_once": true,
   "hardened": true,
-  "shards": {"riscv64": 2}
+  "shards": {
+    "riscv64": 2
+  }
 }
