@@ -244,7 +244,7 @@ pub fn dev(b: *std.Build, tools: type) void {
                 .{ .name = "shakedown-model-bench", .source = "bench/b6.zig" },
                 .{ .name = "shakedown-bench-compare", .source = "bench/compare.zig", .timed = false },
             },
-            .imports = benchImports,
+            .imports = tools.preflight.Bench.importsFrom(benchImports),
             .target = target,
             .optimize = optimize,
         },
