@@ -6,8 +6,8 @@ const Image = @This();
 pub const page_size = 4096;
 const bits = 6;
 const fanout = 1 << bits;
-const Page = struct { refs: usize = 1, bytes: [page_size]u8 = @splat(0) };
-const Branch = struct { refs: usize = 1, children: [fanout]Link = @splat(.empty) };
+pub const Page = struct { refs: usize = 1, bytes: [page_size]u8 = @splat(0) };
+pub const Branch = struct { refs: usize = 1, children: [fanout]Link = @splat(.empty) };
 pub const Link = union(enum) {
     empty,
     page: *Page,
