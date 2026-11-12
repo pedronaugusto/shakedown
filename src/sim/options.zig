@@ -260,4 +260,27 @@ pub const Outcome = union(enum) {
     /// second close shuts that instead. The task's report, its stack where it
     /// closed.
     double_close: TaskReport,
+    /// A task made a call the simulation does not model: a device control
+    /// it has no meaning for, an operation no part of it answers, a network
+    /// call in a run without a network. A real system would have answered
+    /// it, so a plausible error in its place would only hide the gap.
+    unmodeled: Unmodeled,
+};
+
+/// What `Outcome.unmodeled` names: the task, the call, and for a device
+/// control its control code.
+pub const Unmodeled = struct {
+    report: TaskReport,
+    call: IoCall,
+    /// A `device_io_control`'s code, as the system numbers it; null for
+    /// any other call.
+    code: ?u32 = null,
+    /// What part of the simulation was missing, in words.
+    why: []const u8,
+
+    pub fn format(u: Unmodeled, w: *Io.Writer) Io.Writer.Error!void {
+        try w.print("unmodeled {t}", .{u.call});
+        if (u.code) |code| try w.print(" 0x{x}", .{code});
+        try w.print(": {s}\n", .{u.why});
+    }
 };

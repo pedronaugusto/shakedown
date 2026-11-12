@@ -527,6 +527,35 @@ pub fn close(m: *Model, handle: Handle) void {
     m.abort(handle);
 }
 
+/// Ends a stream's directions with its handle left open for its owner to
+/// close, as Windows' AFD `PARTIAL_DISCONNECT` does: `send` and `receive`
+/// end those directions, and `abortive` ends both at once, what was in
+/// flight lost and the peer reset, as an abortive disconnect sends RST.
+/// Every operation under way on it ends, and every one after fails.
+pub fn disconnect(m: *Model, handle: Handle, how: struct { send: bool, receive: bool, abortive: bool }) void {
+    const s = m.sockets.get(handle) orelse return;
+    if (how.abortive) {
+        var index: usize = 0;
+        while (index < m.queue.items.len) {
+            const p = m.queue.items[index];
+            if (p.kind == .stream and (p.to == handle or p.from == handle)) {
+                _ = m.queue.popIndex(index);
+                if (m.sockets.get(p.to)) |receiver| receiver.reserved -|= p.len;
+                m.recycle(p);
+            } else index += 1;
+        }
+        if (s.peer) |peer| if (m.sockets.get(peer)) |other| {
+            if (!other.closed) other.reset = true;
+        };
+        s.send_closed = true;
+        s.receive_closed = true;
+    } else {
+        if (how.send) s.send_closed = true;
+        if (how.receive) s.receive_closed = true;
+    }
+    m.change +%= 1;
+}
+
 /// Closes a socket at once: what it had in flight is lost, and its peer
 /// is reset (a node killed, a reset).
 pub fn abort(m: *Model, handle: Handle) void {

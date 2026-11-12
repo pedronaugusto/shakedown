@@ -46,6 +46,7 @@ pub const Schedule = options_mod.Schedule;
 pub const AsyncStart = options_mod.AsyncStart;
 pub const Outcome = options_mod.Outcome;
 pub const TaskReport = options_mod.TaskReport;
+pub const Unmodeled = options_mod.Unmodeled;
 /// One call, as the run's trace records it.
 pub const Event = options_mod.Event;
 /// A node of the simulated network, as a trace and a report name it.
@@ -320,6 +321,10 @@ pub const Settled = union(enum) {
                 .double_close => |report| {
                     try w.writeAll("not live: a task closed a handle twice\n");
                     try printReports(w, &.{report});
+                },
+                .unmodeled => |u| {
+                    try w.print("not live: {f}", .{u});
+                    try printReports(w, &.{u.report});
                 },
             },
         }

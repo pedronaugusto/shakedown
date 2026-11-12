@@ -915,6 +915,15 @@ pub fn doubleClose(c: *Core) noreturn {
     c.abandon(t, .{ .double_close = t.report });
 }
 
+/// Ends the run as unmodeled: the running task made `call`, which the
+/// simulation has no answer for. Outside the tasks there is no run to end,
+/// so it panics, naming the call.
+pub fn unmodeled(c: *Core, call: IoCall, code: ?u32, why: []const u8) noreturn {
+    const t = c.current orelse std.debug.panic("shakedown: unmodeled {t} outside the simulation's tasks: {s}", .{ call, why });
+    c.capture(t);
+    c.abandon(t, .{ .unmodeled = .{ .report = t.report, .call = call, .code = code, .why = why } });
+}
+
 /// Ends the run as `outcome` from inside `t`, which never runs again.
 pub fn abandon(c: *Core, t: *Task, outcome: Outcome) noreturn {
     c.outcome = outcome;

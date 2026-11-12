@@ -1,10 +1,82 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Sim = @import("Sim.zig");
 const Io = std.Io;
 const t = std.testing;
 const Source = @import("Source.zig");
 const Model = @import("sim/net/Model.zig");
 const shakedown = @import("shakedown.zig");
+
+test "an abortive AFD disconnect on a simulated stream ends its pending receive and resets its peer, its handle left for its owner to close" {
+    if (comptime builtin.os.tag != .windows) return error.SkipZigTest; // AFD is Windows' socket driver; no other system has its control
+    const windows = std.os.windows;
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    _ = sim.net();
+    const Work = struct {
+        fn receive(io: Io, handle: Io.net.Socket.Handle) !usize {
+            var buf: [8]u8 = undefined;
+            var vectors = [_][]u8{&buf};
+            return (try (try io.operate(.{ .net_read = .{ .socket_handle = handle, .data = &vectors } })).net_read).data_len;
+        }
+        fn run(io: Io) !void {
+            const pair = try Io.net.Socket.createPair(io, .{});
+            defer pair[0].close(io);
+            defer pair[1].close(io);
+            var pending = try io.concurrent(receive, .{ io, pair[0].handle });
+            const info: windows.AFD.PARTIAL_DISCONNECT_INFO = .{ .DisconnectMode = .{ .SEND = true, .RECEIVE = true, .ABORTIVE = true }, .Timeout = -1 };
+            const done = try io.operate(.{ .device_io_control = .{
+                .file = .{ .handle = pair[0].handle, .flags = .{ .nonblocking = false } },
+                .code = windows.IOCTL.AFD.PARTIAL_DISCONNECT,
+                .in = std.mem.asBytes(&info),
+            } });
+            try t.expectEqual(windows.NTSTATUS.SUCCESS, done.device_io_control.u.Status);
+            try t.expectEqual(@as(usize, 0), try pending.await(io));
+            var buf: [1]u8 = undefined;
+            var vectors = [_][]u8{&buf};
+            try t.expectError(error.ConnectionResetByPeer, (try io.operate(.{ .net_read = .{ .socket_handle = pair[1].handle, .data = &vectors } })).net_read);
+        }
+    };
+    try finished(sim.run(Work.run, .{sim.io()}));
+}
+
+test "a device control the simulation has no model of ends the run as unmodeled, naming its code" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    _ = sim.net();
+    const Work = struct {
+        fn run(io: Io) !void {
+            const pair = try Io.net.Socket.createPair(io, .{});
+            defer pair[0].close(io);
+            defer pair[1].close(io);
+            const file: Io.File = .{ .handle = pair[0].handle, .flags = .{ .nonblocking = false } };
+            _ = try io.operate(.{ .device_io_control = if (builtin.os.tag == .windows)
+                .{ .file = file, .code = std.os.windows.IOCTL.AFD.POLL }
+            else
+                .{ .file = file, .code = 0x5401, .arg = null } });
+        }
+    };
+    const outcome = sim.run(Work.run, .{sim.io()});
+    try t.expect(outcome == .unmodeled);
+    try t.expect(outcome.unmodeled.call == .device_io_control);
+    const want: u32 = if (builtin.os.tag == .windows) @bitCast(std.os.windows.IOCTL.AFD.POLL) else 0x5401;
+    try t.expectEqual(want, outcome.unmodeled.code.?);
+}
+
+test "a network call in a run without a network ends the run as unmodeled, where it answered Unexpected" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null, .net = null });
+    defer sim.deinit();
+    const Work = struct {
+        fn run(io: Io) !void {
+            const address = try Io.net.IpAddress.parseIp4("127.0.0.1", 80);
+            var server = try address.listen(io, .{});
+            server.deinit(io);
+        }
+    };
+    const outcome = sim.run(Work.run, .{sim.io()});
+    try t.expect(outcome == .unmodeled);
+    try t.expect(outcome.unmodeled.code == null);
+}
 
 test "Net local pair preserves bytes and half close" {
     const sim = try Sim.init(t.allocator, .{ .watchdog = null });

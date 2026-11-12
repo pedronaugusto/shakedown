@@ -1,5 +1,6 @@
 //! Network Io slots: model readiness and scheduler waits share one cancel path.
 const std = @import("std");
+const builtin = @import("builtin");
 const Io = std.Io;
 const Core = @import("../Core.zig");
 const Model = @import("Model.zig");
@@ -240,10 +241,7 @@ fn invoke(comptime name: []const u8, user: ?*anyopaque, args: anytype, ret: usiz
         c.record(call, e, std.hash.Wyhash.hash(0, "Canceled"));
         return error.Canceled;
     };
-    if (c.options.net == null) {
-        if (return_type == void) return;
-        return error.Unexpected;
-    }
+    if (c.options.net == null) c.unmodeled(call, null, "a network call in a run without a network (Options.net)");
     c.touch(Core.Object.network, true);
     const input = inputs(e.node, args);
     const result = @call(.auto, @field(slots, name), .{ c, e.node } ++ args);
@@ -357,6 +355,28 @@ pub fn perform(c: *Core, node: NodeId, operation: Io.Operation) ?Io.Operation.Re
         else => null,
     };
 }
+/// A device control on a simulated socket, as Windows' AFD answers it:
+/// `PARTIAL_DISCONNECT`, which reactor ends a socket's operations with.
+/// Null when the handle is no simulated socket of this node's, or on a
+/// target with no AFD.
+pub fn deviceControl(c: *Core, node: NodeId, d: Io.Operation.DeviceIoControl) ?Io.Operation.Result {
+    if (comptime builtin.os.tag != .windows) return null;
+    const windows = std.os.windows;
+    const m = begin(c);
+    const s = m.get(d.file.handle, node) catch return null;
+    if (@as(u32, @bitCast(d.code)) != @as(u32, @bitCast(windows.IOCTL.AFD.PARTIAL_DISCONNECT))) return null;
+    if (d.in.len < @sizeOf(windows.AFD.PARTIAL_DISCONNECT_INFO)) return .{ .device_io_control = status(.INVALID_PARAMETER) };
+    const info = std.mem.bytesToValue(windows.AFD.PARTIAL_DISCONNECT_INFO, d.in[0..@sizeOf(windows.AFD.PARTIAL_DISCONNECT_INFO)]);
+    if (s.kind != .stream) return .{ .device_io_control = status(.INVALID_PARAMETER) };
+    m.disconnect(s.handle, .{ .send = info.DisconnectMode.SEND, .receive = info.DisconnectMode.RECEIVE, .abortive = info.DisconnectMode.ABORTIVE });
+    c.notifyNetwork();
+    return .{ .device_io_control = status(.SUCCESS) };
+}
+
+fn status(s: std.os.windows.NTSTATUS) std.os.windows.IO_STATUS_BLOCK {
+    return .{ .u = .{ .Status = s }, .Information = 0 };
+}
+
 pub fn isNetwork(op: Io.Operation) bool {
     return switch (op) {
         .net_read, .net_write, .net_send, .net_receive => true,

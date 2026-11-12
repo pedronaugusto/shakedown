@@ -576,9 +576,9 @@ fn standard(file: Io.File) bool {
 }
 
 /// An operation's result: standard output reaches the process, file operations
-/// reach this simulation's disk, and unavailable parts fail. A cancel the
-/// process's Io answers a write to standard output with is the caller's, as
-/// `lockStderr`'s is.
+/// reach this simulation's disk, and an operation no part answers ends the
+/// run as `unmodeled`. A cancel the process's Io answers a write to standard
+/// output with is the caller's, as `lockStderr`'s is.
 fn perform(c: *Core, operation: Io.Operation) Io.Cancelable!Io.Operation.Result {
     switch (operation) {
         .file_write_streaming => |w| if (standard(w.file)) {
@@ -587,37 +587,42 @@ fn perform(c: *Core, operation: Io.Operation) Io.Cancelable!Io.Operation.Result 
         },
         else => {},
     }
-    if (c.disk(c.nodeId())) |fs| {
+    const disk = c.disk(c.nodeId());
+    if (disk) |fs| {
         fs.model.at = c.nowHere(.real);
         if (fs_calls.perform(fs.model, operation)) |result| return result;
     }
-    return switch (operation) {
-        inline else => |_, tag| failed(tag),
-    };
+    unmodeledOperation(c, operation, disk != null);
 }
 
-fn failed(comptime tag: Io.Operation.Tag) Io.Operation.Result {
-    const result_type = @FieldType(Io.Operation.Result, @tagName(tag));
-    if (result_type == noreturn) unreachable; // unreachable: an operation this target cannot make cannot be made
-    if (comptime tag == .device_io_control) {
-        // Results as the system gives them: a negative errno, or a status.
-        const value: result_type = if (builtin.os.tag == .windows) .{ .u = .{ .Status = .INVALID_HANDLE }, .Information = 0 } else -@as(result_type, @intCast(@backingInt(std.posix.E.BADF)));
-        return @unionInit(Io.Operation.Result, @tagName(tag), value);
+/// Ends the run on an operation nothing in the simulation answers: a
+/// device control it has no meaning for, a network operation in a run
+/// without a network, a file operation with no disk, or one the disk does
+/// not model.
+fn unmodeledOperation(c: *Core, operation: Io.Operation, has_disk: bool) noreturn {
+    const call = callOf(operation);
+    switch (operation) {
+        .device_io_control => |d| c.unmodeled(call, if (builtin.os.tag == .windows) @bitCast(d.code) else d.code, "a device control the simulation has no model of"),
+        else => {},
     }
-    return @unionInit(Io.Operation.Result, @tagName(tag), switch (@typeInfo(result_type)) {
-        .error_union => error.Unexpected,
-        .@"struct" => .{ error.Unexpected, 0 },
-        else => @compileError("an operation result shakedown cannot fail: " ++ @typeName(result_type)),
-    });
+    if (net_calls.isNetwork(operation)) c.unmodeled(call, null, "a network operation in a run without a network (Options.net)");
+    c.unmodeled(call, null, if (has_disk) "an operation the simulated disk does not model" else "a file operation on a node without a disk (Options.fs)");
 }
 
 /// What an operation does, or null while it would wait: a network
-/// operation on the network model, a stream of a pipe on the pipes, the
-/// rest at once. A cancel is the caller's.
+/// operation on the network model, a stream of a pipe on the pipes, a
+/// device control on a simulated socket as its system answers it, the rest
+/// at once. A cancel is the caller's.
 fn attempt(c: *Core, node: Model.NodeId, op: Io.Operation) Io.Cancelable!?Io.Operation.Result {
     if (net_calls.isNetwork(op) and c.options.net != null) {
         c.touch(Core.Object.network, true);
         return net_calls.perform(c, node, op);
+    }
+    if (op == .device_io_control and c.options.net != null) {
+        if (net_calls.deviceControl(c, node, op.device_io_control)) |result| {
+            c.touch(Core.Object.network, true);
+            return result;
+        }
     }
     if (process_calls.isPipe(op)) {
         c.touch(Core.Object.pipes, true);
@@ -686,24 +691,8 @@ fn Return(comptime name: []const u8) type {
     return @typeInfo(@typeInfo(@FieldType(Io.VTable, name)).pointer.child).@"fn".return_type.?;
 }
 
-/// What a call the simulation does not have returns, once no cancel has
-/// landed: nothing for one that cannot fail, `error.Unexpected` where its
-/// error set allows it, else the first error of its set.
-fn fallback(comptime R: type) R {
-    return switch (@typeInfo(R)) {
-        .void => {},
-        .error_union => |u| failure(u.error_set),
-        .error_set => failure(R),
-        else => @compileError("no fallback for " ++ @typeName(R)),
-    };
-}
-
-fn failure(comptime E: type) E {
-    const names = @typeInfo(E).error_set.error_names orelse return error.Unexpected;
-    inline for (names) |n| if (comptime std.mem.eql(u8, n, "Unexpected")) return error.Unexpected;
-    return @field(E, names[0]);
-}
-
+/// A slot no part of the simulation answers: once no cancel has landed,
+/// it ends the run as `unmodeled`, naming the call.
 fn unsupported(comptime name: []const u8) @FieldType(Io.VTable, name) {
     const info = @typeInfo(@typeInfo(@FieldType(Io.VTable, name)).pointer.child).@"fn";
     const return_type = info.return_type.?;
@@ -717,13 +706,7 @@ fn unsupported(comptime name: []const u8) @FieldType(Io.VTable, name) {
                 c.record(call, e, digest(error.Canceled));
                 return error.Canceled;
             };
-            const value = fallback(return_type);
-            c.record(call, e, switch (@typeInfo(return_type)) {
-                .void => 0,
-                .error_set => digest(value),
-                else => digest(if (value) |_| unreachable else |err| err), // unreachable: a fallback is always an error
-            });
-            return value;
+            c.unmodeled(call, null, "an Io call no part of the simulation answers");
         }
     };
     return switch (params.len) {

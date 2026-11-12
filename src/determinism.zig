@@ -91,6 +91,7 @@ const Run = struct {
         time_limit,
         stuck,
         double_close,
+        unmodeled,
     };
     const Record = std.meta.Child(@TypeOf(@as(*Sim, undefined).trace().records()));
 
