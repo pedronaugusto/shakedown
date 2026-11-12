@@ -1486,6 +1486,7 @@ pub const Object = struct {
 
 /// The number a search knows task `t` by.
 pub fn actorOf(c: *const Core, t: *const Task) u32 {
+    // glint-ignore: A004 -- a search's actor number packs the task's id under the core's base bits
     return c.actor_base | t.id.raw();
 }
 

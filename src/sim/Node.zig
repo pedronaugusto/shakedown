@@ -40,8 +40,8 @@ pub fn now(n: *Node, which: Io.Clock) Io.Timestamp {
 /// nodes' clocks do not move.
 pub fn stepReal(n: *Node, to: Io.Timestamp) void {
     const c = n.context.core;
-    const from = nanoseconds.reading(Core, c.nowOn(n.context.node, .real)).raw();
-    c.jump(n.context.node, .{ 0, 0, nanoseconds.reading(Core, to).raw() -| from });
+    const from = nanoseconds.reading(Core, c.nowOn(n.context.node, .real));
+    c.jump(n.context.node, .{ 0, 0, from.saturatingDurationTo(nanoseconds.reading(Core, to)).raw() });
 }
 /// The node's machine slept for `d`: its boot and real clocks jump forward
 /// by `d`, its awake clock does not, and the timers on boot or real time it

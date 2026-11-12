@@ -222,8 +222,8 @@ fn errorOf(value: anytype) ?anyerror {
 /// are still alive: waiting is not a deadlock while the test may still wake
 /// them. The outcome once every task has ended or a limit is reached.
 pub fn runFor(s: *Sim, d: Io.Duration) ?Outcome {
-    const now_ns = s.core.clocks[@backingInt(Core.Kept.awake)];
-    return s.drive(.until, now_ns +| nanoseconds.span(d).raw());
+    const awake = nanoseconds.Reading(Core).fromRaw(s.core.clocks[@backingInt(Core.Kept.awake)]);
+    return s.drive(.until, awake.saturatingAdd(nanoseconds.span(d)).raw());
 }
 
 /// `runFor` up to an instant on `.awake`.
@@ -367,19 +367,19 @@ pub fn settle(s: *Sim, options: Settle) error{OutOfMemory}!Settled {
         error.OutOfMemory => error.OutOfMemory,
         error.FaultNotInErrorSet, error.FaultNotApplicable => unreachable, // unreachable: an empty plan asks for no fault a call could refuse
     };
-    const began = s.core.clocks[@backingInt(Core.Kept.awake)];
-    const bound = began +| nanoseconds.span(options.within).raw();
+    const began = nanoseconds.Reading(Core).fromRaw(s.core.clocks[@backingInt(Core.Kept.awake)]);
+    const bound = began.saturatingAdd(nanoseconds.span(options.within));
     while (true) {
-        const awake = s.core.clocks[@backingInt(Core.Kept.awake)];
+        const awake = nanoseconds.Reading(Core).fromRaw(s.core.clocks[@backingInt(Core.Kept.awake)]);
         const held = switch (options.until) {
             .finished => if (s.core.outcome) |o| o == .finished else false,
             .holds => |progress| progress.holds(progress),
         };
-        if (held) return .{ .live = .fromNanoseconds(awake - began) };
+        if (held) return .{ .live = began.saturatingDurationTo(awake).toIoDuration() };
         if (s.core.outcome) |o| return .{ .ended = o };
         // What is due at the bound itself runs before the verdict.
-        if (awake >= bound and !s.core.anyReady()) return .{ .stalled = s.core.reportAlive() };
-        _ = s.drive(.settle, bound);
+        if (awake.compare(bound) != .lt and !s.core.anyReady()) return .{ .stalled = s.core.reportAlive() };
+        _ = s.drive(.settle, bound.raw());
     }
 }
 

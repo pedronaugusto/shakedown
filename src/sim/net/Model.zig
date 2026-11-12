@@ -127,6 +127,7 @@ pub fn deinit(m: *Model) void {
     m.* = undefined;
 }
 fn key(a: NodeId, b: NodeId) u64 {
+    // glint-ignore: A004 -- a link's map key packs its two node ids into one u64
     return (@as(u64, a.raw()) << 32) | b.raw();
 }
 /// Where a node after the first stands among the nodes in the order `addNode` issued them. Ids are
