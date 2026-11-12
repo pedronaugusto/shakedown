@@ -133,7 +133,7 @@ pub const Options = struct {
     prefix: []const u8 = "",
     samples: usize = 31,
     warmup: usize = 2,
-    minimum: Io.Duration = .fromMilliseconds(1),
+    minimum: Io.Duration = nanoseconds.Span.literal("1ms").toIoDuration(),
     resolution_multiple: u32 = 1000,
     max_batch: u64 = 1 << 40,
 

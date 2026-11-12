@@ -301,7 +301,7 @@ pub const Settled = union(enum) {
     /// to print or to keep as a note.
     pub fn format(r: Settled, w: *Io.Writer) Io.Writer.Error!void {
         switch (r) {
-            .live => |d| try w.print("live {d} ns after the faults ended\n", .{d.nanoseconds}),
+            .live => |d| try w.print("live {f} after the faults ended\n", .{nanoseconds.span(d)}),
             .stalled => |reports| {
                 try w.print("not live: the bound passed with {d} tasks alive\n", .{reports.len});
                 try printReports(w, reports);
