@@ -297,7 +297,7 @@ fn futexWait(userdata: ?*anyopaque, ptr: *const u32, expected: u32, timeout: Io.
             // A wake that leaves the word at `expected` is taken for a
             // spurious one and waited through; returning would read as a
             // timeout to a caller such as `Event.waitTimeout`.
-            while (timer.state.load(.acquire) == .armed and @atomicLoad(u32, ptr, .acquire) == expected) { // aegis: design(A007): the futex word is std's, a `*const u32` the vtable hands in
+            while (timer.state.load(.acquire) == .armed and @atomicLoad(u32, ptr, .acquire) == expected) {
                 try l.base.vtable.futexWait(l.base.userdata, ptr, expected, slice);
             }
         },

@@ -88,7 +88,7 @@ pub const Held = struct {
             .isHeld = struct {
                 fn is(context: *const anyopaque) bool {
                     const l: *const std.atomic.Mutex = @ptrCast(@alignCast(context)); // made from a spin mutex in `spinMutex`
-                    return @atomicLoad(std.atomic.Mutex, l, .acquire) == .locked; // aegis: design(A007): std's spin mutex is read as std lays it out, never taken
+                    return @atomicLoad(std.atomic.Mutex, l, .acquire) == .locked;
                 }
             }.is,
         };

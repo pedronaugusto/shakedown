@@ -240,7 +240,7 @@ pub fn string(s: *Source, gpa: Allocator, options: StringOptions) error{OutOfMem
             .ascii => try out.append(gpa, ascii(s)),
             .utf8 => {
                 var buffer: [4]u8 = undefined;
-                const n = std.unicode.utf8Encode(codePoint(s), &buffer) catch unreachable; // unreachable: codePoint never draws a surrogate or a value past U+10FFFF
+                const n = std.unicode.utf8Encode(codePoint(s), &buffer) catch unreachable; // glint-ignore: Z026 -- codePoint never draws a surrogate or a value past U+10FFFF
                 try out.appendSlice(gpa, buffer[0..n]);
             },
         }

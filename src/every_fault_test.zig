@@ -69,7 +69,6 @@ pub const Save = struct {
                     .atomic, .in_place, .leaky => "save.tmp",
                 };
                 try writeSynced(io, s.dir, name, contents);
-                // glint-ignore: Z026 -- a leftover temporary that cannot be removed is what the injected fault caused; the save's own error is the one returned
                 errdefer s.dir.deleteFile(testing.io, name) catch {};
                 try s.dir.rename(name, s.dir, "save", io);
             },
@@ -508,7 +507,6 @@ pub const Waiting = struct {
 
     pub fn run(_: *Waiting, io: Io) !void {
         var long = try io.concurrent(wait, .{io});
-        // glint-ignore: Z026 -- the waiting task's own end, canceled or not, is not what the run tests
         defer long.cancel(io) catch {};
         for (0..3) |_| try io.sleep(.fromMilliseconds(1), .awake);
     }

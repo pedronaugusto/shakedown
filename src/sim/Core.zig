@@ -663,12 +663,12 @@ fn finish(c: *Core, t: *Task) void {
             c.release(t);
         },
         .root => {
-            const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer())); // aegis: no-danger(A019): a root's result is its error, written by its start function
+            const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer()));
             if (err.*) |e| c.outcome = .{ .failed = e };
             c.release(t);
         },
         .node => {
-            const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer())); // aegis: no-danger(A019): node callback writes an optional error
+            const err: *const ?anyerror = @ptrCast(@alignCast(t.resultPointer()));
             if (err.*) |e| if (e != error.Canceled or t.cancel != .delivered) {
                 c.outcome = .{ .failed = e };
             };
@@ -690,7 +690,7 @@ pub fn groupMarker(g: *Io.Group) *anyopaque {
 pub fn groupAwaiter(g: *Io.Group) ?*Task {
     const token = g.token.raw orelse return null;
     if (token == groupMarker(g)) return null;
-    return @ptrCast(@alignCast(token)); // aegis: no-danger(A019): a token other than the marker is the awaiting task
+    return @ptrCast(@alignCast(token));
 }
 
 // Scheduling.

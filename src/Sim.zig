@@ -201,8 +201,8 @@ fn startAt(s: *Sim, comptime f: anytype, args: std.meta.ArgsTuple(@TypeOf(f)), s
     const Args = @TypeOf(args);
     const Start = struct {
         fn start(context: *const anyopaque, result: *anyopaque) void {
-            const a: *const Args = @ptrCast(@alignCast(context)); // aegis: no-danger(A019): the core copied the arguments here
-            const err: *?anyerror = @ptrCast(@alignCast(result)); // aegis: no-danger(A019): the root's result slot is sized and aligned for it
+            const a: *const Args = @ptrCast(@alignCast(context));
+            const err: *?anyerror = @ptrCast(@alignCast(result));
             err.* = errorOf(@call(.auto, f, a.*));
         }
     };

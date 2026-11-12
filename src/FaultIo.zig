@@ -583,7 +583,7 @@ fn prelude(f: *FaultIo, fault: ?IoFault, cancelation_point: bool) Io.Cancelable!
 /// `prelude` for a call that is no cancelation point: a canceled delay puts
 /// the cancel back for the next one, so nothing is returned.
 fn preludeAnywhere(f: *FaultIo, fault: ?IoFault) ?IoFault {
-    return f.prelude(fault, false) catch unreachable; // unreachable: off a cancelation point, prelude puts the cancel back
+    return f.prelude(fault, false) catch unreachable; // glint-ignore: Z026 -- off a cancelation point, prelude puts the cancel back
 }
 
 fn record(f: *FaultIo, step: u64, event: IoEvent) void {

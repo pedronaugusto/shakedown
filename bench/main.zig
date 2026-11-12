@@ -97,7 +97,6 @@ pub fn main(init: std.process.Init) !void {
     // The file the reads read, in the working directory, gone at the end.
     const cwd = Io.Dir.cwd();
     var scratch = try cwd.createDirPathOpen(io, "shakedown-bench-scratch", .{});
-    // glint-ignore: Z026 -- removing the scratch directory is best effort after the run has its verdict
     defer cwd.deleteTree(io, "shakedown-bench-scratch") catch {};
     defer scratch.close(io);
     var page: [4096]u8 = @splat(0x5a);
@@ -700,7 +699,6 @@ const Queue = struct {
 
     fn produce(io: Io, q: *Queue) !void {
         var consumer = try io.concurrent(consume, .{ io, q });
-        // glint-ignore: Z026 -- on a failure before the await, the consumer's own end is not the one to report
         defer consumer.cancel(io) catch {};
         for (0..items) |_| {
             try pause(io);

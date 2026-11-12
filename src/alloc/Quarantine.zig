@@ -109,7 +109,7 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*
     const guard: usize = if (q.options.guard == .after) page else 0;
     const span = std.math.add(usize, data, guard) catch return null;
     const mapped = std.heap.PageAllocator.map(span, .fromByteUnits(@max(alignment.toByteUnits(), page))) orelse return null;
-    const base: [*]align(std.heap.page_size_min) u8 = @alignCast(mapped); // aegis: no-danger(A019): a whole mapping this allocator made, page-aligned
+    const base: [*]align(std.heap.page_size_min) u8 = @alignCast(mapped);
     const range: Range = .{ .base = base, .len = span };
     const at = @intFromPtr(base); // safe: an address, kept as a number for page arithmetic
     if (guard != 0 and !close(base + data, guard)) {
@@ -192,7 +192,7 @@ fn close(at: [*]u8, len: usize) bool {
         var old: windows.PAGE = undefined;
         return windows.ntdll.NtProtectVirtualMemory(windows.GetCurrentProcess(), &address, &size, .{ .NOACCESS = true }, &old) == .SUCCESS;
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at); // aegis: no-danger(A019): `at` is a page boundary inside a mapping this allocator made
+    const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at);
     return std.posix.errno(std.posix.system.mprotect(start, len, std.mem.zeroes(std.posix.PROT))) == .SUCCESS;
 }
 

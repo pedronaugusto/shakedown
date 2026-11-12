@@ -120,7 +120,7 @@ fn futexTimeout(_: Allocator, io: Io) !void {
 // Locks.
 
 const Counter = struct {
-    mutex: Io.Mutex = .init, // aegis: design(A007): std's mutex is the subject of the check
+    mutex: Io.Mutex = .init,
     count: u32 = 0,
 
     fn add(c: *Counter, io: Io, times: u32) Io.Cancelable!void {
@@ -144,8 +144,8 @@ fn mutexExcludes(_: Allocator, io: Io) !void {
 }
 
 const Box = struct {
-    mutex: Io.Mutex = .init, // aegis: design(A007): std's mutex is the subject of the check
-    cond: Io.Condition = .init, // aegis: design(A007): std's condition is the subject of the check
+    mutex: Io.Mutex = .init,
+    cond: Io.Condition = .init,
     items: u32 = 0,
     taken: u32 = 0,
     total: u32 = 20,
@@ -177,8 +177,8 @@ fn conditionHandsOff(_: Allocator, io: Io) !void {
 }
 
 fn conditionTimesOut(_: Allocator, io: Io) !void {
-    var mutex: Io.Mutex = .init; // aegis: design(A007): std's mutex is the subject of the check
-    var cond: Io.Condition = .init; // aegis: design(A007): std's condition is the subject of the check
+    var mutex: Io.Mutex = .init;
+    var cond: Io.Condition = .init;
     try mutex.lock(io);
     defer mutex.unlock(io);
     const result = cond.waitTimeout(io, &mutex, .{ .duration = .{ .raw = ms(2), .clock = .awake } });
@@ -220,7 +220,7 @@ fn postEach(io: Io, s: *Io.Semaphore, n: u32) void {
 }
 
 fn semaphoreCounts(_: Allocator, io: Io) !void {
-    var s: Io.Semaphore = .{}; // aegis: design(A007): std's semaphore is the subject of the check
+    var s: Io.Semaphore = .{};
     var poster = try io.concurrent(postEach, .{ io, &s, 10 });
     defer poster.cancel(io);
     for (0..10) |_| try s.wait(io);
@@ -231,7 +231,7 @@ fn semaphoreCounts(_: Allocator, io: Io) !void {
 /// Readers hold the lock together, so what they count is atomic: on a
 /// threaded `Io` they run at once.
 const Shared = struct {
-    lock: Io.RwLock = .init, // aegis: design(A007): std's read-write lock is the subject of the check
+    lock: Io.RwLock = .init,
     readers: aegis.Atomic(Readers) = .init(.fromRaw(0)),
     writing: aegis.Atomic(Writing) = .init(.idle),
     broken: aegis.Atomic(Broken) = .init(.held),
@@ -336,7 +336,7 @@ const Protected = struct {
         p.started.set(io);
         p.release.waitUncancelable(io);
         // Still protected: a cancel point lets nothing through.
-        io.checkCancel() catch unreachable; // unreachable: cancel protection is blocked here
+        io.checkCancel() catch unreachable; // glint-ignore: Z026 -- cancel protection is blocked here
         p.waited = true;
         _ = io.swapCancelProtection(old);
         try io.checkCancel();

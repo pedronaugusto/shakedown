@@ -134,7 +134,7 @@ fn key(a: NodeId, b: NodeId) u64 {
 /// dense from 0, so the first node has no place and a caller keeps it apart.
 pub fn followerIndex(node: NodeId) usize {
     std.debug.assert(node != NodeId.fromRaw(0));
-    // aegis: internal(A004): docs/design.md#aegis-types-and-the-raw-sites; the model issues ids densely from 0 and is the one place that knows it
+    // glint-ignore: A004 -- internal: docs/design.md#aegis-types-and-the-raw-sites; the model issues ids densely from 0 and is the one place that knows it
     return node.raw() - 1;
 }
 pub fn addNode(m: *Model, addresses: []const Address) error{OutOfMemory}!NodeId {
@@ -262,7 +262,7 @@ fn recycle(m: *Model, p: *Packet) void {
 }
 fn handleFromId(id: u32) Handle {
     return switch (@typeInfo(Handle)) {
-        .pointer => @ptrFromInt(id), // aegis: no-danger(A019): virtual opaque handles are identifiers, never dereferenced
+        .pointer => @ptrFromInt(id),
         .int => @intCast(id),
         else => @compileError("unsupported Io socket handle representation"),
     };
@@ -438,7 +438,7 @@ fn connectFrom(m: *Model, node: NodeId, listener: *Socket, local: bool, source: 
     if (!local) delay +|= m.retransmit(l);
     p.* = .{ .from = endpoints[0].handle, .to = endpoints[1].handle, .source = endpoints[0].address, .a = node, .b = listener.node, .kind = .handshake, .at = m.now +| delay, .born = m.now, .delivery = m.now +| delay, .seq = m.sequence };
     if (!local and (m.links.getPtr(key(node, listener.node)).?.held or m.links.getPtr(key(node, listener.node)).?.partitioned)) m.adjust(p);
-    m.queue.push(m.gpa, p) catch unreachable; // unreachable: packet reserves queue capacity
+    m.queue.push(m.gpa, p) catch unreachable; // glint-ignore: Z026 -- packet reserves queue capacity
     m.change +%= 1;
     return endpoints[0];
 }
@@ -487,7 +487,7 @@ fn enqueue(m: *Model, sender: *Socket, receiver: *Socket, bytes: []const u8, kin
     }, .a = sender.node, .b = receiver.node, .kind = kind, .at = at, .born = m.now, .delivery = at, .seq = m.sequence, .len = bytes.len };
     @memcpy(p.data[0..bytes.len], bytes);
     if (!sender.local and (state.held or state.partitioned)) m.adjust(p);
-    m.queue.push(m.gpa, p) catch unreachable; // unreachable: packet reserves queue capacity
+    m.queue.push(m.gpa, p) catch unreachable; // glint-ignore: Z026 -- packet reserves queue capacity
 }
 pub fn write(m: *Model, s: *Socket, bytes: []const u8) Error!?usize {
     if (s.kind != .stream or s.send_closed) return error.SocketUnconnected;

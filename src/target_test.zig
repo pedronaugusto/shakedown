@@ -67,7 +67,6 @@ pub const Queue = struct {
 
     fn produce(io: Io, s: *State) !void {
         var consumer = try io.concurrent(consume, .{ io, s });
-        // glint-ignore: Z026 -- on a failure before the await, the consumer's own end is not the one to report
         defer consumer.cancel(io) catch {};
         for (0..s.items) |_| {
             try pause(io);

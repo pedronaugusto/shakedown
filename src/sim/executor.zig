@@ -178,13 +178,13 @@ fn fiberStart(b: *Baton, _: ?shuttle.Context.Nothing) callconv(.c) noreturn {
 // Threads.
 
 const win32 = struct {
-    extern "kernel32" fn ExitThread(code: u32) callconv(.winapi) noreturn; // aegis: boundary(A019): kernel32 thread exit, which std does not bind
+    extern "kernel32" fn ExitThread(code: u32) callconv(.winapi) noreturn;
     const stack_size_param_is_a_reservation: u32 = 0x10000;
-    extern "kernel32" fn CreateThread(attributes: ?*anyopaque, stack_size: usize, start: *const fn (?*anyopaque) callconv(.winapi) u32, param: ?*anyopaque, flags: u32, id: ?*u32) callconv(.winapi) ?windows.HANDLE; // aegis: boundary(A019): kernel32 thread creation with a caller stack size, which std does not bind
+    extern "kernel32" fn CreateThread(attributes: ?*anyopaque, stack_size: usize, start: *const fn (?*anyopaque) callconv(.winapi) u32, param: ?*anyopaque, flags: u32, id: ?*u32) callconv(.winapi) ?windows.HANDLE;
 };
 
 fn win32ThreadStart(param: ?*anyopaque) callconv(.winapi) u32 {
-    threadMain(@ptrCast(@alignCast(param.?))); // aegis: no-danger(A019): `start` passes the context's baton
+    threadMain(@ptrCast(@alignCast(param.?)));
     return 0;
 }
 

@@ -198,7 +198,7 @@ const shortest_slice: Span = .literal("1ms");
 
 /// An eighth of `limit`, rounded toward zero: how often a simulation with that watchdog time is sampled.
 fn eighth(limit: Span) Span {
-    // unreachable: 8 is neither zero nor -1, the two divisors that fail
+    // glint-ignore: Z026 -- 8 is neither zero nor -1, the two divisors that fail
     return limit.divTrunc(8) catch unreachable;
 }
 
@@ -274,7 +274,7 @@ const Fixture = struct {
 
     /// `n` milliseconds.
     fn ms(n: i64) Span {
-        // unreachable: the tests' counts are far inside an i64 of nanoseconds
+        // glint-ignore: Z026 -- the tests' counts are far inside an i64 of nanoseconds
         return aegis.units.Duration(.millisecond, i64).fromRaw(n).convert(.nanosecond, i64, .exact) catch unreachable;
     }
 

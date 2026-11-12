@@ -95,7 +95,7 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, _: usize) ?[*]u8 {
     if (classOf(len, alignment)) |class| {
         if (r.free_lists[class]) |block| {
             r.free_lists[class] = block.next;
-            return @ptrCast(block); // aegis: no-danger(A019): a freed block of this class, handed out again
+            return @ptrCast(block);
         }
         const size = @as(usize, 1) << @intCast(@as(u6, class) + min_shift);
         return r.bump(size, .fromByteUnits(size));
@@ -136,7 +136,7 @@ fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, _: usize) void {
     const r = of(ptr);
     if (classOf(memory.len, alignment)) |class| {
         if (std.debug.runtime_safety) @memset(memory, undefined);
-        const block: *Free = @ptrCast(@alignCast(memory.ptr)); // aegis: no-danger(A019): every class is at least 16 bytes, aligned to its size
+        const block: *Free = @ptrCast(@alignCast(memory.ptr));
         block.next = r.free_lists[class];
         r.free_lists[class] = block;
         return;
@@ -149,9 +149,9 @@ fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, _: usize) void {
 
 fn reserveAt(at: usize) ?[*]align(std.heap.page_size_min) u8 {
     if (builtin.os.tag == .windows) {
-        var address: ?[*]align(std.heap.page_size_min) u8 = if (at == 0) null else @ptrFromInt(at); // aegis: boundary(A019): the system call takes the address of the region this allocator reserved
+        var address: ?[*]align(std.heap.page_size_min) u8 = if (at == 0) null else @ptrFromInt(at);
         var size: windows.SIZE_T = reserve;
-        const status = windows.ntdll.NtAllocateVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), 0, &size, .{ .RESERVE = true }, .{ .NOACCESS = true }); // aegis: boundary(A019): the binding takes the base address as `*?*anyopaque`
+        const status = windows.ntdll.NtAllocateVirtualMemory(windows.GetCurrentProcess(), @ptrCast(&address), 0, &size, .{ .RESERVE = true }, .{ .NOACCESS = true });
         if (status != .SUCCESS) return null;
         return address.?;
     }
@@ -159,7 +159,7 @@ fn reserveAt(at: usize) ?[*]align(std.heap.page_size_min) u8 {
     // std names no NORESERVE for every architecture (riscv64's, loongarch's); a mapping with
     // no access is charged no commit there either.
     if (comptime @hasField(std.posix.MAP, "NORESERVE")) flags.NORESERVE = true;
-    const mapped = std.posix.mmap(if (at == 0) null else @ptrFromInt(at), reserve, .{}, flags, -1, 0) catch return null; // aegis: boundary(A019): mmap takes the hinted address of the region to reserve
+    const mapped = std.posix.mmap(if (at == 0) null else @ptrFromInt(at), reserve, .{}, flags, -1, 0) catch return null;
     return mapped.ptr;
 }
 
@@ -169,7 +169,7 @@ fn commit(at: [*]u8, len: usize) bool {
         var size: windows.SIZE_T = len;
         return windows.ntdll.NtAllocateVirtualMemory(windows.GetCurrentProcess(), &address, 0, &size, .{ .COMMIT = true }, .{ .READWRITE = true }) == .SUCCESS;
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at); // aegis: no-danger(A019): commits start at the region's base or a commit step past it, page-aligned
+    const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at);
     return std.posix.errno(std.posix.system.mprotect(start, len, .{ .READ = true, .WRITE = true })) == .SUCCESS;
 }
 
@@ -182,7 +182,7 @@ fn decommit(at: [*]u8, len: usize) void {
         _ = windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), &address, &size, .{ .DECOMMIT = true });
         return;
     }
-    const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at); // aegis: no-danger(A019): a large block starts on a page
+    const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at);
     const advice = if (builtin.target.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
     // glint-ignore: Z026 -- pages not given back stay resident until the region goes
     std.posix.madvise(start, len, advice) catch {};
