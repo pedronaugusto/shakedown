@@ -1,0 +1,14 @@
+{
+  "seams": [
+    { "module": "src/sim/", "rules": ["A007", "A011", "A015", "P007"], "reason": "shakedown implements std.Io; these are std.Io's own types" },
+    { "file": "src/Clock.zig", "rules": ["A007", "A011", "A015", "P007"], "reason": "shakedown implements std.Io; these are std.Io's own types" },
+    { "file": "src/FaultIo.zig", "rules": ["A007", "A011", "A015", "P007"], "reason": "shakedown implements std.Io; these are std.Io's own types" },
+    { "file": "src/conformance.zig", "rules": ["A007", "A011", "A015", "P007"], "reason": "shakedown implements std.Io; these are std.Io's own types, the subject of its conformance checks" },
+    { "file": "src/alloc/LockProbe.zig", "rules": ["A007"], "reason": "probes std's own locks, read as std lays them out" },
+    { "file": "src/alloc/Quarantine.zig", "rules": ["P007"], "reason": "page protection through the OS: the quarantine maps, protects and unmaps the pages it hands out" },
+    { "module": "src/conformance/", "rules": ["A009"], "reason": "std's file reads are the subject of the conformance checks" },
+    { "file": "src/fuzz.zig", "rules": ["A009"], "reason": "the fuzzer's cache: reads what the fuzzer left, to judge the session" },
+    { "file": "src/fuzz/main.zig", "rules": ["A009"], "reason": "the fuzz campaign's driver: runs the package's own fuzz step and reads its result" },
+    { "file": "src/bench/compare.zig", "rules": ["A009"], "reason": "the benchmark comparison tool: reads the two result files named on its command line" }
+  ]
+}
