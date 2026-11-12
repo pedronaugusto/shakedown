@@ -50,6 +50,7 @@ test {
     _ = @import("determinism.zig");
     _ = @import("layer_test.zig");
     _ = @import("swarm_test.zig");
+    _ = @import("points_test.zig");
     _ = @import("clock_test.zig");
     _ = @import("quarantine_test.zig");
     _ = @import("no_resize_test.zig");

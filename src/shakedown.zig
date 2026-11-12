@@ -72,6 +72,8 @@ pub const CheckReport = @import("check.zig").CheckReport;
 pub const Swarm = @import("swarm.zig").Swarm;
 /// What `Case.swarm` gives: the simulation, the task count and the knobs drawn.
 pub const Swarmed = @import("swarm.zig").Swarmed;
+/// What a run saw of one fault point it names (`CheckOptions.points`, `CheckOptions.point_counts`).
+pub const PointCount = @import("points.zig").Count;
 /// A property run once for every way its choices can go: schedules within a
 /// preemption bound, with partial-order reduction.
 pub const explore = @import("explore.zig").explore;

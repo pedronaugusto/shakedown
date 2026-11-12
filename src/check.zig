@@ -24,6 +24,7 @@ const target = @import("target.zig");
 const corpus = @import("corpus.zig");
 const Sim = @import("Sim.zig");
 const swarm_mod = @import("swarm.zig");
+const points = @import("points.zig");
 
 /// One run of a property's body.
 pub const Case = struct {
@@ -134,6 +135,14 @@ pub const CheckOptions = struct {
     /// Points the run's passing cases must reach, each at least once: the
     /// labels `Case.reached` marks. The run fails if any is reached by none.
     reach: []const []const u8 = &.{},
+    /// The fault point sets the run exercises, each `aegis.points.list(E)`: the driver decides
+    /// these points in the code under test (`points.zig`), and leaves any other inert.
+    points: []const []const aegis.points.Point = &.{},
+    /// Whether the run fails when a point of `points` fired in no passing case, as an
+    /// unreached point of `reach` fails it.
+    points_must_fire: bool = true,
+    /// Filled at the end of the run, if given, with one count per point of `points`, in order.
+    point_counts: ?[]points.Count = null,
     /// Filled when a case fails, if given, and then nothing is printed.
     /// Free with `CheckReport.deinit`.
     diagnostics: ?*CheckReport = null,
@@ -233,7 +242,8 @@ pub fn check(
             .fail => |err| return runner.failed(err, .{ .case = .{ .seed = seed, .index = index, .passed = run.valid } }),
         }
     }
-    return runner.unreached(.{ .check = seed });
+    try runner.unreached(.{ .check = seed });
+    return runner.unfired(.{ .check = seed });
 }
 
 /// Where a `check` stands: the cases that passed, the runs tried.
@@ -459,6 +469,9 @@ pub const Runner = struct {
     /// Under `check` and `explore`, when the options name points to reach:
     /// which the current case reached, and which a passing case has.
     reach: ?Reach = null,
+    /// The fault point driver and its counts, when the options name points (not under
+    /// `explore`, whose options name none).
+    points: ?points.Points = null,
     /// Whether the test runner handed `check`'s fuzz function an input of its
     /// own: it does not fuzz.
     probed: bool = false,
@@ -471,11 +484,15 @@ pub const Runner = struct {
     trace_len: usize = 0,
 
     pub fn init(gpa: Allocator, options: CheckOptions) error{OutOfMemory}!Runner {
+        var source: Source = try .initRecording(gpa, .{ .prng = 0 }, .{ .max_choices = options.max_choices });
+        errdefer source.deinit();
+        const driver: ?points.Points = if (options.points.len == 0) null else try .init(gpa, options.points);
         return .{
             .gpa = gpa,
             .options = options,
-            .source = try .initRecording(gpa, .{ .prng = 0 }, .{ .max_choices = options.max_choices }),
+            .source = source,
             .arena = .init(gpa),
+            .points = driver,
         };
     }
 
@@ -494,6 +511,7 @@ pub const Runner = struct {
         if (r.notes) |*n| n.deinit(r.gpa);
         if (r.targets) |*t| t.deinit();
         if (r.reach) |*reach| reach.deinit();
+        if (r.points) |*p| p.deinit();
         r.* = undefined;
     }
 
@@ -505,7 +523,18 @@ pub const Runner = struct {
         if (r.reach) |*reach| reach.startCase();
         var c: Case = .{ .source = &r.source, .gpa = r.arena.allocator(), .runner = r };
         if (@errorReturnTrace()) |t| t.index = 0;
+        if (r.points) |*p| p.start(&r.source, &r.sims);
         const result = r.body.run(r.body.ctx, &c);
+        const passed = if (result) |_| !r.source.overrun() else |_| false;
+        if (r.points) |*p| {
+            p.end(passed);
+            if (passed) if (r.reach) |*reach| {
+                var fired: std.ArrayList([]const u8) = .empty;
+                defer fired.deinit(r.gpa);
+                try p.firedLabels(&fired, r.gpa);
+                for (fired.items) |label| reach.mark(label);
+            };
+        }
         if (r.notes != null) if (result) |_| {} else |_| r.keepTrace();
         for (r.sims.items) |s| s.deinit();
         r.sims.clearRetainingCapacity();
@@ -518,6 +547,27 @@ pub const Runner = struct {
         return .pass;
     }
 
+    /// Every case passed: the counts go to `point_counts`, and the run fails,
+    /// reported as a case's failure is, when a fault point it names fired in no
+    /// passing case (unless `points_must_fire` is false).
+    pub fn unfired(r: *Runner, ran: Ran) CheckError!void {
+        const p = &(r.points orelse return);
+        if (r.options.point_counts) |out| @memcpy(out[0..p.counts.len], p.counts);
+        if (!r.options.points_must_fire or p.allFired()) return;
+        var text: std.Io.Writer.Allocating = .init(r.gpa);
+        defer text.deinit();
+        var missed: usize = 0;
+        for (p.counts) |count| missed += @intFromBool(count.fired_passing == 0);
+        text.writer.print("shakedown: {d} of {d} fault points fired in no passing case", .{ missed, p.counts.len }) catch return error.OutOfMemory;
+        switch (ran) {
+            .check => |seed| text.writer.print(" (seed 0x{x})", .{seed}) catch return error.OutOfMemory,
+            .explore => {},
+        }
+        text.writer.writeAll(": error.Unfired\n") catch return error.OutOfMemory;
+        p.print(&text.writer) catch return error.OutOfMemory;
+        return r.runFailed(&text, error.Unfired);
+    }
+
     /// Every case passed: the run fails, reported as a case's failure is,
     /// when a point the options name to reach was reached by none.
     pub fn unreached(r: *Runner, ran: Ran) CheckError!void {
@@ -526,6 +576,12 @@ pub const Runner = struct {
         var text: std.Io.Writer.Allocating = .init(r.gpa);
         defer text.deinit();
         reach.print(&text.writer, ran) catch return error.OutOfMemory;
+        return r.runFailed(&text, error.Unreached);
+    }
+
+    /// A run whose every case passed fails with `err`, its report `text`: printed, or kept in
+    /// the options' diagnostics with an empty tape.
+    fn runFailed(r: *Runner, text: *std.Io.Writer.Allocating, err: anyerror) CheckError!void {
         const diagnostics = r.options.diagnostics orelse {
             var buffer: [256]u8 = undefined;
             const stderr = std.debug.lockStderr(&buffer).terminal();
@@ -539,7 +595,7 @@ pub const Runner = struct {
             r.gpa.free(tape);
             return error.OutOfMemory;
         };
-        diagnostics.* = .{ .err = error.Unreached, .tape = tape, .shrink_runs = 0, .text = owned, .gpa = r.gpa };
+        diagnostics.* = .{ .err = err, .tape = tape, .shrink_runs = 0, .text = owned, .gpa = r.gpa };
         return error.PropertyFailed;
     }
 
