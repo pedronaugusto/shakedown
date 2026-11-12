@@ -87,7 +87,7 @@ pub const Chooser = struct {
     };
 };
 
-const From = union(enum) {
+pub const From = union(enum) {
     prng: std.Random.Xoshiro256,
     replay: struct { choices: []const u64, at: usize = 0, past: ?std.Random.Xoshiro256 = null },
     smith: *std.testing.Smith,

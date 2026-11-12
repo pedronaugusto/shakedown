@@ -364,7 +364,7 @@ fn edgeFloats(comptime T: type) []const T {
     const max = std.math.floatMax(T);
     const normal = std.math.floatMin(T);
     const tiny = std.math.floatTrueMin(T);
-    const out = [_]T{ std.math.nan(T), inf, -inf, max, -max, -0.0, normal, -normal, tiny, -tiny, std.math.floatEps(T), normal / 2 };
+    const out = comptime [_]T{ std.math.nan(T), inf, -inf, max, -max, -0.0, normal, -normal, tiny, -tiny, std.math.floatEps(T), normal / 2 };
     return &out;
 }
 

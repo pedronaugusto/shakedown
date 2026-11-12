@@ -173,7 +173,7 @@ const Key = struct {
 
 const Timers = std.Treap(Key, Key.order);
 
-const Bucket = struct { head: ?*Task = null, tail: ?*Task = null };
+pub const Bucket = struct { head: ?*Task = null, tail: ?*Task = null };
 
 /// What a task was asked to do.
 pub const Job = union(enum) {

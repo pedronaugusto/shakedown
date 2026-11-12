@@ -165,7 +165,7 @@ fn choiceHash(index: usize) u64 {
 fn Cache(comptime Model: type) type {
     return struct {
         const Self = @This();
-        const Entry = struct { occupied: bool = false, hash: u64 = 0, state: Model.State = undefined };
+        pub const Entry = struct { occupied: bool = false, hash: u64 = 0, state: Model.State = undefined };
         entries: []Entry,
         masks: []bool,
         width: usize,

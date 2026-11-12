@@ -4,7 +4,7 @@ const t = std.testing;
 const sd = @import("shakedown.zig");
 const lin = sd.linearizable;
 
-const Stack = struct {
+pub const Stack = struct {
     pub const State = u8;
     pub const Command = enum { push, pop };
     pub const Response = u8;

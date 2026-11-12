@@ -285,7 +285,7 @@ const Calls = struct {
 };
 
 /// `Calls` each call reads without the lock: one load per call.
-const Watching = struct {
+pub const Watching = struct {
     calls: [io_call.call_count]aegis.Atomic(Watch) = @splat(.init(.passed)),
 
     const Watch = enum(u8) { passed, watched };
@@ -993,7 +993,7 @@ fn operationOutcome(comptime tag: Io.Operation.Tag, result: Io.Operation.Result)
 const Held = struct { task: u64, rearmed: bool = false };
 
 /// How a `FaultIo` sees the calling task.
-const Tasks = struct {
+pub const Tasks = struct {
     /// Internal: installed only by a Sim with an Fs.
     on_crash: ?*const fn (base: Io) void = null,
     /// Which task is calling: its thread, by default.

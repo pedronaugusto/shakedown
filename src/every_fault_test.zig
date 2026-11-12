@@ -24,7 +24,7 @@ pub const Save = struct {
     /// What the clean run drew.
     first: ?[4]u8 = null,
 
-    const How = enum {
+    pub const How = enum {
         /// Temp file, sync, rename: the old save survives any fault.
         atomic,
         /// Truncates the save, then writes it: a fault loses the old one.

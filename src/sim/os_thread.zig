@@ -129,6 +129,7 @@ const ProcessInformation = extern struct {
     image_name: windows.UNICODE_STRING,
     base_priority: i32,
     unique_process_id: usize,
+    // glint-ignore: P008 -- Windows' SYSTEM_PROCESS_INFORMATION layout, as Windows names it
     inherited_from_unique_process_id: usize,
     handle_count: u32,
     session_id: u32,

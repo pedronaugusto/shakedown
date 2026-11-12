@@ -52,7 +52,7 @@ pub const Points = struct {
     thread: std.Thread.Id = undefined,
     sims: ?*const std.ArrayList(*Sim) = null,
 
-    const CaseState = struct { met: bool = false, armed: bool = false, fired: bool = false };
+    pub const CaseState = struct { met: bool = false, armed: bool = false, fired: bool = false };
 
     const vtable: aegis.points.Driver.VTable = .{ .fault = fault, .shorten = shorten, .yield = yield, .reached = reached };
 
@@ -69,7 +69,7 @@ pub const Points = struct {
         errdefer for (labels[0..made]) |label| gpa.free(label);
         for (sets) |set| for (set) |point| {
             counts[made] = .{ .point = point };
-            labels[made] = try std.fmt.allocPrint(gpa, "{f}", .{point});
+            labels[made] = try gpa.print("{f}", .{point});
             made += 1;
         };
         @memset(case, .{});

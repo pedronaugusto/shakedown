@@ -6,6 +6,7 @@ const aegis = @import("aegis");
 /// itself; any other failure is a second one, printed beside the test's own rather than dropped.
 pub fn reap(comptime T: type, io: std.Io, future: *std.Io.Future(T)) void {
     if (future.cancel(io)) |_| {} else |err| {
+        // glint-ignore: P005 -- a second failure goes to the test's standard error
         if (@as(anyerror, err) != error.Canceled) std.debug.print("a reaped task failed too: {s}\n", .{@errorName(err)});
     }
 }

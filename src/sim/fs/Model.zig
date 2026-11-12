@@ -1232,7 +1232,7 @@ pub fn restore(fs: *Model, snap: Snapshot) void {
     fs.restoreStorage(snap);
     fs.handles.clearRetainingCapacity();
 }
-const Unit = struct { record: usize, sector: ?u64 };
+pub const Unit = struct { record: usize, sector: ?u64 };
 /// Bounded exploration: increasing number of retained effects, all subsets and
 /// all orders within each subset, including individual sectors of pending writes.
 /// Identical persisted trees reached by distinct histories are returned once.

@@ -28,7 +28,7 @@ committed: usize = 0,
 /// Private: freed blocks of each class.
 free_lists: [classes]?*Free = @splat(null),
 
-const Free = struct { next: ?*Free };
+pub const Free = struct { next: ?*Free };
 
 const min_shift = 4;
 const max_shift = 16;

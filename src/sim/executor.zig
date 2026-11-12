@@ -51,7 +51,7 @@ pub const Context = struct {
     thread: Baton = .{},
 };
 
-const Baton = struct {
+pub const Baton = struct {
     /// Whether this context may run.
     turn: aegis.Atomic(Turn) = .init(.waiting),
     /// Set to make the thread exit when it next gets the baton.
