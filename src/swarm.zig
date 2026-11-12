@@ -16,6 +16,8 @@ const Io = std.Io;
 const aegis = @import("aegis");
 const Source = @import("Source.zig");
 const Sim = @import("Sim.zig");
+const nanoseconds = @import("nanoseconds.zig");
+const Span = nanoseconds.Span;
 
 /// The most each knob may draw. A knob whose bound is 0 (or empty) is never
 /// drawn and keeps the base's setting.
@@ -52,7 +54,7 @@ pub const Swarm = struct {
     pub fn valid(s: Swarm) bool {
         const rates = [_]u32{ s.loss_per_million, s.duplicate_per_million, s.reorder_per_million, s.storage.rot_per_million, s.storage.latent_error_per_million, s.storage.misdirect_per_million, s.storage.lost_write_per_million, s.storage.sync_lie_per_million, s.spurious_wake_per_million, s.yield_per_million };
         for (rates) |rate| if (rate > 1_000_000) return false;
-        return s.tasks.min <= s.tasks.max and s.latency.nanoseconds >= 0 and s.late.nanoseconds >= 0;
+        return s.tasks.min <= s.tasks.max and nanoseconds.span(s.latency).compare(.fromRaw(0)) != .lt and nanoseconds.span(s.late).compare(.fromRaw(0)) != .lt;
     }
 };
 
@@ -116,7 +118,7 @@ pub fn draw(source: *Source, base: Sim.Options, bounds: Swarm) Drawn {
         k.reorder_per_million = drawRate(source, bounds.reorder_per_million, &link.reorder_per_million);
     }
     k.late = knob(source, nanos(bounds.late));
-    if (k.late != 0) options.clock.late = .fromNanoseconds(k.late);
+    if (k.late != 0) options.clock.late = knobSpan(k.late).toIoDuration();
     k.skew = !std.meta.eql(bounds.skew, Sim.Node.Clock.Skew{}) and source.below(1) == 1;
     if (options.fs) |*fs| {
         inline for (@typeInfo(Sim.Fs.Faults).@"struct".field_names) |field| {
@@ -147,19 +149,32 @@ fn drawRate(source: *Source, max: u32, into: *u32) u32 {
     return drawn;
 }
 
-/// A duration bound in nanoseconds, as far as a u64 holds.
+/// A duration bound in nanoseconds, as the knob draws it: a bound `valid` holds non-negative, kept in an `i64`
+/// (`nanoseconds.span`), so it converts to a `u64` whole; a negative one draws nothing.
 fn nanos(d: Io.Duration) u64 {
-    return std.math.cast(u64, d.nanoseconds) orelse std.math.maxInt(u64);
+    const bound = nanoseconds.span(d).convert(.nanosecond, u64, .exact) catch return 0;
+    return bound.raw();
+}
+
+/// A drawn knob's nanoseconds as a span: a knob is at most its bound, which `nanos` took from an `i64`.
+fn knobSpan(knob_nanoseconds: u64) Span {
+    const kept = aegis.units.Duration(.nanosecond, u64).fromRaw(knob_nanoseconds);
+    return kept.convert(.nanosecond, i64, .exact) catch .fromRaw(std.math.maxInt(i64));
 }
 
 /// `latency` with its upper end `extra` nanoseconds later.
 fn widened(latency: Sim.Net.Dist, extra: u64) Sim.Net.Dist {
-    const more: i96 = extra;
+    const more = knobSpan(extra);
     return switch (latency) {
-        .fixed => |d| .{ .uniform = .{ .min = d, .max = .fromNanoseconds(d.nanoseconds +| more) } },
-        .uniform => |u| .{ .uniform = .{ .min = u.min, .max = .fromNanoseconds(u.max.nanoseconds +| more) } },
-        .exponential => |e| .{ .exponential = .{ .mean = .fromNanoseconds(e.mean.nanoseconds +| more) } },
+        .fixed => |d| .{ .uniform = .{ .min = d, .max = later(d, more) } },
+        .uniform => |u| .{ .uniform = .{ .min = u.min, .max = later(u.max, more) } },
+        .exponential => |e| .{ .exponential = .{ .mean = later(e.mean, more) } },
     };
+}
+
+/// `d` made `more` later, saturating where a kept span ends.
+fn later(d: Io.Duration, more: Span) Io.Duration {
+    return nanoseconds.span(d).saturatingAdd(more).toIoDuration();
 }
 
 /// A case's swarmed simulation (`Case.swarm`).

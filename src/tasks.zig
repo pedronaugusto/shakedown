@@ -20,7 +20,7 @@ const Reached = enum(u32) { no, yes };
 
 fn waitForCancel(io: std.Io, reached: *aegis.Atomic(Reached)) std.Io.Cancelable!void {
     reached.store(.yes, .release);
-    try io.sleep(.fromSeconds(60), .awake);
+    try io.sleep(aegis.units.Duration(.second, u32).fromRaw(60).toIoDuration(), .awake);
 }
 
 test "a reaped task is cancelled and its cancel is its end" {

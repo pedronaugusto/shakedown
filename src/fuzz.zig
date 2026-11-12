@@ -104,7 +104,7 @@ pub const Session = enum { ran, crashed, idle };
 pub fn judge(before: Cache, after: Cache) Session {
     if (after.crash) |saved| {
         const earlier = before.crash orelse return .crashed;
-        if (saved.nanoseconds != earlier.nanoseconds) return .crashed;
+        if (!saved.compare(.eq, earlier)) return .crashed;
     }
     return if (after.runs > before.runs) .ran else .idle;
 }
