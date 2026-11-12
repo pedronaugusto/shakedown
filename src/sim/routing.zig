@@ -4,12 +4,12 @@ const Io = std.Io;
 const Core = @import("Core.zig");
 const layer = @import("../layer.zig");
 const State = struct { context: *Core.Context };
-const Overrides = blk: {
+const overrides_by_slot = blk: {
     var overrides: layer.Overrides = .{};
     for (@typeInfo(Io.VTable).@"struct".field_names) |name| @field(overrides, name) = forwarder(name);
     break :blk overrides;
 };
-pub const Routing = layer.Layer(State, Overrides);
+pub const Routing = layer.Layer(State, overrides_by_slot);
 fn forwarder(comptime name: []const u8) @FieldType(Io.VTable, name) {
     const Fn = @typeInfo(@FieldType(Io.VTable, name)).pointer.child;
     const info = @typeInfo(Fn).@"fn";
