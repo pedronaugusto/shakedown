@@ -1722,11 +1722,13 @@ fn joined(f: *const FaultIo, s: *const Locked, dir: Io.Dir, sub_path: []const u8
 
 fn remember(f: *FaultIo, comptime name: []const u8, result: Return(name), path: ?[]const u8) void {
     const p = path orelse return;
+    // glint-ignore: Z026 -- a failed open has no handle to remember
     const opened = result catch return;
     const handle = if (comptime std.mem.eql(u8, name, "dirCreateFileAtomic")) handleId(opened.file.handle) else handleId(opened.handle);
     var held = f.acquire();
     defer held.deinit(f.base);
     const s = held.value();
+    // glint-ignore: Z026 -- a path that cannot be stored leaves the handle unnamed, nothing worse
     const copy = s.path_arena.allocator().dupe(u8, p) catch return;
     // glint-ignore: Z026 -- a path that cannot be stored leaves the handle unnamed, nothing worse
     s.paths.put(f.gpa, handle, copy) catch {};

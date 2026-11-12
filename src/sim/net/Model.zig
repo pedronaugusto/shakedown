@@ -543,7 +543,10 @@ fn sendTo(m: *Model, sender: *Socket, receiver: *Socket, bytes: []const u8) Erro
     const l = m.links.getPtr(key(sender.node, receiver.node)).?.value;
     if (m.chance(l.loss_per_million)) return;
     try m.enqueue(sender, receiver, bytes, .datagram);
-    if (m.chance(l.duplicate_per_million)) m.enqueue(sender, receiver, bytes, .datagram) catch return; // A bounded receive queue may drop a duplicate.
+    if (m.chance(l.duplicate_per_million)) {
+        // glint-ignore: Z026 -- a bounded receive queue may drop a duplicate
+        m.enqueue(sender, receiver, bytes, .datagram) catch return;
+    }
 }
 pub const Received = struct { address: Address, len: usize, truncated: bool };
 pub fn receive(m: *Model, s: *Socket, out: []u8, peek: bool) ?Received {

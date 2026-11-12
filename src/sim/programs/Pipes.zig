@@ -190,6 +190,7 @@ pub fn end(p: *Pipes, handle: Io.File.Handle) HandleError!*End {
 /// close of one is a double close, which the simulation's close slot reports
 /// (`Core.doubleClose`) before it gets here.
 pub fn close(p: *Pipes, handle: Io.File.Handle) void {
+    // glint-ignore: Z026 -- a closed or unknown handle is ignored, as the doc comment says
     const e = p.end(handle) catch return;
     e.open = false;
     switch (e.kind) {

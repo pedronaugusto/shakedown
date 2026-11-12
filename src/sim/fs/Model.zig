@@ -209,6 +209,7 @@ pub fn openHandle(fs: *Model, inode: u32, read_access: bool, write_access: bool,
 }
 /// Marks the handle as opened by simulated process `owner`.
 pub fn setOwner(fs: *Model, raw: Io.File.Handle, owner: u32) void {
+    // glint-ignore: Z026 -- a handle the model does not hold has no owner to mark
     const h = fs.handle(raw) catch return;
     h.owner = owner;
 }

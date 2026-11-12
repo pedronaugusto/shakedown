@@ -241,6 +241,7 @@ fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, 
         if (!@hasDecl(Ctx, "faultsFor")) return &.{};
         for (ctx.faultsFor(record)) |fault| {
             if (len == buffer.len) break;
+            // glint-ignore: Z026 -- a fault this call cannot take is not one of its faults
             fault.check(.foreign) catch continue;
             buffer[len] = fault;
             len += 1;
@@ -264,6 +265,7 @@ fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, 
     for (options.lost_answers) |err| {
         if (len == buffer.len) break;
         const fault: IoFault = .{ .fail_after = err };
+        // glint-ignore: Z026 -- a fault this call cannot take is not one of its faults
         fault.check(call) catch continue;
         buffer[len] = fault;
         len += 1;
@@ -277,6 +279,7 @@ fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, 
             // No progress, where moving nothing is not the end of the file.
             if (len < buffer.len) none: {
                 const fault: IoFault = .{ .short = 0 };
+                // glint-ignore: Z026 -- a fault this call cannot take is not one of its faults
                 fault.check(call) catch break :none;
                 buffer[len] = fault;
                 len += 1;

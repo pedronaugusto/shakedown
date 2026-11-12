@@ -426,6 +426,7 @@ const slots = struct {
         return fs.tryLock(file.handle, lock);
     }
     pub fn fileUnlock(c: *Core, fs: *Fs, file: Io.File) void {
+        // glint-ignore: Z026 -- unlocking an unknown handle has no lock to release
         _ = fs.tryLock(file.handle, .none) catch return;
         wakeLocks(c, fs);
     }

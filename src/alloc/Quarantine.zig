@@ -163,6 +163,7 @@ fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) vo
     }
     const reuse = q.options.reuse_after orelse return;
     const limit: aegis.bounded.Limit(usize) = .init(reuse.raw());
+    // glint-ignore: Z026 -- the range stays decommitted and protected: a use after free still traps
     state.freed.append(bookkeeping, range) catch return;
     state.quarantined += span;
     while (state.freed_head < state.freed.items.len and exceeds(limit, state.quarantined)) {

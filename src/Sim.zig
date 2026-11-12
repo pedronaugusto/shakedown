@@ -477,13 +477,18 @@ fn describe(s: *Sim) void {
     var buffer: [256]u8 = undefined;
     const stderr = std.debug.lockStderr(&buffer).terminal();
     defer std.debug.unlockStderr();
-    const w = stderr.writer;
-    w.print("shakedown: a task panicked in a simulation at step {d}", .{s.core.steps}) catch return;
-    if (s.core.options.source == null) w.print(", seed 0x{x}", .{s.core.options.seed}) catch return;
+    // glint-ignore: Z026 -- standard error refused the description: the panic goes on without it
+    s.write(stderr.writer) catch {};
+}
+
+/// What `describe` says of the panicking simulation: its step, seed and tape, then its last calls.
+fn write(s: *Sim, w: *std.Io.Writer) std.Io.Writer.Error!void {
+    try w.print("shakedown: a task panicked in a simulation at step {d}", .{s.core.steps});
+    if (s.core.options.source == null) try w.print(", seed 0x{x}", .{s.core.options.seed});
     const t = s.core.source.tape();
-    if (t.choices.len > 0) w.print("; tape {f}", .{t}) catch return;
-    w.writeAll("\nlast calls:\n") catch return;
-    s.core.trace.format(w) catch return;
+    if (t.choices.len > 0) try w.print("; tape {f}", .{t});
+    try w.writeAll("\nlast calls:\n");
+    try s.core.trace.format(w);
 }
 
 /// The owned deterministic network. Disabled network slots fail explicitly.
