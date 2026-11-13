@@ -18,6 +18,7 @@ test {
     _ = @import("sim/fs/names.zig");
     _ = @import("shakedown.zig");
     _ = @import("layer.zig");
+    _ = @import("tasks.zig");
     _ = @import("Clock.zig");
     _ = @import("nanoseconds.zig");
     _ = @import("alloc/Counting.zig");
