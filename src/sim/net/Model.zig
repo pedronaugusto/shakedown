@@ -48,6 +48,12 @@ pub const Socket = struct {
     reset: bool = false,
     timed_out: bool = false,
     allow_broadcast: bool = false,
+    /// Its port shared, as `SO_REUSEADDR` and `SO_REUSEPORT` share it: a
+    /// later bind of the port that shares it too is let through.
+    reuse: bool = false,
+    /// The listener a connecting end dialed, for as long as it lives: a
+    /// connection's destination, whatever became of the end that answered.
+    dialed: ?Handle = null,
     datagrams: std.ArrayList(*Packet) = .empty,
     /// The simulated process that opened it, closed when it ends; 0 for
     /// the test's own.
@@ -349,12 +355,60 @@ pub fn connect(m: *Model, node: NodeId, addr: Address) Error!*Socket {
         .{ .ip6 = .loopback(0) }
     else
         null;
-    return m.connectFrom(node, listener, false, source);
+    return m.connectFrom(node, listener, false, source, false);
+}
+/// A stream connect from `local`, bound first as a kernel binds a socket
+/// before its connect. The bind is refused `AddressUnavailable` for an IP
+/// the node does not hold, and `AddressInUse` for a port a stream or
+/// listener of the node holds, unless both share it (`reuse`); port 0
+/// takes a free ephemeral one. A wildcard IP becomes the one the connect
+/// goes from, as `connect`'s. A second connection with the same source and
+/// destination is refused `AddressUnavailable`, as a kernel refuses one.
+pub fn connectBound(m: *Model, node: NodeId, addr: Address, local: Address, reuse: bool) Error!*Socket {
+    if (!wildcard(local) and m.route(node, local) != node) return error.AddressUnavailable;
+    if (local.getPort() != 0 and m.portTaken(node, local, reuse)) return error.AddressInUse;
+    const destination = m.route(node, addr) orelse return error.ConnectionRefused;
+    const listener = m.bound(destination, addr, .listener) orelse return error.ConnectionRefused;
+    var source = local;
+    if (wildcard(local)) {
+        source = if (sameIp(addr, .{ .ip4 = .loopback(0) })) .{ .ip4 = .loopback(0) } else if (sameIp(addr, .{ .ip6 = .loopback(0) })) .{ .ip6 = .loopback(0) } else m.address(node);
+        source.setPort(local.getPort());
+    }
+    if (source.getPort() == 0) {
+        var attempts: u32 = 0;
+        while (attempts < 16384) : (attempts += 1) {
+            source.setPort(m.next_port);
+            m.next_port = if (m.next_port == 65535) 49152 else m.next_port + 1;
+            if (!m.portTaken(node, source, false)) break;
+        }
+        if (attempts == 16384) return error.SystemResources;
+    }
+    var it = m.sockets.valueIterator();
+    while (it.next()) |item| {
+        const s = item.*;
+        if (s.node != node or s.kind != .stream or !sameIp(s.address, source) or s.address.getPort() != source.getPort()) continue;
+        if (s.dialed == listener.handle) return error.AddressUnavailable;
+    }
+    const s = try m.connectFrom(node, listener, false, source, true);
+    s.reuse = reuse;
+    return s;
+}
+/// Whether a stream or listener of `node` holds the port of `addr`, past
+/// what sharing it allows: both must share it.
+fn portTaken(m: *Model, node: NodeId, addr: Address, reuse: bool) bool {
+    var it = m.sockets.valueIterator();
+    while (it.next()) |item| {
+        const s = item.*;
+        if (s.node != node or s.kind == .datagram or std.meta.activeTag(s.address) != std.meta.activeTag(addr) or s.address.getPort() != addr.getPort()) continue;
+        if (!(wildcard(s.address) or wildcard(addr) or sameIp(s.address, addr))) continue;
+        if (!(reuse and s.reuse)) return true;
+    }
+    return false;
 }
 pub fn connectListener(m: *Model, node: NodeId, listener: *Socket, local: bool) Error!*Socket {
-    return m.connectFrom(node, listener, local, null);
+    return m.connectFrom(node, listener, local, null, false);
 }
-fn connectFrom(m: *Model, node: NodeId, listener: *Socket, local: bool, source: ?Address) Error!*Socket {
+fn connectFrom(m: *Model, node: NodeId, listener: *Socket, local: bool, source: ?Address, bound_port: bool) Error!*Socket {
     var count: usize = 0;
     var it = m.sockets.valueIterator();
     while (it.next()) |s| if (s.*.listener == listener.handle and !s.*.accepted) {
@@ -367,12 +421,15 @@ fn connectFrom(m: *Model, node: NodeId, listener: *Socket, local: bool, source: 
         m.abort(endpoints[1].handle);
     }
     if (source) |a| endpoints[0].address = a;
-    endpoints[0].address.setPort(m.next_port);
-    m.next_port = if (m.next_port == 65535) 49152 else m.next_port + 1;
+    if (!bound_port) {
+        endpoints[0].address.setPort(m.next_port);
+        m.next_port = if (m.next_port == 65535) 49152 else m.next_port + 1;
+    }
     endpoints[1].address = listener.address;
     endpoints[0].connected = false;
     endpoints[1].connected = false;
     endpoints[1].listener = listener.handle;
+    endpoints[0].dialed = listener.handle;
     const p = try m.packet();
     m.sequence += 1;
     const l = m.links.getPtr(key(node, listener.node)).?.value;

@@ -329,6 +329,121 @@ test "Net a connection to a loopback address comes from the same loopback addres
     try finished(sim.run(Work.run, .{node.io()}));
 }
 
+test "Sim.socketsOf connects from the local endpoint it binds, and the listener sees the connection come from there" {
+    try t.expect(Sim.socketsOf(t.io) == null);
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const node = try sim.node("host", .{ .addresses = &.{try Io.net.IpAddress.parseIp4("10.0.0.9", 0)} });
+    const Work = struct {
+        fn from(io: Io, listener: *Io.net.Server, local: Io.net.IpAddress) !Io.net.IpAddress {
+            const sockets = Sim.socketsOf(io).?;
+            const socket = try sockets.connect(&listener.socket.address, .{ .local = local });
+            defer socket.close(io);
+            const accepted = try listener.accept(io);
+            defer accepted.close(io);
+            return accepted.socket.address;
+        }
+        fn run(io: Io) !void {
+            var listener = try (try Io.net.IpAddress.parse("127.0.0.1", 80)).listen(io, .{});
+            defer listener.deinit(io);
+            var other = try (try Io.net.IpAddress.parse("10.0.0.9", 81)).listen(io, .{});
+            defer other.deinit(io);
+            try t.expect((try from(io, &listener, try .parse("127.0.0.1", 4000))).eql(&try .parse("127.0.0.1", 4000)));
+            // A wildcard takes the IP the connect goes from: the loopback for the loopback, the node's own for it.
+            try t.expect((try from(io, &listener, try .parse("0.0.0.0", 4001))).eql(&try .parse("127.0.0.1", 4001)));
+            try t.expect((try from(io, &other, try .parse("0.0.0.0", 4002))).eql(&try .parse("10.0.0.9", 4002)));
+            // Port 0 takes an ephemeral one.
+            try t.expect((try from(io, &other, try .parse("10.0.0.9", 0))).getPort() >= 49152);
+            // An IP the node does not hold, and another family than the destination's, are refused before any connect.
+            const sockets = Sim.socketsOf(io).?;
+            try t.expectError(error.AddressUnavailable, sockets.connect(&listener.socket.address, .{ .local = try .parse("10.9.9.9", 0) }));
+            try t.expectError(error.AddressFamilyUnsupported, sockets.connect(&listener.socket.address, .{ .local = try .parse("::1", 0) }));
+            // Without a local endpoint it is the simulation's connect.
+            const plain = try sockets.connect(&listener.socket.address, .{});
+            defer plain.close(io);
+            (try listener.accept(io)).close(io);
+        }
+    };
+    try finished(sim.run(Work.run, .{node.io()}));
+}
+
+test "Sim.socketsOf shares a bound port only where both binds share it, and never between two connections to one destination" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const Work = struct {
+        fn run(io: Io) !void {
+            const sockets = Sim.socketsOf(io).?;
+            var a = try (try Io.net.IpAddress.parse("127.0.0.1", 80)).listen(io, .{});
+            defer a.deinit(io);
+            var b = try (try Io.net.IpAddress.parse("127.0.0.1", 81)).listen(io, .{});
+            defer b.deinit(io);
+            const held = try sockets.connect(&a.socket.address, .{ .local = try .parse("127.0.0.1", 4000) });
+            defer held.close(io);
+            (try a.accept(io)).close(io);
+            // The port is held by a socket that does not share it: asking to share it is not enough.
+            try t.expectError(error.AddressUnavailable, sockets.connect(&b.socket.address, .{ .local = try .parse("127.0.0.1", 4000) }));
+            try t.expectError(error.AddressUnavailable, sockets.connect(&b.socket.address, .{ .local = try .parse("0.0.0.0", 4000), .reuse_address = true }));
+            // Shared by both, it binds again, to another destination.
+            const first = try sockets.connect(&a.socket.address, .{ .local = try .parse("127.0.0.1", 4001), .reuse_address = true });
+            defer first.close(io);
+            (try a.accept(io)).close(io);
+            const second = try sockets.connect(&b.socket.address, .{ .local = try .parse("127.0.0.1", 4001), .reuse_address = true });
+            defer second.close(io);
+            const accepted = try b.accept(io);
+            defer accepted.close(io);
+            try t.expect(accepted.socket.address.eql(&try .parse("127.0.0.1", 4001)));
+            // The same source and destination twice are one connection too many.
+            try t.expectError(error.AddressUnavailable, sockets.connect(&a.socket.address, .{ .local = try .parse("127.0.0.1", 4001), .reuse_address = true }));
+            // A listener's port is held as a connection's is.
+            try t.expectError(error.AddressUnavailable, sockets.connect(&a.socket.address, .{ .local = try .parse("127.0.0.1", 81) }));
+        }
+    };
+    try finished(sim.run(Work.run, .{sim.io()}));
+}
+
+test "Sim.socketsOf's bound connect ends at its timeout where the handshake does not come back" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null, .schedule = .fifo });
+    defer sim.deinit();
+    const address = try Io.net.IpAddress.parseIp4("10.6.0.2", 8000);
+    const a = try sim.node("a", .{ .addresses = &.{try Io.net.IpAddress.parseIp4("10.6.0.1", 0)} });
+    const b = try sim.node("b", .{ .addresses = &.{address} });
+    const Work = struct {
+        fn run(s: *Sim, left: *Sim.Node, right: *Sim.Node, addr: Io.net.IpAddress) !void {
+            var server = try addr.listen(right.io(), .{});
+            defer server.deinit(right.io());
+            s.net().hold(left, right);
+            const sockets = Sim.socketsOf(left.io()).?;
+            const at = s.now(.awake).nanoseconds;
+            try t.expectError(error.Timeout, sockets.connect(&addr, .{ .local = try .parse("10.6.0.1", 5000), .timeout = timeout(1000) }));
+            try t.expectEqual(1000, s.now(.awake).nanoseconds - at);
+            // The attempt given up let its port go.
+            s.net().release(left, right);
+            const client = try sockets.connect(&addr, .{ .local = try .parse("10.6.0.1", 5000) });
+            defer client.close(left.io());
+            const peer = try server.accept(right.io());
+            defer peer.close(right.io());
+            try t.expect(peer.socket.address.eql(&try .parse("10.6.0.1", 5000)));
+        }
+    };
+    try finished(sim.run(Work.run, .{ sim, a, b, address }));
+}
+
+test "Sim.socketsOf's connect restricted to an interface ends the run as unmodeled" {
+    const sim = try Sim.init(t.allocator, .{ .watchdog = null });
+    defer sim.deinit();
+    const Work = struct {
+        fn run(io: Io) !void {
+            var listener = try (try Io.net.IpAddress.parse("127.0.0.1", 80)).listen(io, .{});
+            defer listener.deinit(io);
+            const socket = try Sim.socketsOf(io).?.connect(&listener.socket.address, .{ .interface = .{ .index = 1 } });
+            socket.close(io);
+        }
+    };
+    const outcome = sim.run(Work.run, .{sim.io()});
+    try t.expect(outcome == .unmodeled);
+    try t.expect(outcome.unmodeled.call == .netConnectIp);
+}
+
 test "Net partition expires streams hold releases and canceled connect frees packets" {
     const sim = try Sim.init(t.allocator, .{ .watchdog = null, .schedule = .fifo, .net = .{ .max_packets = 2 } });
     defer sim.deinit();

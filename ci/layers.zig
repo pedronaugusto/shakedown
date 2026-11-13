@@ -54,7 +54,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/sim/programs/calls.zig",
         "src/sim/routing.zig",
     } },
-    .{ .name = "nodes and topology", .patterns = &.{ "src/sim/Node.zig", "src/sim/Net.zig", "src/sim/Programs.zig" } },
+    .{ .name = "nodes and topology", .patterns = &.{ "src/sim/Node.zig", "src/sim/Net.zig", "src/sim/Programs.zig", "src/sim/Sockets.zig" } },
     .{ .name = "simulation", .patterns = &.{
         "src/Sim.zig",
     } },

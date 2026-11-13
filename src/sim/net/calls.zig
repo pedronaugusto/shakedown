@@ -63,6 +63,42 @@ pub fn wait(c: *Core, task: ?*Core.Task, deadline: Core.Deadline) error{ Cancele
 fn socketResult(s: *Model.Socket, address: Io.net.IpAddress) Io.net.Socket {
     return .{ .handle = s.handle, .address = address };
 }
+/// Waits for the handshake of the connection `s` starts, until `timeout`;
+/// one that fails or is given up takes both of its ends down.
+fn established(c: *Core, node: NodeId, s: *Model.Socket, addr: Io.net.IpAddress, timeout: Io.Timeout) !Io.net.Socket {
+    const m = &c.network;
+    const handle = s.handle;
+    errdefer {
+        if (m.sockets.get(handle)) |left| {
+            const peer = left.peer;
+            m.abort(handle);
+            if (peer) |p| m.abort(p);
+        }
+    }
+    const deadline = c.deadline(timeout);
+    while (true) {
+        c.notifyNetwork();
+        const live = try m.get(handle, node);
+        if (live.connected) return socketResult(live, addr);
+        try wait(c, c.current, deadline);
+    }
+}
+/// A stream connect from a bound local endpoint (`Sim.Sockets.connect`),
+/// recorded as the connect it is.
+pub fn connectBound(ctx: *Core.Context, addr: *const Io.net.IpAddress, o: Io.net.IpAddress.ConnectOptions, local: *const Io.net.IpAddress, reuse: bool, ret: usize) Return("netConnectIp") {
+    return invokeSlot("netConnectIp", bound.netConnectIpFrom, ctx, .{ addr, o, local, reuse }, ret);
+}
+const bound = struct {
+    fn netConnectIpFrom(c: *Core, node: NodeId, addr: *const Io.net.IpAddress, o: Io.net.IpAddress.ConnectOptions, local: *const Io.net.IpAddress, reuse: bool) !Io.net.Socket {
+        if (o.mode != .stream) return error.SocketModeUnsupported;
+        if (o.protocol) |protocol| if (protocol != .tcp) return error.ProtocolUnsupportedBySystem;
+        if (std.meta.activeTag(local.*) != std.meta.activeTag(addr.*)) return error.AddressFamilyUnsupported;
+        const m = begin(c);
+        // A connect reports a port it could not bind as an address it could not use, as a kernel's does.
+        const s = m.connectBound(node, addr.*, local.*, reuse) catch |err| return if (err == error.AddressInUse) error.AddressUnavailable else err;
+        return established(c, node, s, addr.*, o.timeout);
+    }
+};
 const slots = struct {
     pub fn netInterfaceNameResolve(_: *Core, _: NodeId, _: *const Io.net.Interface.Name) !Io.net.Interface {
         return error.InterfaceNotFound;
@@ -76,6 +112,7 @@ const slots = struct {
         if (o.protocol != .tcp) return error.ProtocolUnsupportedBySystem;
         const s = try begin(c).bind(node, addr.*, .listener);
         s.backlog = o.kernel_backlog;
+        s.reuse = o.reuse_address;
         return socketResult(s, s.address);
     }
     pub fn netBindIp(c: *Core, node: NodeId, addr: *const Io.net.IpAddress, o: Io.net.IpAddress.BindOptions) !Io.net.Socket {
@@ -90,22 +127,7 @@ const slots = struct {
         if (o.mode != .stream) return error.SocketModeUnsupported;
         if (o.protocol) |protocol| if (protocol != .tcp) return error.ProtocolUnsupportedBySystem;
         const m = begin(c);
-        const s = try m.connect(node, addr.*);
-        const handle = s.handle;
-        errdefer {
-            if (m.sockets.get(handle)) |left| {
-                const peer = left.peer;
-                m.abort(handle);
-                if (peer) |p| m.abort(p);
-            }
-        }
-        const deadline = c.deadline(o.timeout);
-        while (true) {
-            c.notifyNetwork();
-            const live = try m.get(handle, node);
-            if (live.connected) return socketResult(live, addr.*);
-            try wait(c, c.current, deadline);
-        }
+        return established(c, node, try m.connect(node, addr.*), addr.*, o.timeout);
     }
     pub fn netAccept(c: *Core, node: NodeId, handle: Io.net.Socket.Handle, _: Io.net.Server.AcceptOptions) !Io.net.Socket {
         const m = begin(c);
@@ -233,6 +255,9 @@ const slots = struct {
     }
 };
 fn invoke(comptime name: []const u8, user: ?*anyopaque, args: anytype, ret: usize) Return(name) {
+    return invokeSlot(name, @field(slots, name), user, args, ret);
+}
+fn invokeSlot(comptime name: []const u8, comptime slot_fn: anytype, user: ?*anyopaque, args: anytype, ret: usize) Return(name) {
     const c = Core.of(user);
     const e = c.enter(ret, true);
     const call = @field(IoCall, name);
@@ -244,7 +269,7 @@ fn invoke(comptime name: []const u8, user: ?*anyopaque, args: anytype, ret: usiz
     if (c.options.net == null) c.unmodeled(call, null, "a network call in a run without a network (Options.net)");
     c.touch(Core.Object.network, true);
     const input = inputs(e.node, args);
-    const result = @call(.auto, @field(slots, name), .{ c, e.node } ++ args);
+    const result = @call(.auto, slot_fn, .{ c, e.node } ++ args);
     if (comptime @typeInfo(@TypeOf(result)) == .error_union) {
         const value = result catch |err| {
             c.record(call, e, input ^ std.hash.Wyhash.hash(0, @errorName(err)));
@@ -402,7 +427,7 @@ fn inputs(node: NodeId, args: anytype) u64 {
         const T = @TypeOf(arg);
         if (T == *const Io.net.IpAddress) addressDigest(&hash, arg.*) else if (T == *const Io.net.UnixAddress) hash.update(arg.path) else if (T == Io.net.HostName) hash.update(arg.bytes) else if (T == []const Io.net.Socket) {
             for (arg) |socket| number(&hash, socket.handle);
-        } else if (T == Io.net.Socket.Handle) number(&hash, arg) else if (T == []const u8) hash.update(arg) else if (@typeInfo(T) == .@"enum") number(&hash, @backingInt(arg));
+        } else if (T == Io.net.Socket.Handle) number(&hash, arg) else if (T == []const u8) hash.update(arg) else if (T == bool) number(&hash, @intFromBool(arg)) else if (@typeInfo(T) == .@"enum") number(&hash, @backingInt(arg));
     }
     return hash.final();
 }

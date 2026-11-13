@@ -40,6 +40,7 @@ pub const Fs = @import("sim/Fs.zig");
 pub const Node = @import("sim/Node.zig");
 pub const Net = @import("sim/Net.zig");
 pub const Programs = @import("sim/Programs.zig");
+pub const Sockets = @import("sim/Sockets.zig");
 pub const Options = options_mod.Options;
 pub const Executor = options_mod.Executor;
 pub const Schedule = options_mod.Schedule;
@@ -425,6 +426,15 @@ pub fn fs(s: *Sim) *Fs {
 pub fn programsOf(any: Io) ?Programs {
     const ctx = contextOf(any) orelse return null;
     return .{ .core = ctx.core };
+}
+
+/// The sockets of the node the simulation's `io` is on (`Sim.io`,
+/// `Node.io`, a simulated process's), null for any other `Io`. A seam whose
+/// raw socket calls go past the `Io` (a bind before a connect) asks it, to
+/// make them on the simulation instead.
+pub fn socketsOf(any: Io) ?Sockets {
+    const ctx = contextOf(any) orelse return null;
+    return .{ .context = ctx };
 }
 
 /// The context of a simulation's `Io`, or null for any other `Io`.
