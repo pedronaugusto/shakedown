@@ -64,8 +64,10 @@ fn socketResult(s: *Model.Socket, address: Io.net.IpAddress) Io.net.Socket {
     return .{ .handle = s.handle, .address = address };
 }
 /// Waits for the handshake of the connection `s` starts, until `timeout`;
-/// one that fails or is given up takes both of its ends down.
-fn established(c: *Core, node: NodeId, s: *Model.Socket, addr: Io.net.IpAddress, timeout: Io.Timeout) !Io.net.Socket {
+/// one that fails or is given up takes both of its ends down. The socket
+/// comes back with its own endpoint, as a kernel's connect reads it back
+/// (`getsockname`, as `Io.Threaded` does).
+fn established(c: *Core, node: NodeId, s: *Model.Socket, timeout: Io.Timeout) !Io.net.Socket {
     const m = &c.network;
     const handle = s.handle;
     errdefer {
@@ -79,7 +81,7 @@ fn established(c: *Core, node: NodeId, s: *Model.Socket, addr: Io.net.IpAddress,
     while (true) {
         c.notifyNetwork();
         const live = try m.get(handle, node);
-        if (live.connected) return socketResult(live, addr);
+        if (live.connected) return socketResult(live, live.address);
         try wait(c, c.current, deadline);
     }
 }
@@ -96,7 +98,7 @@ const bound = struct {
         const m = begin(c);
         // A connect reports a port it could not bind as an address it could not use, as a kernel's does.
         const s = m.connectBound(node, addr.*, local.*, reuse) catch |err| return if (err == error.AddressInUse) error.AddressUnavailable else err;
-        return established(c, node, s, addr.*, o.timeout);
+        return established(c, node, s, o.timeout);
     }
 };
 const slots = struct {
@@ -127,7 +129,7 @@ const slots = struct {
         if (o.mode != .stream) return error.SocketModeUnsupported;
         if (o.protocol) |protocol| if (protocol != .tcp) return error.ProtocolUnsupportedBySystem;
         const m = begin(c);
-        return established(c, node, try m.connect(node, addr.*), addr.*, o.timeout);
+        return established(c, node, try m.connect(node, addr.*), o.timeout);
     }
     pub fn netAccept(c: *Core, node: NodeId, handle: Io.net.Socket.Handle, _: Io.net.Server.AcceptOptions) !Io.net.Socket {
         const m = begin(c);

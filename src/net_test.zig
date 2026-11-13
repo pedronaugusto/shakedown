@@ -321,6 +321,9 @@ test "Net a connection to a loopback address comes from the same loopback addres
                 // The server sees the client at the loopback address it dialed, not the node's own.
                 var peer = accepted.socket.address;
                 try t.expect(peer.getPort() != 0);
+                // The client's socket is its own end, as a kernel's connect reads it back: what the server sees.
+                try t.expect(stream.socket.address.eql(&peer));
+                try t.expect(!stream.socket.address.eql(&listener.socket.address));
                 peer.setPort(80);
                 try t.expect(peer.eql(&try .parse(loopback, 80)));
             }
@@ -341,6 +344,8 @@ test "Sim.socketsOf connects from the local endpoint it binds, and the listener 
             defer socket.close(io);
             const accepted = try listener.accept(io);
             defer accepted.close(io);
+            // The socket is the bound end, the one the listener sees.
+            try t.expect(socket.address.eql(&accepted.socket.address));
             return accepted.socket.address;
         }
         fn run(io: Io) !void {
