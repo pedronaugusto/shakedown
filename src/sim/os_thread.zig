@@ -156,8 +156,8 @@ const ThreadInformation = extern struct {
 
 comptime {
     if (builtin.os.tag == .windows and @sizeOf(usize) == 8) {
-        std.debug.assert(@sizeOf(ProcessInformation) == 0x100);
-        std.debug.assert(@sizeOf(ThreadInformation) == 0x50);
+        aegis.assert.invariant(@sizeOf(ProcessInformation) == 0x100, "@sizeOf(ProcessInformation) == 0x100");
+        aegis.assert.invariant(@sizeOf(ThreadInformation) == 0x50, "@sizeOf(ThreadInformation) == 0x50");
     }
 }
 

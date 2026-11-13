@@ -16,6 +16,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Source = @import("Source.zig");
+const aegis = @import("aegis");
 
 /// Any value of `T`, shrinking toward 0, the positive side first.
 /// Integers up to 128 bits.
@@ -50,8 +51,8 @@ fn signed(comptime T: type, raw: Unsigned(@typeInfo(T).int.bits)) T {
 /// toward the end nearer 0 otherwise, alternating above and below. Both
 /// ends are among its edges. Integers up to 64 bits.
 pub fn intRange(s: *Source, comptime T: type, min: T, max: T) T {
-    comptime std.debug.assert(@typeInfo(T).int.bits <= 64);
-    std.debug.assert(min <= max);
+    comptime aegis.assert.invariant(@typeInfo(T).int.bits <= 64, "@typeInfo(T).int.bits <= 64");
+    aegis.assert.invariant(min <= max, "min <= max");
     if (min == max) return min;
     const mark = s.begin();
     defer s.end(mark);
@@ -106,7 +107,7 @@ pub fn enumValue(s: *Source, comptime E: type) E {
 
 /// One of `items`, the first one simplest. `items` must not be empty.
 pub fn oneOf(s: *Source, comptime T: type, items: []const T) T {
-    std.debug.assert(items.len > 0);
+    aegis.assert.invariant(items.len > 0, "items.len > 0");
     if (items.len == 1) return items[0];
     const mark = s.begin();
     defer s.end(mark);
@@ -118,7 +119,7 @@ pub fn oneOf(s: *Source, comptime T: type, items: []const T) T {
 pub fn weighted(s: *Source, weights: []const u32) usize {
     var total: u64 = 0;
     for (weights) |w| total += w;
-    std.debug.assert(total > 0);
+    aegis.assert.invariant(total > 0, "total > 0");
     const mark = s.begin();
     defer s.end(mark);
     var at = s.below(total - 1);
@@ -190,7 +191,7 @@ pub fn slice(
     gpa: Allocator,
     options: SliceOptions,
 ) error{OutOfMemory}![]T {
-    std.debug.assert(options.min_len <= options.max_len);
+    aegis.assert.invariant(options.min_len <= options.max_len, "options.min_len <= options.max_len");
     var list: std.ArrayList(T) = .empty;
     errdefer list.deinit(gpa);
     const mark = s.begin();
@@ -225,7 +226,7 @@ pub const StringOptions = struct {
 
 /// Text of the kind asked for.
 pub fn string(s: *Source, gpa: Allocator, options: StringOptions) error{OutOfMemory}![]u8 {
-    std.debug.assert(options.min_len <= options.max_len);
+    aegis.assert.invariant(options.min_len <= options.max_len, "options.min_len <= options.max_len");
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
     const mark = s.begin();
@@ -303,7 +304,7 @@ pub fn any(s: *Source, comptime T: type, gpa: Allocator) error{OutOfMemory}!T {
             return out;
         },
         .@"union" => |u| {
-            comptime std.debug.assert(u.tag_type != null);
+            comptime aegis.assert.invariant(u.tag_type != null, "u.tag_type != null");
             const mark = s.begin();
             defer s.end(mark);
             switch (enumValue(s, u.tag_type.?)) {

@@ -122,8 +122,8 @@ pub const Handle = struct {
 };
 
 pub fn init(gpa: Allocator, source: *Source, options: Options) !*Model {
-    std.debug.assert(options.sector > 0);
-    std.debug.assert(Grain.fromIoDuration(options.timestamp_granularity, .exact).compare(.fromRaw(0)) == .gt);
+    aegis.assert.invariant(options.sector > 0, "options.sector > 0");
+    aegis.assert.invariant(Grain.fromIoDuration(options.timestamp_granularity, .exact).compare(.fromRaw(0)) == .gt, "Grain.fromIoDuration(options.timestamp_granularity, .exact).compare(.fromRaw(0)) == .gt");
     const fs = try gpa.create(Model);
     errdefer gpa.destroy(fs);
     const root = try gpa.create(State);
@@ -414,7 +414,7 @@ pub fn create(fs: *Model, base: u32, path: []const u8, kind: Io.File.Kind, permi
     return fs.createIn(p, kind, permissions, target);
 }
 fn createIn(fs: *Model, p: Parent, kind: Io.File.Kind, permissions: Io.File.Permissions, target: ?[]const u8) Error!u32 {
-    std.debug.assert(fs.find(fs.root.entries.items, p.inode, p.name) == null);
+    aegis.assert.invariant(fs.find(fs.root.entries.items, p.inode, p.name) == null, "fs.find(fs.root.entries.items, p.inode, p.name) == null");
     try fs.unique();
     const name = try fs.entryName(p.name);
     defer name.release(fs.gpa);
@@ -1228,7 +1228,7 @@ fn restoreStorage(fs: *Model, snap: Snapshot) void {
     fs.root = snap.root;
 }
 pub fn restore(fs: *Model, snap: Snapshot) void {
-    std.debug.assert(std.meta.eql(fs.gpa, snap.gpa));
+    aegis.assert.invariant(std.meta.eql(fs.gpa, snap.gpa), "std.meta.eql(fs.gpa, snap.gpa)");
     fs.restoreStorage(snap);
     fs.handles.clearRetainingCapacity();
 }

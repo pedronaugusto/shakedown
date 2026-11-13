@@ -22,7 +22,7 @@
 const std = @import("std");
 const aegis = @import("aegis");
 const Io = std.Io;
-const assert = std.debug.assert;
+const assert = aegis.assert.invariant;
 const Layer = @import("layer.zig").Layer;
 const nanoseconds = @import("nanoseconds.zig");
 
@@ -149,7 +149,7 @@ const Timing = struct {
 pub fn init(base: Io, options: Options) Clock {
     switch (options.advance) {
         .manual => {},
-        .auto => |auto| assert(spanOf(auto.late).compare(still) != .lt),
+        .auto => |auto| assert(spanOf(auto.late).compare(still) != .lt, "spanOf(auto.late).compare(still) != .lt"),
     }
     const monotonic = readingOf(options.monotonic);
     return .{ .layer = .init(base, .{
@@ -176,14 +176,14 @@ pub fn read(c: *const Clock, which: Io.Clock) Io.Timestamp {
 /// deadline is reached, in (deadline, arming order) order.
 pub fn advance(c: *Clock, by: Io.Duration) void {
     const d = spanOf(by);
-    assert(d.compare(still) != .lt);
+    assert(d.compare(still) != .lt, "d.compare(still) != .lt");
     move(&c.layer, .{ d, d, d });
 }
 
 /// Move awake to `awake`, and boot and real by as much. Never backwards.
 pub fn advanceTo(c: *Clock, awake: Io.Timestamp) void {
     const by = c.layer.state.clocks[@backingInt(Kept.awake)].load(.acquire).saturatingDurationTo(readingOf(awake));
-    assert(by.compare(still) != .lt);
+    assert(by.compare(still) != .lt, "by.compare(still) != .lt");
     move(&c.layer, .{ by, by, by });
 }
 
@@ -203,7 +203,7 @@ pub fn advanceToNext(c: *Clock) ?Io.Duration {
 /// on boot or real time may fire.
 pub fn suspendFor(c: *Clock, d: Io.Duration) void {
     const by = spanOf(d);
-    assert(by.compare(still) != .lt);
+    assert(by.compare(still) != .lt, "by.compare(still) != .lt");
     move(&c.layer, .{ still, by, by });
 }
 

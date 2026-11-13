@@ -7,6 +7,7 @@
 //! slot it does not override recovers the layer from that pointer and calls
 //! the base with the base's userdata.
 const std = @import("std");
+const aegis = @import("aegis");
 const Io = std.Io;
 
 const vtable_fields = @typeInfo(Io.VTable).@"struct";
@@ -33,7 +34,7 @@ pub const Overrides = blk: {
 /// recovers it. `State` must not be zero-sized: `&layer.state` has to be an
 /// address of its own.
 pub fn Layer(comptime State: type, comptime overrides: Overrides) type {
-    comptime std.debug.assert(@sizeOf(State) > 0);
+    comptime aegis.assert.invariant(@sizeOf(State) > 0, "@sizeOf(State) > 0");
     return struct {
         state: State,
         base: Io,

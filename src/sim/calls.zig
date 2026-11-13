@@ -18,6 +18,7 @@ const net_calls = @import("net/calls.zig");
 const process_calls = @import("programs/calls.zig");
 const Model = @import("net/Model.zig");
 const io_call = @import("../io_call.zig");
+const aegis = @import("aegis");
 const IoCall = io_call.IoCall;
 
 pub const vtable: Io.VTable = blk: {
@@ -223,7 +224,7 @@ const slots = struct {
         const c = Core.of(userdata);
         const e = c.enter(@returnAddress(), true);
         const t = e.task orelse @panic("shakedown: recancel outside a task, which was never canceled");
-        std.debug.assert(t.cancel == .delivered); // recancel without a cancel delivered
+        aegis.assert.invariant(t.cancel == .delivered, "t.cancel == .delivered"); // recancel without a cancel delivered
         t.cancel = .requested;
         c.record(.recancel, e, 0);
     }

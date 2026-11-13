@@ -133,7 +133,7 @@ fn key(a: NodeId, b: NodeId) u64 {
 /// Where a node after the first stands among the nodes in the order `addNode` issued them. Ids are
 /// dense from 0, so the first node has no place and a caller keeps it apart.
 pub fn followerIndex(node: NodeId) usize {
-    std.debug.assert(node != NodeId.fromRaw(0));
+    aegis.assert.invariant(node != NodeId.fromRaw(0), "node != NodeId.fromRaw(0)");
     // glint-ignore: A004 -- internal: docs/design.md#aegis-types-and-the-raw-sites; the model issues ids densely from 0 and is the one place that knows it
     return node.raw() - 1;
 }

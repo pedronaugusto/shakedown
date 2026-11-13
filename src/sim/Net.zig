@@ -3,6 +3,7 @@ const std = @import("std");
 const Core = @import("Core.zig");
 const Node = @import("Node.zig");
 const Model = @import("net/Model.zig");
+const aegis = @import("aegis");
 const Net = @This();
 pub const Options = Model.Options;
 pub const Dist = Model.Dist;
@@ -12,7 +13,7 @@ fn changed(n: *Net) void {
     _ = n.core.wakeFutex(@intFromPtr(&n.core.network.change), std.math.maxInt(u32)); // safe: the network epoch has a stable address until Core.deinit
 }
 fn id(n: *Net, node: *Node) Model.NodeId {
-    std.debug.assert(node.context.core == n.core);
+    aegis.assert.invariant(node.context.core == n.core, "node.context.core == n.core");
     return node.context.node;
 }
 pub fn link(n: *Net, a: *Node, b: *Node, value: Link) Model.Error!void {

@@ -95,7 +95,7 @@ pub fn deinit(w: *Watchdog) void {
         var held = w.locked.acquireUncancelable(real());
         defer held.deinit(real());
         const s = held.value();
-        std.debug.assert(s.first == null); // a simulation it watches outlives it
+        aegis.assert.invariant(s.first == null, "s.first == null"); // a simulation it watches outlives it
         s.stopping = true;
         break :stop s.thread;
     };

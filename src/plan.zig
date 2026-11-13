@@ -11,6 +11,7 @@ const std = @import("std");
 const Match = @import("match.zig").Match;
 const Source = @import("Source.zig");
 const Steps = @import("Steps.zig");
+const aegis = @import("aegis");
 
 pub fn Plan(comptime Call: type, comptime Fault: type) type {
     return struct {
@@ -60,11 +61,11 @@ pub fn Plan(comptime Call: type, comptime Fault: type) type {
 
         /// `entries` and the storage in `options` must outlive the plan.
         pub fn init(entries: []const Entry, options: Options) Self {
-            std.debug.assert(options.counters.len >= entries.len);
+            aegis.assert.invariant(options.counters.len >= entries.len, "options.counters.len >= entries.len");
             for (entries) |entry| {
-                if (entry.at == .chance) std.debug.assert(options.source != null);
-                if (entry.at == .nth) std.debug.assert(entry.at.nth.n >= 1);
-                if (entry.at == .nth) if (entry.at.nth.after) |after| std.debug.assert(after < entries.len);
+                if (entry.at == .chance) aegis.assert.invariant(options.source != null, "options.source != null");
+                if (entry.at == .nth) aegis.assert.invariant(entry.at.nth.n >= 1, "entry.at.nth.n >= 1");
+                if (entry.at == .nth) if (entry.at.nth.after) |after| aegis.assert.invariant(after < entries.len, "after < entries.len");
             }
             var p: Self = .{ .entries = entries, .options = options };
             p.reset();
