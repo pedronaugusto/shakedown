@@ -131,8 +131,18 @@ pub fn dev(b: *std.Build, tools: type) void {
         .imports = &.{.{ .name = "shakedown", .module = module }},
     }) });
 
+    // The fuzzing runner's own parts: its command line among them.
+    const fuzzer_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = p.path("src/fuzz/main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "fuzz_findings", .module = b.createModule(.{ .root_source_file = p.path("src/fuzz.zig"), .target = target, .optimize = optimize }) }},
+    }) });
+
     const check_step = b.step("check", "Compile the tests, programs and example without running them");
     check_step.dependOn(&tests.step);
+    check_step.dependOn(&fuzzer_tests.step);
+    test_step.dependOn(&b.addRunArtifact(fuzzer_tests).step);
     // The replay's own parts are tested and compiled with the rest; the
     // replay itself runs only by hand.
     check_step.dependOn(&crash_replay.step);
