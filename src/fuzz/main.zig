@@ -78,9 +78,23 @@ pub fn main(init: std.process.Init) !u8 {
             total += 1;
         }
         // Zig exits 0 from a bounded session whose fuzzer crashed or never started.
-        const ran = findings.judge(before, try findings.Cache.read(io, cache_dir));
+        const after = try findings.Cache.read(io, cache_dir);
+        const ran = findings.judge(before, after);
         if (failures.len == 0 and (!result.term.success() or ran == .crashed)) {
-            try say(io, "shakedown-fuzz: the session failed with nothing check reported:\n{s}\n", .{tail(output)});
+            // A property that panics ends its process before `check` can print a tape: the
+            // input the fuzzer saved is the finding, kept with the panic's message, since the
+            // next session's crash would overwrite it.
+            if (findings.crash(output)) |c| {
+                const path = try keepCrash(a, io, init.environ_map, options, package, cache, found_dir, c);
+                try say(io, "shakedown-fuzz: {s} {s}: {s}; its input and message are in {s}\n", .{ c.filter, c.term, c.message orelse "no panic message printed", path });
+                total += 1;
+                break;
+            }
+            if (after.uninstrumented > 0) {
+                try say(io, "shakedown-fuzz: the session's test binary lists no instrumented code ({d} coverage file(s) in {s}/v with pcs_len 0), which Zig's fuzzer cannot fuzz: the build compiled it without the fuzzer's instrumentation, as the self-hosted x86_64 backend does. Build the fuzzed tests with LLVM: pass the package's option for it with --build-arg (preflight's fuzz steps give -Dci-fuzzing=true since 42a0de4).\n{s}\n", .{ after.uninstrumented, cache, tail(output) });
+                return 1;
+            }
+            try say(io, "shakedown-fuzz: the session failed with nothing check reported:\n{s}\n...\n{s}\n", .{ try notable(a, output), tail(output) });
             return 1;
         }
         if (ran == .idle) {
@@ -143,14 +157,7 @@ test "each --build-arg reaches the step's build, in order; an unknown flag is a 
 /// The finding's test replayed on its tape, which `check` shrinks: the
 /// minimal tape it reports, or the found one when it reports none.
 fn shrink(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Map, o: Options, package: []const u8, cache: []const u8, f: findings.Finding) ![]const u8 {
-    var environ = try parent.clone(a);
-    try environ.put("SHAKEDOWN_TAPE", f.tape);
-    const result = try std.process.run(a, io, .{
-        .argv = try std.mem.concat(a, []const u8, &.{ try o.build(a), &.{ o.step, try a.print("-Dtest-filter={s}", .{f.filter}), "--cache-dir", cache }, o.build_args }),
-        .cwd = .{ .path = package },
-        .environ_map = &environ,
-    });
-    const output = try std.mem.concat(a, u8, &.{ result.stdout, result.stderr });
+    const output = (try replay(a, io, parent, o, package, cache, f.filter, f.tape)).output;
     var lines = std.mem.splitScalar(u8, output, '\n');
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -159,10 +166,111 @@ fn shrink(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Map, 
     return f.tape;
 }
 
+/// The test `filter` run once outside the fuzzer on `tape` (`SHAKEDOWN_TAPE`): its output,
+/// and whether it failed.
+fn replay(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Map, o: Options, package: []const u8, cache: []const u8, filter: []const u8, tape: []const u8) !struct { output: []const u8, failed: bool } {
+    var environ = try parent.clone(a);
+    try environ.put("SHAKEDOWN_TAPE", tape);
+    const result = try std.process.run(a, io, .{
+        .argv = try std.mem.concat(a, []const u8, &.{ try o.build(a), &.{ o.step, try a.print("-Dtest-filter={s}", .{filter}), "--cache-dir", cache }, o.build_args }),
+        .cwd = .{ .path = package },
+        .environ_map = &environ,
+    });
+    return .{ .output = try std.mem.concat(a, u8, &.{ result.stdout, result.stderr }), .failed = !result.term.success() };
+}
+
+/// The most of a crash's input a finding writes out, as hex.
+const kept_input_most = 64 * 1024;
+
+/// Writes the finding of a test the session ended (`c`): its message, the input the fuzzer
+/// saved (`<cache>/f/crash`), as hex and as the tape that replays it, and whether a replay of
+/// that tape outside the fuzzer ends the same way. Its first lines are the ones `record`
+/// writes, which preflight's fuzz step reads; a crash is not shrunk, since it ends the process
+/// that would shrink it. Returns the finding's path.
+fn keepCrash(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Map, o: Options, package: []const u8, cache: []const u8, dir: []const u8, c: findings.Crash) ![]const u8 {
+    const saved_path = try std.fs.path.join(a, &.{ cache, "f", "crash" });
+    const input: ?[]const u8 = if (!c.saved) null else Io.Dir.cwd().readFileAlloc(io, saved_path, a, .unlimited) catch |err| input: {
+        try say(io, "shakedown-fuzz: the input Zig saved at {s} cannot be read: {t}\n", .{ saved_path, err });
+        break :input null;
+    };
+    const tape: ?[]const u8 = if (input) |bytes| try findings.tapeText(a, bytes) else null;
+    var message = c.message;
+    var again: []const u8 = "not replayed: Zig saved no input";
+    if (tape) |t| {
+        const replayed = try replay(a, io, parent, o, package, cache, c.filter, t);
+        if (message == null) message = findings.panicMessage(replayed.output);
+        again = if (!replayed.failed) "passes: the crash did not repeat outside the fuzzer" else if (findings.crash(replayed.output)) |r| try a.print("{s} again", .{r.term}) else "fails again";
+    }
+    const shown = try printable(a, message orelse "no panic message printed");
+    const found = tape orelse "none: Zig saved no input";
+    var text: std.ArrayList(u8) = .empty;
+    try text.print(a,
+        \\test: {s}
+        \\error: crash, {s}: {s}
+        \\found: {s}
+        \\minimal: {s}
+        \\keep it: add "{s}" to the property's `.regressions` (a crash is not shrunk: it ends the process that would shrink it)
+        \\replay: SHAKEDOWN_TAPE="{s}" with -Dtest-filter, outside the fuzzer: {s}
+        \\
+    , .{ c.filter, c.term, shown, found, found, found, found, again });
+    if (input) |bytes| {
+        // The process ended before its property drew anything (riverrun's crash): the tape
+        // above is empty, which replays it as the empty input, every draw its least.
+        if (bytes.len == 0) try text.appendSlice(a, "input: 0 bytes, the empty input: the empty tape \"\" replays it\n");
+        const kept = bytes[0..@min(bytes.len, kept_input_most)];
+        if (kept.len > 0) {
+            try text.print(a, "input: {d} bytes{s}, as the fuzzer saved them: {x}\n", .{ bytes.len, if (kept.len < bytes.len) " (the first 64 KiB)" else "", kept });
+        }
+    }
+    const path = try findingPath(a, dir, c.filter);
+    try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = text.items });
+    return path;
+}
+
+/// `text` on one line of plain bytes, at most 512 of them: a panic's message is the
+/// program's, and a finding's lines hold no control bytes.
+fn printable(a: std.mem.Allocator, text: []const u8) ![]const u8 {
+    const out = try a.dupe(u8, text[0..@min(text.len, 512)]);
+    for (out) |*c| if (c.* < 32 or c.* == 127) {
+        c.* = '?';
+    };
+    return out;
+}
+
+/// The lines of a session's output that say what went wrong (panics and errors), which the
+/// output's tail can have cut off behind a long stack trace: at most 40.
+fn notable(a: std.mem.Allocator, output: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var kept: usize = 0;
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \r\t");
+        const telling = std.mem.startsWith(u8, line, "error:") or std.mem.find(u8, line, "panic: ") != null;
+        if (!telling) continue;
+        try out.appendSlice(a, line);
+        try out.append(a, '\n');
+        kept += 1;
+        if (kept == 40) break;
+    }
+    return out.items;
+}
+
+test "the lines that tell a session's failure are kept ahead of its tail" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const output = "info: fork\nthread 7 panic: integer overflow\n  frame\nerror: test 'a.test.b' terminated with signal ABRT\nfailed command: x\n";
+    try std.testing.expectEqualStrings("thread 7 panic: integer overflow\nerror: test 'a.test.b' terminated with signal ABRT\n", try notable(arena.allocator(), output));
+    try std.testing.expectEqualStrings("tab ? and bell ?", try printable(arena.allocator(), "tab \t and bell \x07"));
+}
+
+fn findingPath(a: std.mem.Allocator, dir: []const u8, filter: []const u8) ![]const u8 {
+    const file_name = try a.alloc(u8, filter.len);
+    for (file_name, filter) |*to, c| to.* = if (std.ascii.isAlphanumeric(c)) c else '-';
+    return a.print("{s}/{s}.txt", .{ dir, file_name });
+}
+
 fn record(a: std.mem.Allocator, io: Io, dir: []const u8, f: findings.Finding, minimal: []const u8) !void {
-    const file_name = try a.alloc(u8, f.filter.len);
-    for (file_name, f.filter) |*to, c| to.* = if (std.ascii.isAlphanumeric(c)) c else '-';
-    const path = try a.print("{s}/{s}.txt", .{ dir, file_name });
+    const path = try findingPath(a, dir, f.filter);
     const text = try a.print(
         \\test: {s}
         \\error: {s}

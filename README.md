@@ -337,9 +337,15 @@ in the package with
 the package and grow from session to session. Each property the fuzzer fails
 is replayed on its tape (`SHAKEDOWN_TAPE`, which `check` shrinks) and written to
 `<store>/<package>/findings/<test>.txt` with the minimal tape, for the
-property's `.regressions`. It exits 1 when it found something, and when a
-session crashed outside a property or ran no input, which it reads from the
-cache, as Zig exits 0 from a bounded session either way.
+property's `.regressions`. A property that panics ends its process before
+`check` can print a tape: the input the fuzzer saved for it (`f/crash` in the
+cache) is the finding, written to the same file with the panic's message, the
+input as hex and as the tape that replays it, and whether that replay crashes
+again outside the fuzzer; a crash is not shrunk. It exits 1 when it found
+something, and when a session failed otherwise or ran no input, which it reads
+from the cache, as Zig exits 0 from a bounded session either way; a test binary
+built without the fuzzer's instrumentation (the self-hosted x86_64 backend's)
+is named as such.
 
 ### Exhaustive search
 
