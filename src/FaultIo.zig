@@ -92,6 +92,8 @@ const Locked = struct {
     /// Open handle to the path it was opened by.
     paths: std.AutoHashMapUnmanaged(i64, []const u8) = .empty,
     path_arena: std.heap.ArenaAllocator,
+    /// Handles opened whose path could not be stored, out of memory.
+    unnamed: usize = 0,
     /// `io.random` under `random_seed`, and the draws of `.chance` entries
     /// when `Options.source` is null.
     random: Source,
@@ -110,6 +112,12 @@ const Locked = struct {
     batches: std.AutoHashMapUnmanaged(*Io.Batch, *Batched) = .empty,
     spare_batches: std.ArrayList(*Batched) = .empty,
     batch_states: usize = 0,
+
+    /// `handle` was opened by `path`.
+    fn setPath(s: *Locked, gpa: Allocator, handle: i64, path: []const u8) error{OutOfMemory}!void {
+        const copy = try s.path_arena.allocator().dupe(u8, path);
+        try s.paths.put(gpa, handle, copy);
+    }
 
     fn deinit(s: *Locked, gpa: Allocator) void {
         s.trace.deinit();
@@ -327,6 +335,15 @@ pub fn trace(f: *FaultIo) *IoTrace {
     var held = f.acquire();
     defer held.deinit(f.base);
     return &held.value().trace;
+}
+
+/// How many handles were opened, paths tracked, whose path could not be
+/// stored, out of memory: their calls carry no path, and an entry that
+/// matches by path misses them.
+pub fn unnamed(f: *FaultIo) usize {
+    var held = f.acquire();
+    defer held.deinit(f.base);
+    return held.value().unnamed;
 }
 
 /// The run's step counter. A seam's own plan shares it, so its calls and
@@ -553,37 +570,60 @@ fn decideLocked(f: *FaultIo, s: *Locked, call: IoCall, subject: IoEvent.Subject)
     return .{ .step = step, .fault = fault };
 }
 
-/// What a fault does before the call: a callback, then what it leads to,
-/// or a delay. Returns what is left to do to the call itself, or null to
-/// make it. A delay canceled at a cancelation point returns
-/// `error.Canceled`; elsewhere the cancel is put back for the next one.
-fn prelude(f: *FaultIo, fault: ?IoFault, cancelation_point: bool) Io.Cancelable!?IoFault {
+/// What a fault does before the call, a delay aside: its callback runs,
+/// then what it leads to. Returns what is left to do to the call itself
+/// (null to make it), or the delay, which its caller sleeps: a cancel ends
+/// a delay at a cancelation point (`prelude`) and is put back elsewhere
+/// (`preludeAnywhere`).
+fn ahead(f: *FaultIo, fault: ?IoFault) Ahead {
     var next = fault;
     while (next) |x| switch (x) {
         .call => |c| {
             c.hook.run(c.hook, f.base);
             next = if (c.then) |then| then.* else null;
         },
-        .delay => |d| {
-            f.base.vtable.sleep(f.base.userdata, .{ .duration = .{ .raw = d, .clock = .awake } }) catch |err| {
-                if (cancelation_point) return err;
-                f.base.vtable.recancel(f.base.userdata);
-            };
-            return null;
-        },
+        .delay => |d| return .{ .delay = d },
         .crash => {
             f.tasks.on_crash.?(f.base);
+            return .{ .left = null };
+        },
+        .fail, .fail_after, .short, .cancel, .spurious_wake, .stall => return .{ .left = x },
+    };
+    return .{ .left = null };
+}
+
+const Ahead = union(enum) { left: ?IoFault, delay: @FieldType(IoFault, "delay") };
+
+/// What a fault does before the call: a callback, then what it leads to,
+/// or a delay. Returns what is left to do to the call itself, or null to
+/// make it. A delay canceled at a cancelation point returns
+/// `error.Canceled`; elsewhere the cancel is put back for the next one.
+fn prelude(f: *FaultIo, fault: ?IoFault, cancelation_point: bool) Io.Cancelable!?IoFault {
+    if (!cancelation_point) return f.preludeAnywhere(fault);
+    switch (f.ahead(fault)) {
+        .left => |x| return x,
+        .delay => |d| {
+            try f.delay(d);
             return null;
         },
-        .fail, .fail_after, .short, .cancel, .spurious_wake, .stall => return x,
-    };
-    return null;
+    }
 }
 
 /// `prelude` for a call that is no cancelation point: a canceled delay puts
 /// the cancel back for the next one, so nothing is returned.
 fn preludeAnywhere(f: *FaultIo, fault: ?IoFault) ?IoFault {
-    return f.prelude(fault, false) catch unreachable; // glint-ignore: Z026 -- off a cancelation point, prelude puts the cancel back
+    switch (f.ahead(fault)) {
+        .left => |x| return x,
+        .delay => |d| {
+            f.delay(d) catch f.base.vtable.recancel(f.base.userdata);
+            return null;
+        },
+    }
+}
+
+/// A delay fault's sleep, on the base's awake clock.
+fn delay(f: *FaultIo, d: @FieldType(IoFault, "delay")) Io.Cancelable!void {
+    return f.base.vtable.sleep(f.base.userdata, .{ .duration = .{ .raw = d, .clock = .awake } });
 }
 
 fn record(f: *FaultIo, step: u64, event: IoEvent) void {
@@ -591,8 +631,7 @@ fn record(f: *FaultIo, step: u64, event: IoEvent) void {
     const at = f.base.vtable.now(f.base.userdata, .awake);
     var held = f.acquire();
     defer held.deinit(f.base);
-    // glint-ignore: Z026 -- a record that cannot be stored is dropped; the counts and steps still hold
-    held.value().trace.append(.{ .step = step, .at = at, .event = event }) catch {};
+    held.value().trace.keep(.{ .step = step, .at = at, .event = event });
 }
 
 // The generated vtable.
@@ -1722,16 +1761,20 @@ fn joined(f: *const FaultIo, s: *const Locked, dir: Io.Dir, sub_path: []const u8
 
 fn remember(f: *FaultIo, comptime name: []const u8, result: Return(name), path: ?[]const u8) void {
     const p = path orelse return;
-    // glint-ignore: Z026 -- a failed open has no handle to remember
-    const opened = result catch return;
-    const handle = if (comptime std.mem.eql(u8, name, "dirCreateFileAtomic")) handleId(opened.file.handle) else handleId(opened.handle);
+    const handle = openedHandle(name, result) orelse return;
     var held = f.acquire();
     defer held.deinit(f.base);
     const s = held.value();
-    // glint-ignore: Z026 -- a path that cannot be stored leaves the handle unnamed, nothing worse
-    const copy = s.path_arena.allocator().dupe(u8, p) catch return;
-    // glint-ignore: Z026 -- a path that cannot be stored leaves the handle unnamed, nothing worse
-    s.paths.put(f.gpa, handle, copy) catch {};
+    s.setPath(f.gpa, handle, p) catch |err| switch (err) {
+        error.OutOfMemory => s.unnamed += 1,
+    };
+}
+
+/// The handle a call of slot `name` opened; null for a call that failed,
+/// which opened none.
+fn openedHandle(comptime name: []const u8, result: Return(name)) ?i64 {
+    const opened = result catch return null;
+    return if (comptime std.mem.eql(u8, name, "dirCreateFileAtomic")) handleId(opened.file.handle) else handleId(opened.handle);
 }
 
 fn forget(f: *FaultIo, comptime name: []const u8, args: anytype) void {
