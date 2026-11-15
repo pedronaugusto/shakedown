@@ -282,8 +282,11 @@ pub const Cache = struct {
             var buffer: [@sizeOf(std.Build.abi.fuzz.SeenPcsHeader)]u8 = undefined;
             var reader = file.reader(io, &buffer);
             var header: std.Build.abi.fuzz.SeenPcsHeader = undefined;
-            // glint-ignore: Z026 -- a file the fuzzer is still writing has no header and no runs
-            reader.interface.readSliceAll(std.mem.asBytes(&header)) catch continue;
+            reader.interface.readSliceAll(std.mem.asBytes(&header)) catch |err| switch (err) {
+                // A file the fuzzer is still writing has no header, and no runs.
+                error.EndOfStream => continue,
+                error.ReadFailed => return reader.err.?,
+            };
             found.runs += header.n_runs;
             if (header.pcs_len == 0) found.uninstrumented += 1;
         }
