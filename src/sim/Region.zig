@@ -159,6 +159,14 @@ fn reserveAt(at: usize) ?[*]align(std.heap.page_size_min) u8 {
     // std names no NORESERVE for every architecture (riscv64's, loongarch's); a mapping with
     // no access is charged no commit there either.
     if (comptime @hasField(std.posix.MAP, "NORESERVE")) flags.NORESERVE = true;
+    // FreeBSD takes a hint below the data segment's limit (unbounded, as a
+    // test machine runs) as no hint and maps elsewhere; MAP_FIXED with
+    // MAP_EXCL asks for the address itself and fails, clobbering nothing,
+    // where it is taken.
+    if (comptime @hasField(std.posix.MAP, "EXCL")) if (at != 0) {
+        flags.FIXED = true;
+        flags.EXCL = true;
+    };
     const mapped = std.posix.mmap(if (at == 0) null else @ptrFromInt(at), reserve, .{}, flags, -1, 0) catch return null;
     return mapped.ptr;
 }
