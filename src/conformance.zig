@@ -13,6 +13,7 @@ const aegis = @import("aegis");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const files = @import("conformance/files.zig");
+const tasks = @import("tasks.zig");
 const IoCall = @import("io_call.zig").IoCall;
 
 pub const Options = struct {
@@ -165,8 +166,7 @@ const Box = struct {
 fn conditionHandsOff(_: Allocator, io: Io) !void {
     var b: Box = .{};
     var consumer = try io.concurrent(Box.consume, .{ &b, io });
-    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
-    defer _ = consumer.cancel(io) catch {};
+    defer tasks.reap(tasks.Result(Box.consume), io, &consumer);
     for (0..b.total) |_| {
         try b.mutex.lock(io);
         b.items += 1;
@@ -191,8 +191,7 @@ fn eventWakes(_: Allocator, io: Io) !void {
     try ready.wait(io);
     var gate: Io.Event = .unset;
     var waiter = try io.concurrent(Io.Event.wait, .{ &gate, io });
-    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
-    defer _ = waiter.cancel(io) catch {};
+    defer tasks.reap(tasks.Result(Io.Event.wait), io, &waiter);
     gate.set(io);
     try waiter.await(io);
     var never: Io.Event = .unset;
@@ -208,8 +207,7 @@ fn queueInOrder(_: Allocator, io: Io) !void {
     var buffer: [4]u32 = undefined;
     var q: Io.Queue(u32) = .init(&buffer);
     var producer = try io.concurrent(produce, .{ io, &q, 50 });
-    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
-    defer producer.cancel(io) catch {};
+    defer tasks.reap(tasks.Result(produce), io, &producer);
     for (0..50) |i| if (try q.getOne(io) != i) return error.OutOfOrder;
     if (q.getOne(io)) |_| return error.NotClosed else |err| if (err != error.Closed) return err;
     try producer.await(io);
@@ -298,8 +296,7 @@ const PingPong = struct {
 fn concurrentRuns(_: Allocator, io: Io) !void {
     var p: PingPong = .{};
     var task = try io.concurrent(PingPong.answer, .{ &p, io });
-    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
-    defer task.cancel(io) catch {};
+    defer tasks.reap(tasks.Result(PingPong.answer), io, &task);
     p.ping.set(io);
     try p.pong.wait(io);
     try task.await(io);
@@ -335,8 +332,9 @@ const Protected = struct {
         const old = io.swapCancelProtection(.blocked);
         p.started.set(io);
         p.release.waitUncancelable(io);
-        // Still protected: a cancel point lets nothing through.
-        io.checkCancel() catch unreachable; // glint-ignore: Z026 -- cancel protection is blocked here
+        // Still protected: a cancel point lets nothing through. One that
+        // does ends the task here, unwaited, which `cancelProtected` reports.
+        try io.checkCancel();
         p.waited = true;
         _ = io.swapCancelProtection(old);
         try io.checkCancel();
@@ -353,8 +351,7 @@ fn cancelProtected(_: Allocator, io: Io) !void {
     var p: Protected = .{};
     var task = try io.concurrent(Protected.run, .{ &p, io });
     var lifter = try io.concurrent(Protected.lift, .{ &p, io });
-    // glint-ignore: Z026 -- cleanup of a task the test has already awaited or abandons when it fails; the failure it reports is the test's own
-    defer lifter.cancel(io) catch {};
+    defer tasks.reap(tasks.Result(Protected.lift), io, &lifter);
     try p.started.wait(io);
     if (task.cancel(io)) |_| return error.NotCanceled else |err| if (err != error.Canceled) return err;
     if (!p.waited) return error.CancelLeaked;
@@ -364,8 +361,7 @@ fn cancelProtected(_: Allocator, io: Io) !void {
 fn twice(io: Io, started: *Io.Event) error{ Canceled, Missed }!void {
     started.set(io);
     // Wait for the cancel, which this sleep receives.
-    // glint-ignore: Z026 -- the sleep is to end in the cancel, the error this case waits for; it is asked for again just below
-    if (io.sleep(.fromSeconds(3600), .awake)) |_| return error.Missed else |_| {}
+    if (io.sleep(.fromSeconds(3600), .awake) != error.Canceled) return error.Missed;
     io.recancel();
     if (io.checkCancel()) |_| return error.Missed else |err| return err;
 }
