@@ -182,27 +182,32 @@ fn replay(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Map, 
 /// The most of a crash's input a finding writes out, as hex.
 const kept_input_most = 64 * 1024;
 
-/// Writes the finding of a test the session ended (`c`): its message, the input the fuzzer
-/// saved (`<cache>/f/crash`), as hex and as the tape that replays it, and whether a replay of
-/// that tape outside the fuzzer ends the same way. Its first lines are the ones `record`
-/// writes, which preflight's fuzz step reads; a crash is not shrunk, since it ends the process
-/// that would shrink it. Returns the finding's path.
+/// Writes the finding of a test the session ended (`c`): its message and the stack under it,
+/// the tape that replays it, the input the fuzzer saved (`<cache>/f/crash`) as hex, and whether
+/// a replay of the tape outside the fuzzer ends the same way. The tape is the one `check`
+/// printed as the case ended the process (its own draws); failing that, the saved input read as
+/// draws, which under Zig's fuzzer need not be what the case drew. Its first lines are the ones
+/// `record` writes, which preflight's fuzz step reads; a crash is not shrunk, since it ends the
+/// process that would shrink it. Returns the finding's path.
 fn keepCrash(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Map, o: Options, package: []const u8, cache: []const u8, dir: []const u8, c: findings.Crash) ![]const u8 {
     const saved_path = try std.fs.path.join(a, &.{ cache, "f", "crash" });
     const input: ?[]const u8 = if (!c.saved) null else Io.Dir.cwd().readFileAlloc(io, saved_path, a, .unlimited) catch |err| input: {
         try say(io, "shakedown-fuzz: the input Zig saved at {s} cannot be read: {t}\n", .{ saved_path, err });
         break :input null;
     };
-    const tape: ?[]const u8 = if (input) |bytes| try findings.tapeText(a, bytes) else null;
+    const tape: ?[]const u8 = c.tape orelse if (input) |bytes| try findings.tapeText(a, bytes) else null;
+    const whence: []const u8 = if (c.tape != null) "the case's own draws, as check printed them when it ended the process" else if (tape != null) "the fuzzer's saved input read as draws (check printed none)" else "none";
     var message = c.message;
-    var again: []const u8 = "not replayed: Zig saved no input";
+    var stack = c.stack;
+    var again: []const u8 = "not replayed: no tape";
     if (tape) |t| {
         const replayed = try replay(a, io, parent, o, package, cache, c.filter, t);
         if (message == null) message = findings.panicMessage(replayed.output);
+        if (stack == null) stack = findings.panicStack(replayed.output);
         again = if (!replayed.failed) "passes: the crash did not repeat outside the fuzzer" else if (findings.crash(replayed.output)) |r| try a.print("{s} again", .{r.term}) else "fails again";
     }
     const shown = try printable(a, message orelse "no panic message printed");
-    const found = tape orelse "none: Zig saved no input";
+    const found = tape orelse "none: neither check nor the fuzzer kept the case's draws";
     var text: std.ArrayList(u8) = .empty;
     try text.print(a,
         \\test: {s}
@@ -210,17 +215,22 @@ fn keepCrash(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Ma
         \\found: {s}
         \\minimal: {s}
         \\keep it: add "{s}" to the property's `.regressions` (a crash is not shrunk: it ends the process that would shrink it)
+        \\tape: {s}
         \\replay: SHAKEDOWN_TAPE="{s}" with -Dtest-filter, outside the fuzzer: {s}
         \\
-    , .{ c.filter, c.term, shown, found, found, found, found, again });
+    , .{ c.filter, c.term, shown, found, found, found, whence, found, again });
     if (input) |bytes| {
-        // The process ended before its property drew anything (riverrun's crash): the tape
-        // above is empty, which replays it as the empty input, every draw its least.
-        if (bytes.len == 0) try text.appendSlice(a, "input: 0 bytes, the empty input: the empty tape \"\" replays it\n");
         const kept = bytes[0..@min(bytes.len, kept_input_most)];
-        if (kept.len > 0) {
+        if (kept.len == 0) {
+            try text.appendSlice(a, "input: 0 bytes: the fuzzer saved none of the case's draws\n");
+        } else {
             try text.print(a, "input: {d} bytes{s}, as the fuzzer saved them: {x}\n", .{ bytes.len, if (kept.len < bytes.len) " (the first 64 KiB)" else "", kept });
         }
+    }
+    if (stack) |lines| {
+        try text.appendSlice(a, "stack:\n");
+        var each = std.mem.splitScalar(u8, std.mem.trimEnd(u8, lines, "\n"), '\n');
+        while (each.next()) |line| try text.print(a, "  {s}\n", .{try printable(a, line)});
     }
     const path = try findingPath(a, dir, c.filter);
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = path, .data = text.items });

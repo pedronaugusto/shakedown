@@ -7,6 +7,7 @@
     { "file": "src/conformance.zig", "rules": ["A007", "A011", "A015", "P007"], "reason": "shakedown implements std.Io; these are std.Io's own types, the subject of its conformance checks" },
     { "file": "src/alloc/LockProbe.zig", "rules": ["A007"], "reason": "probes std's own locks, read as std lays them out" },
     { "file": "src/alloc/Erased.zig", "rules": ["P007"], "reason": "an Allocator implementation: the vtable hands it a many-item pointer and the length it asked for, the shape std.mem.Allocator gives every implementation" },
+    { "file": "src/crash.zig", "rules": ["P007"], "reason": "a SIGABRT handler's writes: only async-signal-safe calls run there, the raw write(2) of std.os.linux and libc, past std's buffered and locked writers" },
     { "file": "src/alloc/Quarantine.zig", "rules": ["P007"], "reason": "page protection through the OS: the quarantine maps, protects and unmaps the pages it hands out" },
     { "module": "src/conformance/", "rules": ["A009"], "reason": "std's file reads are the subject of the conformance checks" },
     { "file": "src/fuzz.zig", "rules": ["A009"], "reason": "the fuzzer's cache: reads what the fuzzer left, to judge the session" },

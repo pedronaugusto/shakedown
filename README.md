@@ -341,7 +341,7 @@ property's `.regressions`. A property that panics ends its process before
 `check` can print a tape: the input the fuzzer saved for it (`f/crash` in the
 cache) is the finding, written to the same file with the panic's message, the
 input as hex and as the tape that replays it, and whether that replay crashes
-again outside the fuzzer; a crash is not shrunk. It exits 1 when it found
+again outside the fuzzer; a crash is not shrunk. The tape is the case's own: a `check` case that ends its process prints the tape it drew on the way out (`shakedown: a case ended the process; SHAKEDOWN_TAPE=<tape> replays it`, from a SIGABRT handler in test builds on POSIX hosts), since the input Zig's fuzzer saves need not hold the case's draws; the finding keeps the panic's stack. It exits 1 when it found
 something, and when a session failed otherwise or ran no input, which it reads
 from the cache, as Zig exits 0 from a bounded session either way; a test binary
 built without the fuzzer's instrumentation (the self-hosted x86_64 backend's)

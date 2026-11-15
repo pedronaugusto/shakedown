@@ -76,7 +76,50 @@ pub const Crash = struct {
     saved: bool,
     /// What the panic said, when the output holds a panic.
     message: ?[]const u8,
+    /// The tape the case had drawn when it ended the process, as `check` prints
+    /// it on the way out (`crash_lead`): what replays the crash, where the
+    /// fuzzer's saved input need not be.
+    tape: ?[]const u8 = null,
+    /// The panic's message and the stack printed under it, when the output holds them.
+    stack: ?[]const u8 = null,
 };
+
+/// The line `check` writes when a case ends its process (shakedown's `crash.lead`).
+pub const crash_lead = "shakedown: a case ended the process; SHAKEDOWN_TAPE=";
+
+/// The tape of the last case `output` says ended the process.
+pub fn crashTape(output: []const u8) ?[]const u8 {
+    var found: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \r\t");
+        if (std.mem.startsWith(u8, line, crash_lead)) found = line[crash_lead.len..];
+    }
+    return found;
+}
+
+/// The most of a panic's stack a finding keeps.
+pub const stack_most = 16 * 1024;
+
+/// The first panic's line and the stack printed under it, up to the next line
+/// that is not the panic's (the tape `check` printed, the build runner's account
+/// of the ending) and at most `stack_most` bytes.
+pub fn panicStack(output: []const u8) ?[]const u8 {
+    var start: ?usize = null;
+    var at: usize = 0;
+    while (at < output.len) {
+        const end = std.mem.findScalarPos(u8, output, at, '\n') orelse output.len;
+        const line = std.mem.trim(u8, output[at..end], " \r\t");
+        if (start) |from| {
+            const ends = std.mem.startsWith(u8, line, crash_lead) or std.mem.startsWith(u8, line, "error: ") or
+                std.mem.startsWith(u8, line, "failed command:");
+            if (ends) return output[from..@min(at, from + stack_most)];
+        } else if (panicMessage(line) != null) start = at;
+        at = end + 1;
+    }
+    const from = start orelse return null;
+    return output[from..@min(output.len, from + stack_most)];
+}
 
 /// The first test `output` names as ended, if any.
 pub fn crash(output: []const u8) ?Crash {
@@ -102,6 +145,8 @@ pub fn crash(output: []const u8) ?Crash {
             .term = withoutSuffix(if (semi) |s| after[0..s] else after, " with stderr:"),
             .saved = semi != null and std.mem.find(u8, after[semi.?..], "input saved to") != null,
             .message = panicMessage(output),
+            .tape = crashTape(output),
+            .stack = panicStack(output),
         };
     }
     return null;
@@ -171,6 +216,22 @@ test "a test the session ended reads back as its name, its ending, its saved inp
     try std.testing.expectEqualStrings("terminated with signal ABRT", replayed.term);
     try std.testing.expect(!replayed.saved);
     try std.testing.expectEqualStrings("past 40000", replayed.message.?);
+
+    // Under Zig's fuzzer the saved input can be empty while the case drew (riverrun's
+    // proof property): the tape `check` printed on the way out is the one that replays it.
+    const drawn =
+        \\thread 9 panic: reached unreachable code
+        \\src/proof.zig:12:5: 0x1 in walk (riverrun-tests)
+        \\    unreachable;
+        \\    ^
+        \\shakedown: a case ended the process; SHAKEDOWN_TAPE=3:0:ff87
+        \\error: test 'proof.test.the proof' terminated with signal ABRT; input saved to '/s/f/crash'
+        \\failed command: riverrun-tests --listen=-
+    ;
+    const d = crash(drawn).?;
+    try std.testing.expectEqualStrings("3:0:ff87", d.tape.?);
+    try std.testing.expectEqualStrings("thread 9 panic: reached unreachable code\nsrc/proof.zig:12:5: 0x1 in walk (riverrun-tests)\n    unreachable;\n    ^\n", d.stack.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), c.tape);
 
     try std.testing.expectEqual(@as(?Crash, null), crash("error: step run test failed\nthread x panic: no\n"));
     try std.testing.expectEqual(@as(?[]const u8, null), panicMessage("thread  panic: no id\nthreads panic: none\n"));

@@ -25,6 +25,7 @@ const corpus = @import("corpus.zig");
 const Sim = @import("Sim.zig");
 const swarm_mod = @import("swarm.zig");
 const points = @import("points.zig");
+const crash = @import("crash.zig");
 
 /// One run of a property's body.
 pub const Case = struct {
@@ -524,7 +525,10 @@ pub const Runner = struct {
         var c: Case = .{ .source = &r.source, .gpa = r.arena.allocator(), .runner = r };
         if (@errorReturnTrace()) |t| t.index = 0;
         if (r.points) |*p| p.start(&r.source, &r.sims);
+        // A case that ends the process (a panic) prints this tape on its way out.
+        const outer = crash.enter(&r.source);
         const result = r.body.run(r.body.ctx, &c);
+        crash.leave(outer);
         const passed = if (result) |_| !r.source.overrun() else |_| false;
         if (r.points) |*p| {
             p.end(passed);
