@@ -32,6 +32,9 @@ pub fn Trace(comptime Event: type) type {
         strings: std.StringHashMapUnmanaged(void) = .empty,
         arena: std.heap.ArenaAllocator,
         count: u64 = 0,
+        /// Records `keep` could not store, out of memory: hashed, and
+        /// counted here, never in `records` or `len`.
+        dropped: u64 = 0,
         rolling: u64 = seed,
         /// Private: where the next record goes in `.last` and `.window`:
         /// `count % n`, kept without dividing.
@@ -92,6 +95,7 @@ pub fn Trace(comptime Event: type) type {
             t.prefixes.clearRetainingCapacity();
             t.entries.clearRetainingCapacity();
             t.count = 0;
+            t.dropped = 0;
             t.slot = 0;
             t.rolling = seed;
         }
@@ -129,6 +133,16 @@ pub fn Trace(comptime Event: type) type {
             }
             if (hashed) t.entries.appendAssumeCapacity(.{ .step = record.step, .call = callHash(record), .whole = h });
             t.count += 1;
+        }
+
+        /// `append` for a caller whose own work goes on whatever the trace
+        /// holds (a simulation's or a `FaultIo`'s call): a record that cannot
+        /// be stored, out of memory, is hashed and counted in `dropped`, and
+        /// `format` says how many there were.
+        pub fn keep(t: *Self, record: Record) void {
+            t.append(record) catch |err| switch (err) {
+                error.OutOfMemory => t.dropped += 1,
+            };
         }
 
         /// Every record's entry in the order appended, in `.all` and `.last`;
@@ -189,7 +203,8 @@ pub fn Trace(comptime Event: type) type {
             return t.mode == .all or t.mode == .last;
         }
 
-        /// One line per kept record: step, task and event.
+        /// One line per kept record: step, task and event; then how many
+        /// records `keep` dropped, when it dropped any.
         pub fn format(t: *const Self, w: *Io.Writer) Io.Writer.Error!void {
             for (t.records()) |r| {
                 if (comptime std.meta.hasMethod(Event, "format")) {
@@ -198,6 +213,7 @@ pub fn Trace(comptime Event: type) type {
                     try w.print("{d:>6} {d:>3} {any}\n", .{ r.step, r.task.raw(), r.event });
                 }
             }
+            if (t.dropped > 0) try w.print("({d} records dropped: out of memory)\n", .{t.dropped});
         }
 
         fn recordHash(record: Record) u64 {
@@ -347,6 +363,24 @@ test "a trace formats one line per record" {
     try t.format(&out.writer);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, out.written(), "\n"));
     try std.testing.expect(std.mem.startsWith(u8, out.written(), "     0   0 "));
+}
+
+test "keep counts what it cannot store, hashes it, and says so" {
+    var failing: std.testing.FailingAllocator = .init(std.testing.allocator, .{ .fail_index = 0 });
+    var t: TestTrace = .init(failing.allocator(), .all);
+    defer t.deinit();
+    var all: TestTrace = .init(std.testing.allocator, .all);
+    defer all.deinit();
+    const record: TestTrace.Record = .{ .step = 0, .event = .{ .name = "open", .value = 3 } };
+    t.keep(record);
+    try all.append(record);
+    try std.testing.expectEqual(@as(u64, 1), t.dropped);
+    try std.testing.expectEqual(@as(usize, 0), t.records().len);
+    try std.testing.expectEqual(all.hash(), t.hash());
+    var out: Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try t.format(&out.writer);
+    try std.testing.expectEqualStrings("(1 records dropped: out of memory)\n", out.written());
 }
 
 test "a window keeps the newest records and the hash, and nothing that grows" {
