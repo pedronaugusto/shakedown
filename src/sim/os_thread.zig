@@ -213,6 +213,9 @@ test "a thread reads its own CPU time going up while it spins" {
 
 test "a thread blocked in the kernel reads as blocked, its CPU time still" {
     if (builtin.single_threaded) return error.SkipZigTest;
+    // Where the system names no thread (FreeBSD and the rest), the thread
+    // below would never name itself and the wait for it would never end.
+    if (read(current()) == null) return error.SkipZigTest;
     const Blocked = struct {
         id: std.atomic.Value(u64) = .init(0),
         go: std.atomic.Value(u32) = .init(0),
@@ -239,9 +242,15 @@ test "a thread blocked in the kernel reads as blocked, its CPU time still" {
         try std.Io.Threaded.global_single_threaded.io().sleep(.fromMilliseconds(1), .awake);
         reading = read(id).?;
     }
+    // Linux gives the CPU clock and the state in two reads, the clock first:
+    // the reading that first sees the thread blocked may have taken its clock
+    // while the thread still ran toward the wait. Every reading after it takes
+    // both while the thread waits, so those two must agree.
+    const settled = read(id).?;
     const again = read(id).?;
+    try std.testing.expect(settled.blocked);
     try std.testing.expect(again.blocked);
-    try std.testing.expectEqual(reading.cpu, again.cpu);
+    try std.testing.expectEqual(settled.cpu, again.cpu);
 }
 
 test "a thread could run all of an interval it spent blocked, and only its CPU time of one it did not" {

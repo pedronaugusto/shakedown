@@ -24,7 +24,8 @@ fn traceHash(seed: u64, executor: Sim.Executor) !u64 {
 // B5 adds the node namespace to each record; scheduler choices are unchanged.
 // A listing resumes by cookie, so one that removes what it listed skips nothing.
 // The files check reads its file back with aegis's whole-file read: a stat, then reads to the end.
-const golden: u64 = 0xda0784688f9ac38a;
+// The files check makes its scratch directory under .zig-cache/tmp.
+const golden: u64 = 0xb31631f719d29910;
 
 test "a thousand seeds of the conformance workload repeat their runs, and the runs are fixed" {
     var digest: u64 = 0;

@@ -6,7 +6,11 @@ const Io = std.Io;
 pub fn run(gpa: std.mem.Allocator, io: Io) !void {
     var random: [8]u8 = undefined;
     io.random(&random);
-    const name = "shakedown-conformance-" ++ std.fmt.hex(@as(u64, @bitCast(random)));
+    // Under the build's scratch directory, as `std.testing.tmpDir`, not in the
+    // tree the tests run from: that tree may be a share whose mapped writes a
+    // read does not see (a FreeBSD guest's 9p), where the scratch directory is
+    // the machine's own memory.
+    const name = ".zig-cache/tmp/shakedown-conformance-" ++ std.fmt.hex(@as(u64, @bitCast(random)));
     const cwd = Io.Dir.cwd();
     const dir = try cwd.createDirPathOpen(io, name, .{ .open_options = .{ .iterate = true } });
     // glint-ignore: Z026 -- removing the scratch directory is best effort after the run has its verdict
