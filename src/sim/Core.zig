@@ -125,6 +125,9 @@ woke_spuriously: u8 = 0,
 searched: bool = false,
 /// The first of the actor numbers the source gave this simulation.
 actor_base: u32 = 0,
+/// The actor numbers issued past `actor_base`, one per task spawned. A
+/// search runs out of them before task ids (`Source.actorSpace`).
+actors_issued: u32 = 0,
 ready_seq: u64 = 0,
 current: ?*Task = null,
 driver: executor.Context,
@@ -241,6 +244,9 @@ pub const Wait = union(enum) {
 pub const Task = struct {
     core: *Core,
     id: ids.TaskId = ids.outside,
+    /// The number a search knows the task by: one of its simulation's
+    /// actor numbers (`Source.actorSpace`), issued as it is spawned.
+    actor: u32 = 0,
     node: NodeId = first_node,
     /// The process the task belongs to; null for the test's own.
     process: ?*Process = null,
@@ -451,7 +457,9 @@ pub fn ownerOf(c: *const Core) u32 {
 
 /// The context of a node made by `Sim.node`: the first is `c.context`.
 pub fn contextOf(c: *Core, node: NodeId) *Context {
-    return c.contexts.items[Network.followerIndex(node)];
+    return for (c.contexts.items) |ctx| {
+        if (ctx.node == node) break ctx;
+    } else unreachable; // every node but the first is made by Sim.node, which keeps its context here
 }
 
 pub fn disk(c: *Core, node: NodeId) ?Fs {
@@ -541,8 +549,13 @@ pub fn spawn(
     const t = c.idle.pop() orelse try c.newTask();
     errdefer c.idle.appendAssumeCapacity(t);
     try c.layOut(t, context.len, context_alignment, result_len, result_alignment);
-    // Issued last, so a spawn that fails leaves the issuer where it was.
+    // A search tells tasks apart by their actor numbers: a searched run
+    // that has issued all of its space's cannot start another task, as one
+    // that has issued every id cannot. Elsewhere they wrap in the space.
+    if (c.searched and c.actors_issued == Source.actor_space_size - 1) return error.SystemResources;
+    // Issued last, so a spawn that fails leaves the issuers where they were.
     const id = c.next_id.next() catch return error.SystemResources;
+    c.actors_issued +%= 1;
     @memcpy((t.frame.ptr + t.context_offset)[0..context.len], context);
     t.reset(.{
         .core = c,
@@ -551,6 +564,7 @@ pub fn spawn(
         .result_offset = t.result_offset,
         .result_len = result_len,
         .id = id,
+        .actor = c.actor_base | (c.actors_issued & (Source.actor_space_size - 1)),
         .node = c.nodeId(),
         .process = c.processOf(),
         .io_context = c.currentContext(),
@@ -562,7 +576,7 @@ pub fn spawn(
         .fifo, .random, .bounded => {},
     }
     if (c.searched) {
-        if (c.current) |parent| c.source.spawned(c.actorOf(parent), c.actorOf(t));
+        if (c.current) |parent| c.source.spawned(parent.actor, t.actor);
     }
     switch (start) {
         .ready => c.makeReady(t),
@@ -645,7 +659,7 @@ fn finish(c: *Core, t: *Task) void {
         // The step that ends a task: its code since its last call, and
         // what its end tells others.
         if (c.options.schedule == .bounded) c.touch(c.memoryOf(t), true);
-        c.touch(Object.task(c.actorOf(t)), true);
+        c.touch(Object.task(t.actor), true);
         switch (t.job) {
             .member => c.touch(Object.group(@intFromPtr(t.group.?)), true), // safe: the address only names the group
             .program => |p| c.touch(Object.process(p.pid), true),
@@ -755,7 +769,7 @@ fn pickReady(c: *Core) ?*Task {
             }
             if (n == 1) return c.ready.orderedRemove(0);
             c.picks.clearRetainingCapacity();
-            for (c.ready.items) |t| c.picks.appendAssumeCapacity(c.actorOf(t));
+            for (c.ready.items) |t| c.picks.appendAssumeCapacity(t.actor);
             const index = c.source.pick(c.picks.items, false);
             c.noteDecision(index);
             return c.ready.orderedRemove(@intCast(index));
@@ -813,7 +827,7 @@ pub fn dispatch(c: *Core, from: *executor.Context) void {
         // Fibers all run on the driver's thread, named once in `drive`.
         if (c.kind == .threads) c.runner.store(n.ctx.thread.os, .monotonic);
         c.running.store(n.id, .monotonic);
-        if (c.searched) c.source.step(c.actorOf(n));
+        if (c.searched) c.source.step(n.actor);
         break :to &n.ctx;
     } else to: {
         c.current = null;
@@ -1423,16 +1437,16 @@ fn preemptionPoint(c: *Core, t: *Task) void {
     }
     const bound = c.options.schedule.bounded;
     if (c.preempted >= bound.preemptions or c.readyCount() == 0) {
-        if (c.searched) c.source.step(c.actorOf(t));
+        if (c.searched) c.source.step(t.actor);
         return;
     }
     c.picks.clearRetainingCapacity();
-    c.picks.appendAssumeCapacity(c.actorOf(t));
-    for (c.ready.items) |r| c.picks.appendAssumeCapacity(c.actorOf(r));
+    c.picks.appendAssumeCapacity(t.actor);
+    for (c.ready.items) |r| c.picks.appendAssumeCapacity(r.actor);
     const index = c.source.pick(c.picks.items, true);
     c.noteDecision(index);
     if (index == 0) {
-        if (c.searched) c.source.step(c.actorOf(t));
+        if (c.searched) c.source.step(t.actor);
         return;
     }
     c.preempted += 1;
@@ -1485,12 +1499,6 @@ pub const Object = struct {
     const mask = (1 << kind_shift) - 1;
 };
 
-/// The number a search knows task `t` by.
-pub fn actorOf(c: *const Core, t: *const Task) u32 {
-    // glint-ignore: A004 -- a search's actor number packs the task's id under the core's base bits
-    return c.actor_base | t.id.raw();
-}
-
 /// The memory a task's steps touch, as `Bounded.memory` says it is shared.
 fn memoryOf(c: *const Core, t: *const Task) u64 {
     return switch (c.options.schedule.bounded.memory) {
@@ -1503,7 +1511,7 @@ fn memoryOf(c: *const Core, t: *const Task) u64 {
 pub fn touch(c: *Core, object: u64, write: bool) void {
     if (!c.searched) return;
     const t = c.current orelse return;
-    c.source.touch(c.actorOf(t), object, write);
+    c.source.touch(t.actor, object, write);
 }
 
 /// The end of a call: its record in the trace.
@@ -1511,8 +1519,7 @@ pub fn record(c: *Core, call: IoCall, entered: Call, outcome: u64) void {
     const id = if (entered.task) |t| t.id else ids.outside;
     const event: Event = .{ .call = call, .task = id, .node = entered.node, .decision = c.decision, .outcome = outcome };
     const at: Io.Timestamp = nanoseconds.timestamp(c.clocks[@backingInt(Kept.awake)]);
-    // glint-ignore: Z026 -- a record that cannot be kept is dropped; the hash still counts it
-    c.trace.append(.{ .step = entered.step, .task = id, .at = at, .event = event }) catch {};
+    c.trace.keep(.{ .step = entered.step, .task = id, .at = at, .event = event });
 }
 
 test "task ids run out as an error that leaves the issuer where it was" {

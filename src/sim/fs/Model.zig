@@ -190,9 +190,13 @@ fn decode(raw: Io.File.Handle) ?u32 {
     return @intCast(-@as(i64, raw) - 1_048_576);
 }
 pub fn handle(fs: *Model, raw: Io.File.Handle) Error!*Handle {
-    const id = decode(raw) orelse return error.BadHandle;
+    return fs.held(raw) orelse error.BadHandle;
+}
+/// The handle `raw` names, null where the model holds none.
+pub fn held(fs: *Model, raw: Io.File.Handle) ?*Handle {
+    const id = decode(raw) orelse return null;
     for (fs.handles.items) |*h| if (h.id == id) return h;
-    return error.BadHandle;
+    return null;
 }
 pub fn directory(fs: *Model, dir: Io.Dir) Error!u32 {
     if (dir.handle == Io.Dir.cwd().handle) return 0;
@@ -209,8 +213,7 @@ pub fn openHandle(fs: *Model, inode: u32, read_access: bool, write_access: bool,
 }
 /// Marks the handle as opened by simulated process `owner`.
 pub fn setOwner(fs: *Model, raw: Io.File.Handle, owner: u32) void {
-    // glint-ignore: Z026 -- a handle the model does not hold has no owner to mark
-    const h = fs.handle(raw) catch return;
+    const h = fs.held(raw) orelse return; // a handle the model does not hold has no owner to mark
     h.owner = owner;
 }
 
@@ -1464,6 +1467,13 @@ pub fn dump(fs: *const Model, w: *Io.Writer) Io.Writer.Error!void {
     for (fs.root.entries.items) |e| try w.print("{d}/{s} -> {d} {t} {d} bytes\n", .{ e.parent, e.name.bytes, e.inode, fs.root.nodes.items[e.inode].kind, fs.root.nodes.items[e.inode].live.size });
 }
 /// Advisory locks are on open descriptions, and conflict across hard links.
+/// Releases the lock `raw` holds; false for a handle the model does not
+/// hold, which has none to release.
+pub fn unlock(fs: *Model, raw: Io.File.Handle) bool {
+    const h = fs.held(raw) orelse return false;
+    h.lock = .none;
+    return true;
+}
 pub fn tryLock(fs: *Model, raw: Io.File.Handle, lock: Io.File.Lock) Error!bool {
     const h = try fs.handle(raw);
     for (fs.handles.items) |other| if (other.id != h.id and other.inode == h.inode and other.lock != .none and lock != .none) {

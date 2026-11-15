@@ -217,10 +217,6 @@ The raw sites that remain, each with the reason it is allowed:
   any base `Io`: `Sim` hands it the task's number at one place.
   Hashing a task or node id into a trace digest or a seed (the digest of
   a new task, the network's input digests) takes its number.
-- Safe-type internals. `net/Model.key` joins two node ids into the link table's
-  key, and `net/Model.followerIndex` maps a node id to its place in `Core.contexts`,
-  which holds the nodes after the first in the order their ids were issued. Each is
-  the one function that knows the representation, in the model that issues the ids.
 - A C or OS boundary. `Quarantine` does page arithmetic on `usize` for `mmap`,
   `mprotect` and `madvise`.
 
@@ -230,7 +226,10 @@ which watch `Guarded`, are reports: glint decides them only for a receiver whose
 it resolves and an acquisition whose `defer` is the last statement of its block, so on
 this code they leave 42 sites undecided, and a gate treats an undecided site as a
 failure. They gate once glint can decide the code as written. A site that carries
-`glint-ignore` says why; one that glint no longer finds fails as stale.
+`glint-ignore` says why; one that glint no longer finds fails as stale. None is left in
+`src`: the link table is keyed by its two node ids (`net/Model.LinkKey`), a node's
+context is found by its id, and a search's actor numbers are issued as tasks are spawned,
+none of them reading an id's number.
 
 The tests that guard these types are written with plain integers and without
 importing aegis (`src/reference_test.zig`): an event hashed as its plain twin, task

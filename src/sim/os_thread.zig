@@ -75,8 +75,7 @@ fn readLinux(tid: u32) ?Reading {
     var ts: linux.timespec = undefined;
     if (linux.errno(linux.clock_gettime(clock, &ts)) != .SUCCESS) return null;
     var path_buf: [48]u8 = undefined;
-    // glint-ignore: Z026 -- the longest tid fits with room to spare
-    const path = std.mem.printSentinel(&path_buf, "/proc/self/task/{d}/stat", .{tid}, 0) catch unreachable;
+    const path = std.mem.printSentinel(&path_buf, "/proc/self/task/{d}/stat", .{tid}, 0) catch return null;
     const opened = linux.open(path, .{ .ACCMODE = .RDONLY, .CLOEXEC = true }, 0);
     if (linux.errno(opened) != .SUCCESS) return null;
     const fd: linux.fd_t = @intCast(opened);
@@ -115,6 +114,10 @@ fn readMach(port: std.c.mach_port_t) ?Reading {
     return .{ .cpu = cpu, .blocked = info.run_state == 3 or info.run_state == 4 };
 }
 
+/// A process's id as `SYSTEM_PROCESS_INFORMATION` holds it, in a handle's
+/// place: a process and the one it was inherited from.
+const ProcessId = enum(usize) { _ };
+
 /// `SYSTEM_PROCESS_INFORMATION`, its threads after it.
 const ProcessInformation = extern struct {
     next_entry_offset: u32,
@@ -128,9 +131,8 @@ const ProcessInformation = extern struct {
     kernel_time: i64,
     image_name: windows.UNICODE_STRING,
     base_priority: i32,
-    unique_process_id: usize,
-    // glint-ignore: P008 -- Windows' SYSTEM_PROCESS_INFORMATION layout, as Windows names it
-    inherited_from_unique_process_id: usize,
+    unique_process_id: ProcessId,
+    inherited_from_unique_process_id: ProcessId,
     handle_count: u32,
     session_id: u32,
     unique_process_key: usize,
@@ -181,7 +183,7 @@ fn findThread(snapshot: []align(@alignOf(ProcessInformation)) const u8, id: u32)
     var at: usize = 0;
     while (at + @sizeOf(ProcessInformation) <= snapshot.len) {
         const process: *const ProcessInformation = @ptrCast(@alignCast(snapshot[at..].ptr));
-        if (process.unique_process_id == pid) {
+        if (process.unique_process_id == @as(ProcessId, @fromBackingInt(@as(usize, pid)))) {
             const threads: [*]const ThreadInformation = @ptrCast(@alignCast(snapshot[at + @sizeOf(ProcessInformation) ..].ptr));
             for (threads[0..process.number_of_threads]) |t| {
                 if (@intFromPtr(t.client_id.UniqueThread) != id) continue; // safe: the system keeps a thread id in the handle's place
@@ -263,7 +265,6 @@ test "a thread could run all of an interval it spent blocked, and only its CPU t
 }
 
 /// `n` milliseconds, as a test writes its times.
-fn testMs(n: i64) Span {
-    // glint-ignore: Z026 -- the tests' counts are far inside an i64 of nanoseconds
-    return aegis.units.Duration(.millisecond, i64).fromRaw(n).convert(.nanosecond, i64, .exact) catch unreachable;
+fn testMs(n: i32) Span {
+    return aegis.units.Duration(.millisecond, i32).fromRaw(n).convert(.nanosecond, i64, .exact);
 }

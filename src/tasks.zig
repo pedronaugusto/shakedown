@@ -3,11 +3,11 @@ const std = @import("std");
 const aegis = @import("aegis");
 
 /// Cancels the task behind `future` and reads what it returned. Being cancelled is the reaping
-/// itself; any other failure is a second one, printed beside the test's own rather than dropped.
+/// itself; any other failure is a second one, logged beside the test's own rather than dropped:
+/// through `std.log`, scope `.shakedown`, as a warning, for the program's log function to place.
 pub fn reap(comptime T: type, io: std.Io, future: *std.Io.Future(T)) void {
     if (future.cancel(io)) |_| {} else |err| {
-        // glint-ignore: P005 -- a second failure goes to the test's standard error
-        if (@as(anyerror, err) != error.Canceled) std.debug.print("a reaped task failed too: {s}\n", .{@errorName(err)});
+        if (@as(anyerror, err) != error.Canceled) std.log.scoped(.shakedown).warn("a reaped task failed too: {s}", .{@errorName(err)});
     }
 }
 

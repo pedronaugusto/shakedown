@@ -241,8 +241,7 @@ pub fn string(s: *Source, gpa: Allocator, options: StringOptions) error{OutOfMem
             .ascii => try out.append(gpa, ascii(s)),
             .utf8 => {
                 var buffer: [4]u8 = undefined;
-                const n = std.unicode.utf8Encode(codePoint(s), &buffer) catch unreachable; // glint-ignore: Z026 -- codePoint never draws a surrogate or a value past U+10FFFF
-                try out.appendSlice(gpa, buffer[0..n]);
+                try out.appendSlice(gpa, encode(codePoint(s), &buffer));
             },
         }
     }
@@ -252,6 +251,47 @@ pub fn string(s: *Source, gpa: Allocator, options: StringOptions) error{OutOfMem
 /// A code point below 128, the simplest being '0'.
 fn ascii(s: *Source) u8 {
     return @intCast((s.below(127) + '0') % 128);
+}
+
+/// `c` as UTF-8, in `buffer`. `c` is a scalar value, as `codePoint` draws
+/// one: no surrogate, nothing past U+10FFFF, which leaves `std.unicode`'s
+/// encoder nothing to refuse.
+fn encode(c: u21, buffer: *[4]u8) []const u8 {
+    aegis.assert.invariant(c <= 0x10ffff and (c < 0xd800 or c > 0xdfff), "a scalar value");
+    if (c < 0x80) {
+        buffer[0] = @intCast(c);
+        return buffer[0..1];
+    }
+    if (c < 0x800) {
+        buffer[0] = 0xc0 | @as(u8, @intCast(c >> 6));
+        buffer[1] = continuation(c, 0);
+        return buffer[0..2];
+    }
+    if (c < 0x10000) {
+        buffer[0] = 0xe0 | @as(u8, @intCast(c >> 12));
+        buffer[1] = continuation(c, 6);
+        buffer[2] = continuation(c, 0);
+        return buffer[0..3];
+    }
+    buffer[0] = 0xf0 | @as(u8, @intCast(c >> 18));
+    buffer[1] = continuation(c, 12);
+    buffer[2] = continuation(c, 6);
+    buffer[3] = continuation(c, 0);
+    return buffer[0..4];
+}
+
+/// The UTF-8 continuation byte of `c`'s six bits from `shift` up.
+fn continuation(c: u21, comptime shift: u5) u8 {
+    return 0x80 | @as(u8, @truncate((c >> shift) & 0x3f));
+}
+
+test "encode writes each scalar value as std.unicode does" {
+    for ([_]u21{ 0, 0x7f, 0x80, 0x7ff, 0x800, 0xd7ff, 0xe000, 0xfffd, 0xffff, 0x10000, 0x10ffff }) |c| {
+        var ours: [4]u8 = undefined;
+        var theirs: [4]u8 = undefined;
+        const n = try std.unicode.utf8Encode(c, &theirs);
+        try std.testing.expectEqualSlices(u8, theirs[0..n], encode(c, &ours));
+    }
 }
 
 fn codePoint(s: *Source) u21 {

@@ -13,9 +13,18 @@ pub fn run(gpa: std.mem.Allocator, io: Io) !void {
     const name = ".zig-cache/tmp/shakedown-conformance-" ++ std.fmt.hex(@as(u64, @bitCast(random)));
     const cwd = Io.Dir.cwd();
     const dir = try cwd.createDirPathOpen(io, name, .{ .open_options = .{ .iterate = true } });
-    // glint-ignore: Z026 -- removing the scratch directory is best effort after the run has its verdict
-    defer cwd.deleteTree(io, name) catch {};
-    defer dir.close(io);
+    const verdict = exercise(gpa, io, dir);
+    dir.close(io);
+    // The scratch directory goes whatever the verdict. A run that failed
+    // reports its own failure; one that passed fails if the directory
+    // cannot be removed, a file guarantee as much as the rest.
+    const removed = cwd.deleteTree(io, name);
+    try verdict;
+    try removed;
+}
+
+/// The guarantees, checked in `dir`, the run's scratch directory.
+fn exercise(gpa: std.mem.Allocator, io: Io, dir: Io.Dir) !void {
     _ = try dir.createDirPath(io, "nested/deep");
     const file = try dir.createFile(io, "nested/deep/file", .{ .read = true, .exclusive = true });
     defer file.close(io);

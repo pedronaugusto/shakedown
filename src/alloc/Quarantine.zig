@@ -118,10 +118,21 @@ fn alloc(ptr: *anyopaque, len: usize, alignment: Alignment, ret_addr: usize) ?[*
     }
     var held = q.state.acquire();
     defer held.deinit();
-    held.value().mappings.put(bookkeeping, at, range) catch {
+    const state = held.value();
+    state.mappings.put(bookkeeping, at, range) catch {
         release(range);
         return null;
     };
+    // A slot in the freed list for every block out, this one included, so
+    // its free can quarantine it whatever memory there is then.
+    if (q.options.reuse_after != null) {
+        const out = state.mappings.count() - (state.freed.items.len - state.freed_head);
+        state.freed.ensureUnusedCapacity(bookkeeping, out) catch {
+            _ = state.mappings.remove(at);
+            release(range);
+            return null;
+        };
+    }
     // With a guard the block ends where the guard begins.
     const start = if (guard == 0) at else alignment.backward(at + data - @max(len, 1));
     assert.invariant(start >= at, "a guarded block starts inside its mapping");
@@ -163,8 +174,7 @@ fn free(ptr: *anyopaque, memory: []u8, alignment: Alignment, ret_addr: usize) vo
     }
     const reuse = q.options.reuse_after orelse return;
     const limit: aegis.bounded.Limit(usize) = .init(reuse.raw());
-    // glint-ignore: Z026 -- the range stays decommitted and protected: a use after free still traps
-    state.freed.append(bookkeeping, range) catch return;
+    state.freed.appendAssumeCapacity(range); // alloc kept a slot for every block out
     state.quarantined += span;
     while (state.freed_head < state.freed.items.len and exceeds(limit, state.quarantined)) {
         const oldest = state.freed.items[state.freed_head];
@@ -205,8 +215,9 @@ fn decommit(at: [*]align(std.heap.page_size_min) u8, len: usize) bool {
         return windows.ntdll.NtFreeVirtualMemory(windows.GetCurrentProcess(), &address, &size, .{ .DECOMMIT = true }) == .SUCCESS;
     }
     const advice = if (builtin.target.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
-    // glint-ignore: Z026 -- pages not given back stay resident; the range is still closed below
-    std.posix.madvise(at, len, advice) catch {};
+    // Pages the system would not take back would stay resident: the range
+    // is then not kept, and its free gives it back whole.
+    std.posix.madvise(at, len, advice) catch return false;
     return close(at, len);
 }
 

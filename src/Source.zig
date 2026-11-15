@@ -271,10 +271,14 @@ pub fn spawned(s: *Source, parent: u32, child: u32) void {
     }
 }
 
+/// How many actor numbers `actorSpace` gives a simulation.
+pub const actor_space_size: u32 = 1 << 24;
+
 /// A range of actor numbers of its own for one simulation drawing from this
-/// source: the next `1 << 24` numbers. A search tells actors apart by them.
+/// source: the next `actor_space_size` numbers, the first of which is
+/// returned. A search tells actors apart by them.
 pub fn actorSpace(s: *Source) u32 {
-    const base = s.actor_spaces << 24;
+    const base = s.actor_spaces *% actor_space_size;
     s.actor_spaces +%= 1;
     return base;
 }

@@ -252,8 +252,9 @@ const Climb = struct {
         var hi: u64 = 8;
         while (try c.step(hi)) {
             lo = hi;
-            // glint-ignore: Z026 -- past a u64 the bound cannot double: the search stops there
-            hi = std.math.mul(u64, hi, 2) catch return;
+            // Past a u64 the bound cannot double: the search stops there.
+            if (hi > std.math.maxInt(u64) / 2) return;
+            hi *= 2;
         }
         while (lo + 1 < hi) {
             const mid = lo + (hi - lo) / 2;

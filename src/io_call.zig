@@ -242,7 +242,13 @@ pub const IoFault = union(enum) {
 
     pub const Tag = std.meta.Tag(IoFault);
 
-    /// Whether `fault` can be injected into `call`.
+    /// Whether `fault` can be injected into `call`: `check` without the
+    /// reason it cannot.
+    pub fn fits(fault: IoFault, call: IoCall) bool {
+        return if (fault.check(call)) |_| true else |_| false;
+    }
+
+    /// Whether `fault` can be injected into `call`, and if not, why.
     pub fn check(fault: IoFault, call: IoCall) FaultRefusal!void {
         switch (fault) {
             .fail => |err| if (!canFail(call, err)) return error.FaultNotInErrorSet,

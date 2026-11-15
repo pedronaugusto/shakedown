@@ -145,7 +145,7 @@ pub fn firstOffender(p: *LockProbe) ?Offender {
 /// all: a probe the code never reached proves nothing.
 pub fn expectNone(p: *LockProbe) error{TestUnexpectedResult}!void {
     if (p.calls() == 0) {
-        say("the probe saw no allocator call at all\n", .{});
+        say("the probe saw no allocator call at all", .{});
         return error.TestUnexpectedResult;
     }
     const n = p.underLock();
@@ -155,13 +155,11 @@ pub fn expectNone(p: *LockProbe) error{TestUnexpectedResult}!void {
     return error.TestUnexpectedResult;
 }
 
-/// The failure goes to stderr as `std.testing` puts its own there.
+/// A report goes through `std.log`, scope `.shakedown`, as a warning: the
+/// program's log function decides where it goes and what a refused write
+/// means, and a test that expects the failure is not failed by the log.
 fn say(comptime fmt: []const u8, args: anytype) void {
-    var buffer: [512]u8 = undefined;
-    const stderr = std.debug.lockStderr(&buffer).terminal();
-    defer std.debug.unlockStderr();
-    // glint-ignore: Z026 -- a message stderr cannot take is lost
-    stderr.writer.print(fmt, args) catch {};
+    std.log.scoped(.shakedown).warn(fmt, args);
 }
 
 const vtable: Allocator.VTable = .{

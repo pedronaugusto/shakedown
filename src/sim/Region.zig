@@ -192,8 +192,9 @@ fn decommit(at: [*]u8, len: usize) void {
     }
     const start: [*]align(std.heap.page_size_min) u8 = @alignCast(at);
     const advice = if (builtin.target.os.tag.isDarwin()) std.posix.MADV.FREE_REUSABLE else std.posix.MADV.DONTNEED;
-    // glint-ignore: Z026 -- pages not given back stay resident until the region goes
-    std.posix.madvise(start, len, advice) catch {};
+    // Advice, as the decommit above is: pages the system does not take back
+    // stay resident until the region goes, and nothing else changes.
+    _ = std.posix.system.madvise(start, len, advice);
 }
 
 fn release(at: [*]align(std.heap.page_size_min) u8, len: usize) void {

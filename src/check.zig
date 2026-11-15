@@ -50,8 +50,7 @@ pub const Case = struct {
     /// Kept, and printed, only for the final, minimal failing case.
     pub fn note(c: *Case, comptime fmt: []const u8, args: anytype) void {
         const notes = &(c.runner.notes orelse return);
-        // glint-ignore: Z026 -- a note that cannot be kept is lost; the failure itself is still reported
-        notes.print(c.runner.gpa, "    " ++ fmt ++ "\n", args) catch {};
+        notes.print(c.runner.gpa, "    " ++ fmt ++ "\n", args) catch |err| c.runner.unkept(err);
     }
 
     /// How far this case got toward what `label` names, for `check` to
@@ -68,8 +67,7 @@ pub const Case = struct {
     pub fn target(c: *Case, score: f64, label: []const u8) void {
         aegis.assert.invariant(std.math.isFinite(score), "a target's score is finite");
         const targets = &(c.runner.targets orelse return);
-        // glint-ignore: Z026 -- a score that cannot be kept is lost; the case runs on as it would without it
-        targets.observe(score, label) catch {};
+        targets.observe(score, label) catch |err| c.runner.unkept(err);
     }
 
     /// This case reached the point `label` names: a state the property was
@@ -473,6 +471,9 @@ pub const Runner = struct {
     /// The fault point driver and its counts, when the options name points (not under
     /// `explore`, whose options name none).
     points: ?points.Points = null,
+    /// A note or a score the current case could not keep, out of memory:
+    /// the case ends as `error.OutOfMemory`, as the run's own allocations do.
+    out_of_memory: bool = false,
     /// Whether the test runner handed `check`'s fuzz function an input of its
     /// own: it does not fuzz.
     probed: bool = false,
@@ -516,8 +517,17 @@ pub const Runner = struct {
         r.* = undefined;
     }
 
+    /// A note or a score `Case` could not keep: the case goes on, and
+    /// `once` fails as `error.OutOfMemory` when it ends.
+    fn unkept(r: *Runner, err: Allocator.Error) void {
+        switch (err) {
+            error.OutOfMemory => r.out_of_memory = true,
+        }
+    }
+
     /// One case from `backend`. Its tape stays in `r.source` until the next.
     pub fn once(r: *Runner, backend: Source.Backend) error{OutOfMemory}!Outcome {
+        r.out_of_memory = false;
         r.source.restart(backend);
         _ = r.arena.reset(.retain_capacity);
         if (r.targets) |*t| t.startCase();
@@ -542,6 +552,7 @@ pub const Runner = struct {
         if (r.notes != null) if (result) |_| {} else |_| r.keepTrace();
         for (r.sims.items) |s| s.deinit();
         r.sims.clearRetainingCapacity();
+        if (r.out_of_memory) return error.OutOfMemory;
         if (r.source.overrun()) return .discard;
         result catch |err| return switch (err) {
             error.Unsatisfiable => .discard,
@@ -587,11 +598,7 @@ pub const Runner = struct {
     /// the options' diagnostics with an empty tape.
     fn runFailed(r: *Runner, text: *std.Io.Writer.Allocating, err: anyerror) CheckError!void {
         const diagnostics = r.options.diagnostics orelse {
-            var buffer: [256]u8 = undefined;
-            const stderr = std.debug.lockStderr(&buffer).terminal();
-            defer std.debug.unlockStderr();
-            // glint-ignore: Z026 -- a report stderr cannot take is lost; the error still fails the test
-            stderr.writer.writeAll(text.written()) catch {};
+            say(text.written());
             return error.PropertyFailed;
         };
         const tape = r.gpa.alloc(u64, 0) catch return error.OutOfMemory;
@@ -643,11 +650,7 @@ pub const Runner = struct {
             std.debug.writeErrorReturnTrace(&t, .{ .writer = &text.writer, .mode = .no_color }) catch return error.OutOfMemory;
         }
         const diagnostics = r.options.diagnostics orelse {
-            var buffer: [256]u8 = undefined;
-            const stderr = std.debug.lockStderr(&buffer).terminal();
-            defer std.debug.unlockStderr();
-            // glint-ignore: Z026 -- a report stderr cannot take is lost; the error still fails the test
-            stderr.writer.writeAll(text.written()) catch {};
+            say(text.written());
             return error.PropertyFailed;
         };
         const tape = r.gpa.dupe(u64, choices) catch return error.OutOfMemory;
@@ -659,6 +662,15 @@ pub const Runner = struct {
         return error.PropertyFailed;
     }
 };
+
+/// A failure's report, with no diagnostics to keep it, goes through
+/// `std.log`, scope `.shakedown`, as a warning: the program's log function
+/// decides where it goes and what a refused write means, and a test that
+/// expects the failure is not failed by the log. The error still fails a
+/// test that does not.
+fn say(text: []const u8) void {
+    std.log.scoped(.shakedown).warn("{s}", .{std.mem.trimEnd(u8, text, "\n")});
+}
 
 fn print(w: *std.Io.Writer, err: anyerror, origin: Origin, choices: []const u64, shrink_runs: u32, outcome: Outcome, notes: []const u8) std.Io.Writer.Error!void {
     switch (origin) {

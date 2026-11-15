@@ -78,8 +78,9 @@ fn exitCode(result: anytype, init: std.process.Init) u8 {
     const value = result catch |err| {
         var buffer: [128]u8 = undefined;
         const line = std.mem.print(&buffer, "error: {t}\n", .{err}) catch "error\n";
-        // glint-ignore: Z026 -- a program's failing report has nowhere to go when its stderr is gone, as in a real process
-        std.Io.File.stderr().writeStreamingAll(init.io, line) catch {};
+        // A report its stderr refuses goes nowhere, and the program fails
+        // all the same, as a real process does past std's own report.
+        std.Io.File.stderr().writeStreamingAll(init.io, line) catch return 1;
         return 1;
     };
     return switch (@TypeOf(value)) {
