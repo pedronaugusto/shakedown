@@ -179,10 +179,15 @@ pub fn owns(handle: Io.File.Handle) bool {
 pub const HandleError = error{BadHandle};
 
 pub fn end(p: *Pipes, handle: Io.File.Handle) HandleError!*End {
-    const end_id = decode(handle) orelse return error.BadHandle;
-    if (end_id >= p.ends.items.len) return error.BadHandle;
+    return p.openEnd(handle) orelse error.BadHandle;
+}
+
+/// The open end `handle` names; null for one closed or unknown.
+fn openEnd(p: *Pipes, handle: Io.File.Handle) ?*End {
+    const end_id = decode(handle) orelse return null;
+    if (end_id >= p.ends.items.len) return null;
     const e = &p.ends.items[end_id];
-    if (!e.open) return error.BadHandle;
+    if (!e.open) return null;
     return e;
 }
 
@@ -190,8 +195,7 @@ pub fn end(p: *Pipes, handle: Io.File.Handle) HandleError!*End {
 /// close of one is a double close, which the simulation's close slot reports
 /// (`Core.doubleClose`) before it gets here.
 pub fn close(p: *Pipes, handle: Io.File.Handle) void {
-    // glint-ignore: Z026 -- a closed or unknown handle is ignored, as the doc comment says
-    const e = p.end(handle) catch return;
+    const e = p.openEnd(handle) orelse return;
     e.open = false;
     switch (e.kind) {
         .read => p.pipes.items[e.pipe].readers -= 1,
