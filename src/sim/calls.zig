@@ -79,15 +79,15 @@ const slots = struct {
             .concurrent => false,
             .any => c.draw(1) == 0,
         };
-        if (!at_once) {
-            // glint-ignore: Z026 -- a future the simulation has no task for runs at once, as Io.async allows; the run records it with task 0
-            if (c.spawn(.{ .future = start }, context, context_alignment, result.len, result_alignment, .ready)) |t| {
-                t.spawned_at = @returnAddress();
-                c.record(.async, e, t.id.raw());
-                return @ptrCast(t);
-            } else |_| {}
-        }
-        c.record(.async, e, 0);
+        // A future run at once is recorded with task 0; one the simulation
+        // has no task for runs at once too, as Io.async allows, recorded
+        // with the reason it has none.
+        const outcome: u64 = if (at_once) 0 else if (c.spawn(.{ .future = start }, context, context_alignment, result.len, result_alignment, .ready)) |t| {
+            t.spawned_at = @returnAddress();
+            c.record(.async, e, t.id.raw());
+            return @ptrCast(t);
+        } else |err| digest(err);
+        c.record(.async, e, outcome);
         start(context.ptr, result.ptr);
         return null;
     }
@@ -116,7 +116,7 @@ const slots = struct {
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("await");
         const target: *Task = @ptrCast(@alignCast(any_future));
-        c.touch(Core.Object.task(c.actorOf(target)), true);
+        c.touch(Core.Object.task(target.actor), true);
         if (target.state.current() != .done) {
             target.awaiter = t;
             if (c.block(t, .{ .task = target }, true) == .canceled) {
@@ -138,7 +138,7 @@ const slots = struct {
         const e = c.enter(@returnAddress(), false);
         const t = e.task orelse outside("cancel");
         const target: *Task = @ptrCast(@alignCast(any_future));
-        c.touch(Core.Object.task(c.actorOf(target)), true);
+        c.touch(Core.Object.task(target.actor), true);
         c.requestCancel(target);
         target.awaiter = t;
         while (target.state.current() != .done) _ = c.block(t, .{ .task = target }, false);
@@ -162,12 +162,14 @@ const slots = struct {
             .deferred => .deferred,
             .any => if (c.draw(1) == 0) null else .ready,
         };
-        // glint-ignore: Z026 -- a member the simulation has no task for runs at once, as Io.Group.async allows; the run records it with task 0
-        if (state) |s| if (spawnMember(c, group, context, context_alignment, start, s, @returnAddress())) |t| {
+        // A member run at once is recorded with task 0; one the simulation
+        // has no task for runs at once too, as Io.Group.async allows,
+        // recorded with the reason it has none.
+        const outcome: u64 = if (state) |s| if (spawnMember(c, group, context, context_alignment, start, s, @returnAddress())) |t| {
             c.record(.groupAsync, e, t.id.raw());
             return;
-        } else |_| {};
-        c.record(.groupAsync, e, 0);
+        } else |err| digest(err) else 0;
+        c.record(.groupAsync, e, outcome);
         start(context.ptr);
     }
 
@@ -516,7 +518,7 @@ fn fill(c: *Core, buffer: []u8) void {
         // Searched orders differ in which task draws first: each task's
         // bytes are its own stream, so one task's draws never move
         // another's.
-        var prng: std.Random.Xoshiro256 = .init(c.options.seed ^ std.hash.int(@as(u64, c.actorOf(t))) ^ (t.random_draws *% 0x9e37_79b9_7f4a_7c15));
+        var prng: std.Random.Xoshiro256 = .init(c.options.seed ^ std.hash.int(@as(u64, t.actor)) ^ (t.random_draws *% 0x9e37_79b9_7f4a_7c15));
         t.random_draws += 1;
         prng.fill(buffer);
         return;

@@ -92,7 +92,7 @@ next_port: u16 = 49152,
 sequence: u64 = 0,
 node_count: u32 = 0,
 addresses: std.ArrayList(struct { node: NodeId, address: Address }) = .empty,
-links: std.AutoHashMapUnmanaged(u64, State) = .empty,
+links: std.AutoHashMapUnmanaged(LinkKey, State) = .empty,
 sockets: std.AutoHashMapUnmanaged(Handle, *Socket) = .empty,
 owned: std.ArrayList(*Socket) = .empty,
 idle: std.ArrayList(*Socket) = .empty,
@@ -126,16 +126,10 @@ pub fn deinit(m: *Model) void {
     m.addresses.deinit(m.gpa);
     m.* = undefined;
 }
-fn key(a: NodeId, b: NodeId) u64 {
-    // glint-ignore: A004 -- a link's map key packs its two node ids into one u64
-    return (@as(u64, a.raw()) << 32) | b.raw();
-}
-/// Where a node after the first stands among the nodes in the order `addNode` issued them. Ids are
-/// dense from 0, so the first node has no place and a caller keeps it apart.
-pub fn followerIndex(node: NodeId) usize {
-    aegis.assert.invariant(node != NodeId.fromRaw(0), "node != NodeId.fromRaw(0)");
-    // glint-ignore: A004 -- internal: docs/design.md#aegis-types-and-the-raw-sites; the model issues ids densely from 0 and is the one place that knows it
-    return node.raw() - 1;
+/// The link from `a` to `b`: the key of its state in `links`.
+const LinkKey = struct { from: NodeId, to: NodeId };
+fn key(a: NodeId, b: NodeId) LinkKey {
+    return .{ .from = a, .to = b };
 }
 pub fn addNode(m: *Model, addresses: []const Address) error{OutOfMemory}!NodeId {
     const index = m.node_count;
@@ -189,7 +183,7 @@ pub fn configure(m: *Model, a: NodeId, b: NodeId, value: Link) Error!void {
     m.links.getPtr(key(b, a)).?.value = value;
 }
 pub fn status(m: *Model, a: NodeId, b: NodeId, held: ?bool, partitioned: ?bool) void {
-    for ([_]u64{ key(a, b), key(b, a) }) |k| {
+    for ([_]LinkKey{ key(a, b), key(b, a) }) |k| {
         const s = m.links.getPtr(k).?;
         if (held) |v| s.held = v;
         if (partitioned) |v| s.partitioned = v;
@@ -432,13 +426,14 @@ fn connectFrom(m: *Model, node: NodeId, listener: *Socket, local: bool, source: 
     endpoints[1].listener = listener.handle;
     endpoints[0].dialed = listener.handle;
     const p = try m.packet();
+    errdefer m.recycle(p);
     m.sequence += 1;
     const l = m.links.getPtr(key(node, listener.node)).?.value;
     var delay: i64 = if (local) 0 else m.latency(l.latency) +| m.latency(l.latency);
     if (!local) delay +|= m.retransmit(l);
     p.* = .{ .from = endpoints[0].handle, .to = endpoints[1].handle, .source = endpoints[0].address, .a = node, .b = listener.node, .kind = .handshake, .at = m.now +| delay, .born = m.now, .delivery = m.now +| delay, .seq = m.sequence };
     if (!local and (m.links.getPtr(key(node, listener.node)).?.held or m.links.getPtr(key(node, listener.node)).?.partitioned)) m.adjust(p);
-    m.queue.push(m.gpa, p) catch unreachable; // glint-ignore: Z026 -- packet reserves queue capacity
+    try m.queue.push(m.gpa, p); // packet reserved the capacity
     m.change +%= 1;
     return endpoints[0];
 }
@@ -463,6 +458,7 @@ fn retransmit(m: *Model, l: Link) i64 {
 }
 fn enqueue(m: *Model, sender: *Socket, receiver: *Socket, bytes: []const u8, kind: @FieldType(Packet, "kind")) Error!void {
     const p = try m.packet();
+    errdefer m.recycle(p);
     const state = m.links.getPtr(key(sender.node, receiver.node)).?;
     m.sequence += 1;
     var at = m.now;
@@ -487,7 +483,7 @@ fn enqueue(m: *Model, sender: *Socket, receiver: *Socket, bytes: []const u8, kin
     }, .a = sender.node, .b = receiver.node, .kind = kind, .at = at, .born = m.now, .delivery = at, .seq = m.sequence, .len = bytes.len };
     @memcpy(p.data[0..bytes.len], bytes);
     if (!sender.local and (state.held or state.partitioned)) m.adjust(p);
-    m.queue.push(m.gpa, p) catch unreachable; // glint-ignore: Z026 -- packet reserves queue capacity
+    try m.queue.push(m.gpa, p); // packet reserved the capacity
 }
 pub fn write(m: *Model, s: *Socket, bytes: []const u8) Error!?usize {
     if (s.kind != .stream or s.send_closed) return error.SocketUnconnected;
@@ -545,8 +541,10 @@ fn sendTo(m: *Model, sender: *Socket, receiver: *Socket, bytes: []const u8) Erro
     if (m.chance(l.loss_per_million)) return;
     try m.enqueue(sender, receiver, bytes, .datagram);
     if (m.chance(l.duplicate_per_million)) {
-        // glint-ignore: Z026 -- a bounded receive queue may drop a duplicate
-        m.enqueue(sender, receiver, bytes, .datagram) catch return;
+        m.enqueue(sender, receiver, bytes, .datagram) catch |err| switch (err) {
+            error.SystemResources => {}, // every packet in flight: the duplicate is not sent
+            else => return err,
+        };
     }
 }
 pub const Received = struct { address: Address, len: usize, truncated: bool };
