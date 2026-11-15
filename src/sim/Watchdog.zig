@@ -23,6 +23,7 @@
 //! to reach its call.
 const std = @import("std");
 const aegis = @import("aegis");
+const wide = @import("../wide.zig");
 const Io = std.Io;
 const ids = @import("../ids.zig");
 const os_thread = @import("os_thread.zig");
@@ -62,7 +63,7 @@ pub const Watched = struct {
     /// The running task's id, `outside` when none; the calls made so far;
     /// and the verdict the simulation reads at its next call.
     running: *const aegis.Atomic(ids.TaskId),
-    calls: *const aegis.Atomic(Calls),
+    calls: *const wide.Atomic(Calls),
     stuck: *aegis.Atomic(Stuck),
     /// Time a task may run without a call.
     limit: Span,
@@ -267,7 +268,7 @@ fn verdict(watched: *Watched, task: ids.TaskId, calls: u64, runner: os_thread.Th
 
 const Fixture = struct {
     running: aegis.Atomic(ids.TaskId) = .init(.fromRaw(1)),
-    calls: aegis.Atomic(Calls) = .init(.fromRaw(0)),
+    calls: wide.Atomic(Calls) = .init(.fromRaw(0)),
     stuck: aegis.Atomic(Stuck) = .init(.running),
     runner: aegis.Atomic(os_thread.Thread) = .init(@fromBackingInt(7)),
     watched: Watched = undefined,

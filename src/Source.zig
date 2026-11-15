@@ -199,6 +199,18 @@ pub fn below(s: *Source, max: u64) u64 {
     return s.draw(max, @returnAddress());
 }
 
+/// As `below`, for an index into something in memory: an integer in
+/// `[0, max]` as a `usize`, on every target. It draws as `below` does, from
+/// its own caller's site.
+pub fn belowIndex(s: *Source, max: usize) usize {
+    if (max == 0) return 0;
+    const choice = if (s.recording) s.draw(max, @returnAddress()) else switch (s.from) {
+        .prng => |*prng| lemire(prng, max),
+        .replay, .smith, .chooser => s.draw(max, @returnAddress()),
+    };
+    return @intCast(choice); // safe: every draw is at most `max`, a usize
+}
+
 fn draw(s: *Source, max: u64, site: usize) u64 {
     if (s.full()) return 0;
     const choice = switch (s.from) {
@@ -457,7 +469,7 @@ test "bounds hold at the edges" {
     defer s.deinit();
     for (0..100) |_| try std.testing.expectEqual(@as(u64, 0), s.below(0));
     var seen = [_]bool{ false, false };
-    for (0..100) |_| seen[s.below(1)] = true;
+    for (0..100) |_| seen[s.belowIndex(1)] = true;
     try std.testing.expect(seen[0] and seen[1]);
     _ = s.below(std.math.maxInt(u64));
     try std.testing.expect(!s.chance(0));
@@ -469,7 +481,7 @@ test "a bounded draw is uniform" {
     defer s.deinit();
     var counts: [6]u32 = @splat(0);
     const n = 60_000;
-    for (0..n) |_| counts[s.below(5)] += 1;
+    for (0..n) |_| counts[s.belowIndex(5)] += 1;
     // Each bucket expects 10,000; six standard deviations is about 550.
     for (counts) |count| try std.testing.expect(count > 9_450 and count < 10_550);
     var hits: u32 = 0;

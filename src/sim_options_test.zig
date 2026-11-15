@@ -58,7 +58,8 @@ test "a context wider than a task frame runs at once under async, and is unavail
 }
 
 fn calls(io: Io, times: u64) void {
-    for (0..times) |_| _ = Io.Timestamp.now(io, .awake);
+    var done: u64 = 0;
+    while (done < times) : (done += 1) _ = Io.Timestamp.now(io, .awake);
 }
 
 /// The calls a run of `times` clock reads makes, with no limit in the way.

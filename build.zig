@@ -165,6 +165,29 @@ pub fn dev(b: *std.Build, tools: type) void {
         });
         source32_step.dependOn(&fixture.step);
     }
+    // A consumer on a 32-bit target reaches the whole module, the simulation
+    // and FaultIo with it: the suite, compiled for 32-bit x86 Linux, whose word
+    // holds no 64-bit atomic, keeps every part of it building there.
+    {
+        const x86_target = b.resolveTargetQuery(std.Target.Query.parse(.{ .arch_os_abi = "x86-linux-musl" }) catch @panic("invalid target"));
+        const tests32 = b.addTest(.{
+            .name = "shakedown-tests32",
+            .root_module = b.createModule(.{
+                .root_source_file = p.path("src/tests.zig"),
+                .target = x86_target,
+                .optimize = optimize,
+            }),
+        });
+        tests32.root_module.addOptions("build_options", test_options);
+        tests32.root_module.addImport("aegis", p.dependency("aegis", .{ .target = x86_target, .optimize = optimize }).module("aegis"));
+        tests32.root_module.addImport("shuttle", p.dependency("shuttle", .{ .target = x86_target, .optimize = optimize }).module("shuttle"));
+        tests32.root_module.addImport("shakedown", tests32.root_module);
+        // Compiled under `check` only: the suite's runs and hardened builds
+        // take native tests, and preflight's sanitizer jobs refuse a 32-bit one.
+        const suite32_step = b.step("check-suite32", "Compile the suite for 32-bit x86 Linux");
+        suite32_step.dependOn(&tests32.step);
+        check_step.dependOn(suite32_step);
+    }
     check_step.dependOn(source32_step);
     test_step.dependOn(source32_step);
     const source32_tests = b.addTest(.{

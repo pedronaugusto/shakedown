@@ -8,11 +8,12 @@
 //! then the order the base ran them in.
 const std = @import("std");
 const aegis = @import("aegis");
+const wide = @import("wide.zig");
 
 const Steps = @This();
 
 /// Private: the next step.
-next: aegis.Atomic(Count) = .init(.fromRaw(0)),
+next: wide.Atomic(Count) = .init(.fromRaw(0)),
 
 /// Steps taken.
 const Count = aegis.units.Count(Steps, u64);

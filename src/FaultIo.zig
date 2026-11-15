@@ -28,6 +28,7 @@
 //! `FaultIo` must not move, which `init` guarantees by allocating it.
 const std = @import("std");
 const aegis = @import("aegis");
+const wide = @import("wide.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const io_call = @import("io_call.zig");
@@ -54,7 +55,7 @@ options: Options,
 /// held and the batches' states, behind the lock that guards them.
 locked: aegis.BlockingGuarded(Locked),
 steps_: Steps = .init(),
-counts: [io_call.call_count]aegis.Atomic(CallCount) = @splat(.init(.fromRaw(0))),
+counts: [io_call.call_count]wide.Atomic(CallCount) = @splat(.init(.fromRaw(0))),
 /// Private: the calls that leave the fast path, read there without the
 /// lock: what `watched` names, and what a cancel this `FaultIo` holds
 /// needs.

@@ -24,6 +24,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/sim/Watchdog.zig",
         "src/Source.zig",
         "src/Steps.zig",
+        "src/wide.zig",
     } },
     .{ .name = "vocabulary", .patterns = &.{
         "src/crash.zig",

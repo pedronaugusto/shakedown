@@ -295,7 +295,7 @@ test "no timed wait hangs or times out early while the clock moves from another 
     var stop: std.atomic.Value(bool) = .init(false);
     var finished: std.atomic.Value(u32) = .init(0);
     var early: std.atomic.Value(u32) = .init(0);
-    var waits: std.atomic.Value(u64) = .init(0);
+    var waits: std.atomic.Value(u32) = .init(0);
     const handles = try testing.allocator.alloc(std.Thread, threads);
     defer testing.allocator.free(handles);
     for (handles, 0..) |*h, i| h.* = try std.Thread.spawn(.{ .stack_size = 256 * 1024 }, waiter, .{
@@ -333,7 +333,7 @@ fn waiter(
     stop: *std.atomic.Value(bool),
     finished: *std.atomic.Value(u32),
     early: *std.atomic.Value(u32),
-    waits: *std.atomic.Value(u64),
+    waits: *std.atomic.Value(u32),
 ) void {
     defer _ = finished.fetchAdd(1, .release);
     const io = clock.io();

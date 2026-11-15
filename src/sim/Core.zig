@@ -16,6 +16,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const aegis = @import("aegis");
+const wide = @import("../wide.zig");
 const Source = @import("../Source.zig");
 const ids = @import("../ids.zig");
 const Trace = @import("../trace.zig").Trace;
@@ -145,7 +146,7 @@ reports: std.ArrayList(TaskReport) = .empty,
 /// Shared with the watchdog thread: the step count, the running task's id (0
 /// when none), the thread it runs on, and whether the watchdog found the
 /// run stuck.
-calls: aegis.Atomic(Watchdog.Calls) = .init(.fromRaw(0)),
+calls: wide.Atomic(Watchdog.Calls) = .init(.fromRaw(0)),
 running: aegis.Atomic(ids.TaskId) = .init(ids.outside),
 runner: aegis.Atomic(os_thread.Thread) = .init(.none),
 stuck: aegis.Atomic(Watchdog.Stuck) = .init(.running),

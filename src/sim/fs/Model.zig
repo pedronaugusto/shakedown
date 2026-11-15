@@ -660,7 +660,8 @@ fn drawReadFaults(fs: *Model, inode: u32, offset: u64, end: u64) Error!void {
     const first = offset / sector;
     const last = (end - 1) / sector;
     var resting: u64 = 0;
-    for (first..last + 1) |s| resting += @intFromBool(fs.atRest(inode, s));
+    var sector_at = first;
+    while (sector_at <= last) : (sector_at += 1) resting += @intFromBool(fs.atRest(inode, sector_at));
     if (resting == 0) return;
     if (fs.source.chance(scaled(faults.rot_per_million, resting))) {
         const s = fs.restingSector(inode, first, fs.source.below(resting - 1));
@@ -1063,7 +1064,7 @@ pub fn crash(fs: *Model, policy: CrashPolicy) !void {
         var i = len;
         while (i > 1) {
             i -= 1;
-            std.mem.swap(Unit, &order[i], &order[fs.source.below(i)]);
+            std.mem.swap(Unit, &order[i], &order[fs.source.belowIndex(i)]);
         }
         var applied: usize = 0;
         for (0..len) |k| {

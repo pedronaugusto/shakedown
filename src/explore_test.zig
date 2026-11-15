@@ -15,8 +15,8 @@ const Pairs = struct {
     seen: [3][3]u32 = @splat(@splat(0)),
 
     fn body(p: *Pairs, c: *Case) !void {
-        const a = c.source.below(2);
-        const b = c.source.below(2);
+        const a = c.source.belowIndex(2);
+        const b = c.source.belowIndex(2);
         p.seen[a][b] += 1;
     }
 };

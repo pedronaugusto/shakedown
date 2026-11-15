@@ -64,6 +64,7 @@ test {
     _ = @import("target_test.zig");
     _ = @import("fuzz.zig");
     _ = @import("crash.zig");
+    _ = @import("wide.zig");
     _ = @import("parsers_test.zig");
     _ = @import("explore_test.zig");
     _ = @import("shrink_challenge_test.zig");

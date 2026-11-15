@@ -19,7 +19,7 @@ const linux = std.os.linux;
 const Seconds = aegis.units.Duration(.second, i64);
 
 /// A thread, as `current` names it; `none` names no thread.
-pub const Thread = enum(u64) { none = 0, _ };
+pub const Thread = enum(u32) { none = 0, _ };
 
 /// The calling thread.
 pub fn current() Thread {
@@ -217,7 +217,7 @@ test "a thread blocked in the kernel reads as blocked, its CPU time still" {
     // below would never name itself and the wait for it would never end.
     if (read(current()) == null) return error.SkipZigTest;
     const Blocked = struct {
-        id: std.atomic.Value(u64) = .init(0),
+        id: std.atomic.Value(u32) = .init(0),
         go: std.atomic.Value(u32) = .init(0),
         fn run(b: *@This()) void {
             b.id.store(@backingInt(current()), .release);

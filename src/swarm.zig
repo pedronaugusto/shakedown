@@ -128,7 +128,7 @@ pub fn draw(source: *Source, base: Sim.Options, bounds: Swarm) Drawn {
     k.spurious_wake_per_million = drawRate(source, bounds.spurious_wake_per_million, &options.spurious_wake_per_million);
     k.yield_per_million = drawRate(source, bounds.yield_per_million, &options.yield_per_million);
     if (bounds.async_start.len != 0 and source.below(1) == 1) {
-        k.async_start = bounds.async_start[source.below(bounds.async_start.len - 1)];
+        k.async_start = bounds.async_start[source.belowIndex(bounds.async_start.len - 1)];
         options.async_start = k.async_start.?;
     }
     return .{ .options = options, .knobs = k };

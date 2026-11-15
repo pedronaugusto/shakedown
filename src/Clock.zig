@@ -21,6 +21,7 @@
 //! wait is woken. A `Clock` must not move once `io` has been called.
 const std = @import("std");
 const aegis = @import("aegis");
+const wide = @import("wide.zig");
 const Io = std.Io;
 const assert = aegis.assert.invariant;
 const Layer = @import("layer.zig").Layer;
@@ -131,7 +132,7 @@ const Armings = aegis.units.Count(Timer, u32);
 const State = struct {
     options: Options,
     /// Each kept clock, moved under the lock and read without it.
-    clocks: [3]aegis.Atomic(Reading),
+    clocks: [3]wide.Atomic(Reading),
     /// The armed timers, behind the lock that guards them.
     locked: aegis.BlockingGuarded(Timing) = .init(.{}),
     count: aegis.Atomic(Armed) = .init(.fromRaw(0)),
