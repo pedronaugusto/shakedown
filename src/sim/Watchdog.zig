@@ -196,10 +196,11 @@ fn sample(w: *Watchdog) ?Next {
 /// The least time between samples, however short a watchdog time is.
 const shortest_slice: Span = .literal("1ms");
 
-/// An eighth of `limit`, rounded toward zero: how often a simulation with that watchdog time is sampled.
+/// An eighth of `limit`, rounded toward zero: how often a simulation with that watchdog time is
+/// sampled. aegis's division refuses only a divisor of zero or -1, which 8 is not; were it to
+/// refuse, the limit itself would be the slice, sampled less often but still sampled.
 fn eighth(limit: Span) Span {
-    // glint-ignore: Z026 -- 8 is neither zero nor -1, the two divisors that fail
-    return limit.divTrunc(8) catch unreachable;
+    return limit.divTrunc(8) catch limit;
 }
 
 fn earlier(a: Span, b: Span) Span {
@@ -217,9 +218,9 @@ fn look(watched: *Watched, now: Reading) void {
     const reading = if (task == ids.outside) null else os_thread.read(runner);
     switch (verdict(watched, task, calls, runner, now, reading)) {
         .running => {},
-        .marked => |idle| say("shakedown: task {d} has made no Io call for {f}, a watchdog time of it running; the run ends as stuck at its next one\n", .{ task.raw(), millis(idle) }),
+        .marked => |idle| say("task {d} has made no Io call for {f}, a watchdog time of it running; the run ends as stuck at its next one", .{ task.raw(), millis(idle) }),
         .unstoppable => |idle| {
-            say("shakedown: task {d} has made no Io call for {f} and cannot be stopped; aborting\n", .{ task.raw(), millis(idle) });
+            say("task {d} has made no Io call for {f} and cannot be stopped; aborting", .{ task.raw(), millis(idle) });
             std.process.abort();
         },
     }
@@ -273,13 +274,12 @@ const Fixture = struct {
     watched: Watched = undefined,
 
     /// `n` milliseconds.
-    fn ms(n: i64) Span {
-        // glint-ignore: Z026 -- the tests' counts are far inside an i64 of nanoseconds
-        return aegis.units.Duration(.millisecond, i64).fromRaw(n).convert(.nanosecond, i64, .exact) catch unreachable;
+    fn ms(n: i32) Span {
+        return aegis.units.Duration(.millisecond, i32).fromRaw(n).convert(.nanosecond, i64, .exact);
     }
 
     /// `n` milliseconds after the clock's zero.
-    fn moment(n: i64) Reading {
+    fn moment(n: i32) Reading {
         return Reading.fromRaw(0).saturatingAdd(ms(n));
     }
 
@@ -292,7 +292,7 @@ const Fixture = struct {
 
     /// The verdict at `now` ms of a task that made `calls` calls, its
     /// thread having had `cpu` ms of CPU, blocked or not.
-    fn at(f: *Fixture, calls: u64, now: i64, cpu: i64, blocked: bool) Verdict {
+    fn at(f: *Fixture, calls: u64, now: i32, cpu: i32, blocked: bool) Verdict {
         return verdict(&f.watched, task, calls, thread, moment(now), .{ .cpu = ms(cpu), .blocked = blocked });
     }
 };
@@ -343,10 +343,9 @@ test "a task on another thread starts its time again" {
     try std.testing.expectEqual(Verdict.running, verdict(&f.watched, Fixture.task, 0, @fromBackingInt(@intCast(8)), Fixture.moment(90), .{ .cpu = Fixture.ms(45), .blocked = false }));
 }
 
+/// What the watchdog saw goes through `std.log`, scope `.shakedown`, as a
+/// warning: the program's log function decides where it goes and what a
+/// refused write means.
 fn say(comptime fmt: []const u8, args: anytype) void {
-    var buffer: [256]u8 = undefined;
-    const stderr = std.debug.lockStderr(&buffer).terminal();
-    defer std.debug.unlockStderr();
-    // glint-ignore: Z026 -- a message stderr cannot take is lost
-    stderr.writer.print(fmt, args) catch {};
+    std.log.scoped(.shakedown).warn(fmt, args);
 }
