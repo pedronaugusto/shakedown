@@ -473,17 +473,24 @@ fn panicked(msg: []const u8, first_trace_addr: ?usize) noreturn {
     std.debug.defaultPanic(msg, first_trace_addr);
 }
 
+/// Says which simulation the panicking task ran in, through `std.log`, scope
+/// `.shakedown`, as an error: the program's log function decides where it
+/// goes and what a refused write means, and no level filters it out.
 fn describe(s: *Sim) void {
-    var buffer: [256]u8 = undefined;
-    const stderr = std.debug.lockStderr(&buffer).terminal();
-    defer std.debug.unlockStderr();
-    // glint-ignore: Z026 -- standard error refused the description: the panic goes on without it
-    s.write(stderr.writer) catch {};
+    std.log.scoped(.shakedown).err("{f}", .{Described{ .sim = s }});
 }
+
+const Described = struct {
+    sim: *Sim,
+
+    pub fn format(d: Described, w: *std.Io.Writer) std.Io.Writer.Error!void {
+        return d.sim.write(w);
+    }
+};
 
 /// What `describe` says of the panicking simulation: its step, seed and tape, then its last calls.
 fn write(s: *Sim, w: *std.Io.Writer) std.Io.Writer.Error!void {
-    try w.print("shakedown: a task panicked in a simulation at step {d}", .{s.core.steps});
+    try w.print("a task panicked in a simulation at step {d}", .{s.core.steps});
     if (s.core.options.source == null) try w.print(", seed 0x{x}", .{s.core.options.seed});
     const t = s.core.source.tape();
     if (t.choices.len > 0) try w.print("; tape {f}", .{t});

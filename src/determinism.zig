@@ -64,11 +64,9 @@ pub fn expectDeterministic(
         return error.Nondeterministic;
     }
     defer gpa.free(text);
-    var buffer: [256]u8 = undefined;
-    const stderr = std.debug.lockStderr(&buffer).terminal();
-    defer std.debug.unlockStderr();
-    // glint-ignore: Z026 -- a report stderr cannot take is lost; the error still fails the test
-    stderr.writer.writeAll(text) catch {};
+    // As a failed property's report goes (`check`): through `std.log`, as a
+    // warning, for the program's log function to place.
+    std.log.scoped(.shakedown).warn("{s}", .{std.mem.trimEnd(u8, text, "\n")});
     return error.Nondeterministic;
 }
 
