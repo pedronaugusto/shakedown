@@ -12,7 +12,7 @@ fn echo(init: std.process.Init) !void {
     defer it.deinit();
     _ = it.skip();
     var buffer: [64]u8 = undefined;
-    var w = Io.File.stdout().writer(init.io, &buffer);
+    var w = Io.File.stdout().writerStreaming(init.io, &buffer);
     while (it.next()) |arg| try w.interface.print("{s}\n", .{arg});
     try w.interface.flush();
 }
@@ -140,7 +140,7 @@ test "a program that returns an error says so on stderr and exits with 1; an unk
 /// that is not set.
 fn printEnv(init: std.process.Init) !void {
     var buffer: [128]u8 = undefined;
-    var w = Io.File.stdout().writer(init.io, &buffer);
+    var w = Io.File.stdout().writerStreaming(init.io, &buffer);
     for (1..argCount(init)) |i| {
         const name = argAt(init, i);
         try w.interface.print("{s}={s}\n", .{ name, init.environ_map.get(name) orelse "-" });

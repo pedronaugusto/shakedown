@@ -22,6 +22,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A simulation's region lands at its fixed address on FreeBSD: FreeBSD takes an address hint below the data segment's limit as no hint and mapped the region elsewhere, so its addresses did not repeat from run to run. It now asks with `MAP_FIXED` and `MAP_EXCL`, which fails rather than replace a mapping where the address is taken.
 - The test that reads a thread blocked in the kernel compares two readings both taken while the thread waits: Linux gives a thread's CPU clock and state in two reads, so the first reading to see it blocked could hold a CPU time from just before it blocked (arm64 Linux, riscv64). Where the system names no thread (FreeBSD), the test is skipped, where it waited forever for the thread to name itself.
 - The file conformance check keeps its scratch directory under `.zig-cache/tmp`, as `std.testing.tmpDir` does, not in the tree the tests run from: on a FreeBSD test machine that tree is the host's 9p share, where a read does not see a write through a shared map.
+- Development: the process tests' child programs write standard output through a streaming writer, where a positional one wrote it at an offset: output redirected to a file the child was appending to was written over from the start.
 
 ### Added
 
