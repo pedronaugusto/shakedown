@@ -176,7 +176,7 @@ pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOpt
                 .plan = &.{.{ .at = .{ .step = record.step }, .fault = fault }},
             }) catch |err| return outOfMemory(err);
             defer fio.deinit();
-            try once(gpa, ctx, fio, options, &report, .{ .injected = injected, .clean = by_step });
+            try once(gpa, ctx, fio, options, &report, .{ .injected = injected, .clean = by_step, .clean_run = clean });
         }
     }
     return report;
@@ -191,9 +191,10 @@ fn earlier(_: void, a: Entry, b: Entry) bool {
     return a.step < b.step;
 }
 
-/// A faulted run: its fault, and the clean run's calls, by step, it must
-/// make up to it.
-const Faulted = struct { injected: Injected, clean: []const Entry };
+/// A faulted run: its fault, the clean run's calls, by step, it must make up
+/// to it, and the clean run itself, whose records a `Nondeterministic`
+/// report shows beside the faulted run's.
+const Faulted = struct { injected: Injected, clean: []const Entry, clean_run: *FaultIo };
 
 /// One run: set up, run, check, tear down. `check` judges the run before
 /// `tearDown` releases what it left, and `tearDown` follows every run whose
@@ -209,7 +210,7 @@ fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: EveryFaultOptions,
     var injected = if (faulted) |f| f.injected else null;
     if (faulted) |f| {
         if (divergence(f.clean, fio, f.injected.step, &report.excused)) |at| {
-            return fail(gpa, options, fio, report.*, .{ .injected = injected, .err = error.Nondeterministic, .difference = at, .trace = "" });
+            return failWith(gpa, options, fio, f.clean_run, report.*, .{ .injected = injected, .err = error.Nondeterministic, .difference = at, .trace = "" });
         }
         if (!landed(f.clean, fio, f.injected.step)) injected = null;
     }
@@ -339,11 +340,30 @@ fn atStepIndex(by_step: []const Entry, step: u64) u64 {
 }
 
 fn fail(gpa: Allocator, options: EveryFaultOptions, fio: *FaultIo, report: EveryFaultReport, failure: EveryFaultReport.Failure) EveryFaultError {
+    return failWith(gpa, options, fio, null, report, failure);
+}
+
+/// `fail`, and for a `Nondeterministic` run the clean run's records from a
+/// little before the first difference to a little past the fault's step,
+/// after the faulted run's: the two sides of the difference, where the
+/// faulted run's alone named one.
+fn failWith(gpa: Allocator, options: EveryFaultOptions, fio: *FaultIo, clean: ?*FaultIo, report: EveryFaultReport, failure: EveryFaultReport.Failure) EveryFaultError {
     const err: EveryFaultError = if (failure.err == error.Nondeterministic) error.Nondeterministic else error.CheckFailed;
     const diagnostics = options.diagnostics orelse return err;
     var text: Io.Writer.Allocating = .init(gpa);
     errdefer text.deinit();
     fio.trace().format(&text.writer) catch return error.OutOfMemory;
+    if (clean) |run| if (failure.difference) |at| if (failure.injected) |injected| {
+        const theirs = fio.trace().entriesKept() orelse &.{};
+        var from: u64 = injected.step;
+        for (theirs[@min(at, theirs.len)..]) |e| from = @min(from, e.step);
+        from -|= 4;
+        const to = injected.step +| 4;
+        text.writer.print("the clean run, steps {d} to {d}, as they returned:\n", .{ from, to }) catch return error.OutOfMemory;
+        for (run.trace().records()) |r| if (r.step >= from and r.step <= to) {
+            text.writer.print("{d:>6} {d:>3} {f}\n", .{ r.step, r.task.raw(), r.event }) catch return error.OutOfMemory;
+        };
+    };
     var kept = failure;
     kept.trace = text.toOwnedSlice() catch return error.OutOfMemory;
     diagnostics.* = report;

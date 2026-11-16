@@ -194,6 +194,9 @@ test "a run whose calls depend on state outside its Io is refused as nondetermin
     defer report.deinit();
     try testing.expectError(error.Nondeterministic, shakedown.everyFault(testing.allocator, testing.io, &save, .{ .diagnostics = &report }));
     try testing.expect(report.failure.?.difference != null);
+    // The report shows the clean run's side of the difference after the
+    // faulted run's records.
+    try testing.expect(std.mem.find(u8, report.failure.?.trace, "the clean run, steps ") != null);
 }
 
 const Raw = enum { barrier };
