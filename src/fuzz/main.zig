@@ -259,11 +259,17 @@ fn printable(a: std.mem.Allocator, text: []const u8) ![]const u8 {
 fn notable(a: std.mem.Allocator, output: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     var kept: usize = 0;
+    // A compile error is `path:line:column: error: message`, its notes the
+    // same with `note:`: a note is kept after a compile error it explains.
+    var compile_error = false;
     var lines = std.mem.splitScalar(u8, output, '\n');
     while (lines.next()) |raw| {
         const line = std.mem.trim(u8, raw, " \r\t");
-        const telling = std.mem.startsWith(u8, line, "error:") or std.mem.find(u8, line, "panic: ") != null;
+        const compiling = std.mem.find(u8, line, ": error: ") != null;
+        const note = compile_error and std.mem.find(u8, line, ": note: ") != null;
+        const telling = compiling or note or std.mem.startsWith(u8, line, "error:") or std.mem.find(u8, line, "panic: ") != null;
         if (!telling) continue;
+        if (!note) compile_error = compiling;
         try out.appendSlice(a, line);
         try out.append(a, '\n');
         kept += 1;
@@ -277,6 +283,9 @@ test "the lines that tell a session's failure are kept ahead of its tail" {
     defer arena.deinit();
     const output = "info: fork\nthread 7 panic: integer overflow\n  frame\nerror: test 'a.test.b' terminated with signal ABRT\nfailed command: x\n";
     try std.testing.expectEqualStrings("thread 7 panic: integer overflow\nerror: test 'a.test.b' terminated with signal ABRT\n", try notable(arena.allocator(), output));
+    // A compile error and its note are kept, the build's command line is not.
+    const compile = "error: 1 compilation errors\nsrc/a.zig:3:9: error: expected type 'u8'\n    x = y;\n        ^\nsrc/b.zig:1:1: note: declared here\nfailed command: zig build-lib -fno-emit-bin\nnote: not after one\n";
+    try std.testing.expectEqualStrings("error: 1 compilation errors\nsrc/a.zig:3:9: error: expected type 'u8'\nsrc/b.zig:1:1: note: declared here\n", try notable(arena.allocator(), compile));
     try std.testing.expectEqualStrings("tab ? and bell ?", try printable(arena.allocator(), "tab \t and bell \x07"));
 }
 
