@@ -86,7 +86,7 @@ pub fn main(init: std.process.Init) !u8 {
             // next session's crash would overwrite it.
             if (findings.crash(output)) |c| {
                 const path = try keepCrash(a, io, init.environ_map, options, package, cache, found_dir, c);
-                try say(io, "shakedown-fuzz: {s} {s}: {s}; its input and message are in {s}\n", .{ c.filter, c.term, c.message orelse "no panic message printed", path });
+                try say(io, "shakedown-fuzz: {s} {s}{s}: {s}; its input and message are in {s}\n", .{ c.filter, c.term, if (c.leaked) ", on the testing allocator's leak check" else "", c.message orelse "no panic or leak printed", path });
                 total += 1;
                 break;
             }
@@ -199,26 +199,33 @@ fn keepCrash(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Ma
     const whence: []const u8 = if (c.tape != null) "the case's own draws, as check printed them when it ended the process" else if (tape != null) "the fuzzer's saved input read as draws (check printed none)" else "none";
     var message = c.message;
     var stack = c.stack;
+    var leaked = c.leaked;
     var again: []const u8 = "not replayed: no tape";
     if (tape) |t| {
         const replayed = try replay(a, io, parent, o, package, cache, c.filter, t);
-        if (message == null) message = findings.panicMessage(replayed.output);
-        if (stack == null) stack = findings.panicStack(replayed.output);
+        if (message == null) {
+            message = findings.panicMessage(replayed.output) orelse findings.leakMessage(replayed.output);
+            leaked = findings.panicMessage(replayed.output) == null and message != null;
+        }
+        if (stack == null) stack = findings.panicStack(replayed.output) orelse findings.leakStack(replayed.output);
         again = if (!replayed.failed) "passes: the crash did not repeat outside the fuzzer" else if (findings.crash(replayed.output)) |r| try a.print("{s} again", .{r.term}) else "fails again";
     }
-    const shown = try printable(a, message orelse "no panic message printed");
+    const shown = try printable(a, message orelse "no panic or leak printed");
+    // A leak ends the process from the testing allocator's check, with no panic: its cause is
+    // the allocation the stack below names.
+    const kind: []const u8 = if (leaked) "leak" else "crash";
     const found = tape orelse "none: neither check nor the fuzzer kept the case's draws";
     var text: std.ArrayList(u8) = .empty;
     try text.print(a,
         \\test: {s}
-        \\error: crash, {s}: {s}
+        \\error: {s}, {s}: {s}
         \\found: {s}
         \\minimal: {s}
         \\keep it: add "{s}" to the property's `.regressions` (a crash is not shrunk: it ends the process that would shrink it)
         \\tape: {s}
         \\replay: SHAKEDOWN_TAPE="{s}" with -Dtest-filter, outside the fuzzer: {s}
         \\
-    , .{ c.filter, c.term, shown, found, found, found, whence, found, again });
+    , .{ c.filter, kind, c.term, shown, found, found, found, whence, found, again });
     if (input) |bytes| {
         const kept = bytes[0..@min(bytes.len, kept_input_most)];
         if (kept.len == 0) {
@@ -228,7 +235,7 @@ fn keepCrash(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Ma
         }
     }
     if (stack) |lines| {
-        try text.appendSlice(a, "stack:\n");
+        try text.appendSlice(a, if (leaked) "stack (each leak, with the stack of its allocation):\n" else "stack:\n");
         var each = std.mem.splitScalar(u8, std.mem.trimEnd(u8, lines, "\n"), '\n');
         while (each.next()) |line| try text.print(a, "  {s}\n", .{try printable(a, line)});
     }

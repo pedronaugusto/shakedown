@@ -80,8 +80,12 @@ pub const Crash = struct {
     /// it on the way out (`crash_lead`): what replays the crash, where the
     /// fuzzer's saved input need not be.
     tape: ?[]const u8 = null,
-    /// The panic's message and the stack printed under it, when the output holds them.
+    /// The panic's message and the stack printed under it, when the output holds them; for a
+    /// leak, each leak the testing allocator logged with the stack of its allocation.
     stack: ?[]const u8 = null,
+    /// Whether the case ended on the testing allocator's leak check: memory it allocated and
+    /// never freed, which Zig's test runner ends the process for (`exit(1)`) with no panic.
+    leaked: bool = false,
 };
 
 /// The line `check` writes when a case ends its process (shakedown's `crash.lead`).
@@ -121,6 +125,42 @@ pub fn panicStack(output: []const u8) ?[]const u8 {
     return output[from..@min(output.len, from + stack_most)];
 }
 
+/// The line std's testing allocator logs for each allocation a case never freed, as its
+/// `deinit` finds it (`error(gpa): memory address 0x… leaked:`, the allocation's stack under it).
+pub const leak_lead = "error(gpa): memory address ";
+
+/// What the first leak `output` holds says: `memory address 0x… leaked`.
+pub fn leakMessage(output: []const u8) ?[]const u8 {
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trim(u8, raw, " \r\t");
+        const from = std.mem.find(u8, line, leak_lead) orelse continue;
+        const said = line[from + "error(gpa): ".len ..];
+        const end = std.mem.find(u8, said, " leaked") orelse continue;
+        return said[0 .. end + " leaked".len];
+    }
+    return null;
+}
+
+/// Every leak the testing allocator logged, each with the stack of its allocation, from the
+/// first up to the next line that is not theirs (the build runner's account of the ending, the
+/// tape `check` printed) and at most `stack_most` bytes.
+pub fn leakStack(output: []const u8) ?[]const u8 {
+    const first = std.mem.find(u8, output, leak_lead) orelse return null;
+    const from = if (std.mem.findScalarLast(u8, output[0..first], '\n')) |nl| nl + 1 else 0;
+    var at = std.mem.findScalarPos(u8, output, first, '\n') orelse return output[from..@min(output.len, from + stack_most)];
+    at += 1;
+    while (at < output.len) {
+        const end = std.mem.findScalarPos(u8, output, at, '\n') orelse output.len;
+        const line = std.mem.trim(u8, output[at..end], " \r\t");
+        const ends = std.mem.startsWith(u8, line, crash_lead) or std.mem.startsWith(u8, line, "error: ") or
+            std.mem.startsWith(u8, line, "failed command:");
+        if (ends) break;
+        at = end + 1;
+    }
+    return output[from..@min(at, output.len, from + stack_most)];
+}
+
 /// The first test `output` names as ended, if any.
 pub fn crash(output: []const u8) ?Crash {
     var lines = std.mem.splitScalar(u8, output, '\n');
@@ -144,9 +184,10 @@ pub fn crash(output: []const u8) ?Crash {
             .filter = if (std.mem.find(u8, name, marker)) |at| name[at + marker.len ..] else name,
             .term = withoutSuffix(if (semi) |s| after[0..s] else after, " with stderr:"),
             .saved = semi != null and std.mem.find(u8, after[semi.?..], "input saved to") != null,
-            .message = panicMessage(output),
+            .message = panicMessage(output) orelse leakMessage(output),
             .tape = crashTape(output),
-            .stack = panicStack(output),
+            .stack = panicStack(output) orelse leakStack(output),
+            .leaked = panicMessage(output) == null and leakMessage(output) != null,
         };
     }
     return null;
@@ -235,6 +276,43 @@ test "a test the session ended reads back as its name, its ending, its saved inp
 
     try std.testing.expectEqual(@as(?Crash, null), crash("error: step run test failed\nthread x panic: no\n"));
     try std.testing.expectEqual(@as(?[]const u8, null), panicMessage("thread  panic: no id\nthreads panic: none\n"));
+}
+
+test "a case the leak check ended reads back as a leak, with each allocation's stack" {
+    // Zig's fuzzer ends the process when the testing allocator finds a leak: no panic, exit 1
+    // (hull's and parallax's findings, which read as budget exits).
+    const output =
+        \\info: fork matched 1 shakedown packages
+        \\error(gpa): memory address 0x7f3a10a0 leaked:
+        \\src/table.zig:88:31: 0x1046 in grow (hull-tests)
+        \\    const slots = try gpa.alloc(Slot, n);
+        \\                              ^
+        \\error(gpa): memory address 0x7f3a2000 leaked:
+        \\src/table.zig:91:17: 0x1088 in grow (hull-tests)
+        \\shakedown: a case ended the process; SHAKEDOWN_TAPE=4:1
+        \\error: test 'table.test.any table, freed' exited with code 1; input saved to '/s/f/crash'
+        \\failed command: hull-tests --listen=-
+    ;
+    const c = crash(output).?;
+    try std.testing.expectEqualStrings("any table, freed", c.filter);
+    try std.testing.expectEqualStrings("exited with code 1", c.term);
+    try std.testing.expect(c.leaked);
+    try std.testing.expectEqualStrings("memory address 0x7f3a10a0 leaked", c.message.?);
+    try std.testing.expectEqualStrings(
+        \\error(gpa): memory address 0x7f3a10a0 leaked:
+        \\src/table.zig:88:31: 0x1046 in grow (hull-tests)
+        \\    const slots = try gpa.alloc(Slot, n);
+        \\                              ^
+        \\error(gpa): memory address 0x7f3a2000 leaked:
+        \\src/table.zig:91:17: 0x1088 in grow (hull-tests)
+        \\
+    , c.stack.?);
+    try std.testing.expectEqualStrings("4:1", c.tape.?);
+    // A panic is the cause where both are printed: the leak check never ran.
+    const both = crash("thread 3 panic: overflow\nerror(gpa): memory address 0x1 leaked:\nerror: test 'm.test.t' terminated with signal ABRT\n").?;
+    try std.testing.expect(!both.leaked);
+    try std.testing.expectEqualStrings("overflow", both.message.?);
+    try std.testing.expectEqual(@as(?[]const u8, null), leakMessage("error(gpa): something else\n"));
 }
 
 test "a saved input reads as the tape that replays it" {
