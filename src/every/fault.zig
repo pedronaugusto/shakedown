@@ -248,8 +248,10 @@ fn candidates(ctx: anytype, options: EveryFaultOptions, record: IoTrace.Record, 
         }
         return buffer[0..len];
     }
-    const allocation = call == .alloc or call == .resize or call == .remap;
-    if (allocation) {
+    // A resize or remap through `FaultIo.allocator` is refused already, so
+    // failing one would rerun the clean run.
+    if (call == .resize or call == .remap) return &.{};
+    if (call == .alloc) {
         if (options.alloc) {
             buffer[0] = .{ .fail = error.OutOfMemory };
             return buffer[0..1];

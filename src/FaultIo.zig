@@ -446,7 +446,10 @@ const AllocatorShim = struct {
 
 /// `child`, with every allocation, resize and remap counted, stepped,
 /// traced and planned as `.alloc`, `.resize` and `.remap`. A `fail` fault
-/// is a refusal. Lives as long as the `FaultIo`. The first call for a
+/// is a refusal. A resize or remap is always refused, without asking the
+/// child: whether one fits in place depends on what the child held before
+/// the run, so each growth is an allocation and a copy, the same in every
+/// run. Lives as long as the `FaultIo`. The first call for a
 /// child makes its shim; every later call for an equal child returns the
 /// same allocator and allocates nothing.
 pub fn allocator(f: *FaultIo, child: Allocator) Allocator.Error!Allocator {
@@ -496,48 +499,40 @@ fn shimAlloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr
     return result;
 }
 
+// A resize or remap is refused, every time, and the child is never asked.
+// Whether a child can grow or move a block in place depends on what it has
+// held before the run (`std.testing.allocator` fills its buckets in order,
+// so the same growth fits in one run and not in the next), so the answer
+// would not be a function of the run's steps: a run and its faulted rerun
+// would part at a call no fault touched (uplink's riscv64 TLS sweeps,
+// release run 43875177668: a remap the clean run had in place, refused in
+// the faulted run). Refused, every growth is an allocation and a copy in
+// every run, as over `alloc.NoResize`. The call still takes its step and is
+// traced, so a plan's positions and a trace stay where they were.
+
 fn shimResize(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
-    const s = shimOf(ptr);
-    const f = s.fio;
-    _ = f.counts[@backingInt(IoCall.resize)].fetchAddWrapping(.fromRaw(1), .monotonic);
-    if (!f.watching.contains(.resize)) {
-        _ = f.steps_.take();
-        return s.child.rawResize(memory, alignment, new_len, ret_addr);
-    }
-    const d = f.decide(.resize, .{});
-    if (refused(f.preludeAnywhere(d.fault))) {
-        f.record(d.step, .{ .call = .resize, .outcome = .{ .err = error.OutOfMemory }, .fault = d.fault.? });
-        return false;
-    }
-    const ok = s.child.rawResize(memory, alignment, new_len, ret_addr);
-    f.record(d.step, .{
-        .call = .resize,
-        .outcome = if (ok) .{ .ok = new_len } else .{ .err = error.OutOfMemory },
-        .fault = if (d.fault) |x| x else null,
-    });
-    return ok;
+    _ = .{ memory, alignment, new_len, ret_addr };
+    shimOf(ptr).fio.refuseInPlace(.resize);
+    return false;
 }
 
 fn shimRemap(ptr: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
-    const s = shimOf(ptr);
-    const f = s.fio;
-    _ = f.counts[@backingInt(IoCall.remap)].fetchAddWrapping(.fromRaw(1), .monotonic);
-    if (!f.watching.contains(.remap)) {
+    _ = .{ memory, alignment, new_len, ret_addr };
+    shimOf(ptr).fio.refuseInPlace(.remap);
+    return null;
+}
+
+/// A resize's or remap's step, count and record: refused, a planned delay
+/// or callback still run first.
+fn refuseInPlace(f: *FaultIo, call: IoCall) void {
+    _ = f.counts[@backingInt(call)].fetchAddWrapping(.fromRaw(1), .monotonic);
+    if (!f.watching.contains(call)) {
         _ = f.steps_.take();
-        return s.child.rawRemap(memory, alignment, new_len, ret_addr);
+        return;
     }
-    const d = f.decide(.remap, .{});
-    if (refused(f.preludeAnywhere(d.fault))) {
-        f.record(d.step, .{ .call = .remap, .outcome = .{ .err = error.OutOfMemory }, .fault = d.fault.? });
-        return null;
-    }
-    const result = s.child.rawRemap(memory, alignment, new_len, ret_addr);
-    f.record(d.step, .{
-        .call = .remap,
-        .outcome = if (result != null) .{ .ok = new_len } else .{ .err = error.OutOfMemory },
-        .fault = if (d.fault) |x| x else null,
-    });
-    return result;
+    const d = f.decide(call, .{});
+    _ = f.preludeAnywhere(d.fault);
+    f.record(d.step, .{ .call = call, .outcome = .{ .err = error.OutOfMemory }, .fault = if (d.fault) |x| x else null });
 }
 
 /// Whether what is left of an allocation's fault refuses it: the one

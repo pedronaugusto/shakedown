@@ -351,6 +351,42 @@ test "allocations go through the same plan, trace and counts" {
     try testing.expectEqual(@as(anyerror, error.OutOfMemory), last.outcome.err);
 }
 
+test "a resize or remap is refused without asking the child, so a growth is the same in every run" {
+    // A child that would do both in place: a fixed buffer grows and shrinks
+    // its last block where it lies.
+    var buffer: [1024]u8 = undefined;
+    var fixed: std.heap.FixedBufferAllocator = .init(&buffer);
+    var counting: shakedown.alloc.Counting = .init(fixed.allocator());
+    const fio = try FaultIo.init(testing.allocator, testing.io, .{ .trace = .all });
+    defer fio.deinit();
+    const gpa = try fio.allocator(counting.allocator());
+    var block = try gpa.alloc(u8, 79);
+    // Asked directly, the child grows it and gives the growth back.
+    try testing.expect(fixed.allocator().resize(block, 100));
+    try testing.expect(fixed.allocator().resize(block.ptr[0..100], 79));
+    // Through the shim, shrinking and growing in place are both refused; the
+    // child is asked neither.
+    try testing.expect(!gpa.resize(block, 64));
+    try testing.expect(gpa.remap(block, 188) == null);
+    try testing.expectEqual(@as(u64, 0), counting.resizes + counting.remaps);
+    // A growth is then an allocation, a copy and a free.
+    block = try gpa.realloc(block, 188);
+    defer gpa.free(block);
+    try testing.expectEqual(@as(usize, 188), block.len);
+    try testing.expectEqual(@as(u64, 2), counting.allocations);
+    // Each refusal took its step and is in the trace, as a refusal no fault made.
+    try testing.expectEqual(@as(u64, 1), fio.count(.resize));
+    try testing.expectEqual(@as(u64, 2), fio.count(.remap));
+    var refusals: usize = 0;
+    for (fio.trace().records()) |r| {
+        if (r.event.call != .resize and r.event.call != .remap) continue;
+        try testing.expectEqual(@as(anyerror, error.OutOfMemory), r.event.outcome.err);
+        try testing.expect(r.event.fault == null);
+        refusals += 1;
+    }
+    try testing.expectEqual(@as(usize, 3), refusals);
+}
+
 test "allocator is one shim per child, and refuses with OutOfMemory when it cannot make one" {
     var counting: shakedown.alloc.Counting = .init(testing.allocator);
     const fio = try FaultIo.init(counting.allocator(), testing.io, .{});
