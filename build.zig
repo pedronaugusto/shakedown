@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
         .name = "shakedown-fuzz",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/fuzz/main.zig"),
-            .imports = &.{.{ .name = "fuzz_findings", .module = b.createModule(.{ .root_source_file = b.path("src/fuzz.zig"), .target = target, .optimize = optimize }) }},
+            .imports = &.{ .{ .name = "fuzz_findings", .module = b.createModule(.{ .root_source_file = b.path("src/fuzz.zig"), .target = target, .optimize = optimize }) }, .{ .name = "aegis", .module = aegis.module("aegis") } },
             .target = target,
             .optimize = optimize,
         }),
@@ -136,7 +136,7 @@ pub fn dev(b: *std.Build, tools: type) void {
         .root_source_file = p.path("src/fuzz/main.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "fuzz_findings", .module = b.createModule(.{ .root_source_file = p.path("src/fuzz.zig"), .target = target, .optimize = optimize }) }},
+        .imports = &.{ .{ .name = "fuzz_findings", .module = b.createModule(.{ .root_source_file = p.path("src/fuzz.zig"), .target = target, .optimize = optimize }) }, .{ .name = "aegis", .module = p.dependency("aegis", .{ .target = target, .optimize = optimize }).module("aegis") } },
     }) });
 
     const check_step = b.step("check", "Compile the tests, programs and example without running them");

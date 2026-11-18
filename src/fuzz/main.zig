@@ -19,6 +19,7 @@
 //! fuzzer found and the minimal one, for the property's `.regressions`.
 const std = @import("std");
 const Io = std.Io;
+const aegis = @import("aegis");
 const findings = @import("fuzz_findings");
 
 const Options = struct {
@@ -191,7 +192,8 @@ const kept_input_most = 64 * 1024;
 /// process that would shrink it. Returns the finding's path.
 fn keepCrash(a: std.mem.Allocator, io: Io, parent: *const std.process.Environ.Map, o: Options, package: []const u8, cache: []const u8, dir: []const u8, c: findings.Crash) ![]const u8 {
     const saved_path = try std.fs.path.join(a, &.{ cache, "f", "crash" });
-    const input: ?[]const u8 = if (!c.saved) null else Io.Dir.cwd().readFileAlloc(io, saved_path, a, .unlimited) catch |err| input: {
+    const input: ?[]const u8 = if (!c.saved) null else aegis.own.readFile(io, .cwd(), saved_path, a, .literal("1GiB")) catch |err| input: {
+        if (err == error.Canceled) return error.Canceled;
         try say(io, "shakedown-fuzz: the input Zig saved at {s} cannot be read: {t}\n", .{ saved_path, err });
         break :input null;
     };

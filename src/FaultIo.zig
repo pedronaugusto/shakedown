@@ -70,6 +70,9 @@ tasks: Tasks = .{},
 batch_count: aegis.Atomic(BatchCount) = .init(.fromRaw(0)),
 /// Private: the state the last batch lookup found, read without the lock.
 last_batch: aegis.Atomic(?*Batched) = .init(null),
+/// Private: planned faults, or the batch states they need, that could not
+/// be held for memory and so were not made (`faultsNotMade`).
+unmade_faults: aegis.Atomic(Unmade) = .init(.fromRaw(0)),
 
 /// Times a call was made.
 const CallCount = aegis.units.Count(IoCall, u64);
@@ -77,6 +80,7 @@ const CallCount = aegis.units.Count(IoCall, u64);
 const Rearmed = aegis.units.Count(Held, u32);
 /// Batches with a state.
 const BatchCount = aegis.units.Count(Batched, usize);
+const Unmade = aegis.units.Count(enum { faults }, u32);
 
 /// What the lock guards.
 const Locked = struct {
@@ -336,6 +340,18 @@ pub fn trace(f: *FaultIo) *IoTrace {
     var held = f.acquire();
     defer held.deinit(f.base);
     return &held.value().trace;
+}
+
+/// How many planned faults were not made because what they need (a held
+/// cancel, a cut's buffers, a batch's state) could not be had for memory:
+/// a run with any is no proof of the fault it was planned for, and
+/// `everyFault` fails it with `error.OutOfMemory`.
+pub fn faultsNotMade(f: *FaultIo) u32 {
+    return f.unmade_faults.load(.monotonic).raw();
+}
+
+fn notMade(f: *FaultIo) void {
+    _ = f.unmade_faults.fetchAddWrapping(.fromRaw(1), .monotonic);
 }
 
 /// How many handles were opened, paths tracked, whose path could not be
@@ -1065,7 +1081,10 @@ fn land(f: *FaultIo) bool {
         return true;
     };
     // A cancel that could not be held could not be re-armed: it does not land.
-    s.cancels.append(f.gpa, .{ .task = task }) catch return false;
+    s.cancels.append(f.gpa, .{ .task = task }) catch {
+        f.notMade();
+        return false;
+    };
     if (s.cancels.items.len == 1) f.watch(s);
     return true;
 }
@@ -1201,7 +1220,10 @@ fn batchOf(f: *FaultIo, b: *Io.Batch, make: bool) ?*Batched {
 
 /// Under the lock.
 fn batchEntry(f: *FaultIo, s: *Locked, b: *Io.Batch) ?*Batched {
-    const entry = s.batches.getOrPut(f.gpa, b) catch return null;
+    const entry = s.batches.getOrPut(f.gpa, b) catch {
+        f.notMade();
+        return null;
+    };
     if (entry.found_existing) {
         const state = entry.value_ptr.*;
         if (state.fits(b)) return state;
@@ -1238,15 +1260,23 @@ fn spareFor(f: *FaultIo, s: *Locked, b: *Io.Batch) ?*Batched {
     }
     // A state cannot be freed while the `FaultIo` lives, so there is room
     // for every one among the spares before it is made.
-    s.spare_batches.ensureTotalCapacity(f.gpa, s.batch_states + 1) catch return null;
-    const state = f.gpa.create(Batched) catch return null;
+    s.spare_batches.ensureTotalCapacity(f.gpa, s.batch_states + 1) catch {
+        f.notMade();
+        return null;
+    };
+    const state = f.gpa.create(Batched) catch {
+        f.notMade();
+        return null;
+    };
     const ops = f.gpa.alloc(Batched.Op, b.storage.len) catch {
         f.gpa.destroy(state);
+        f.notMade();
         return null;
     };
     const cuts = f.gpa.alloc(?*Batched.Buffers, b.storage.len) catch {
         f.gpa.free(ops);
         f.gpa.destroy(state);
+        f.notMade();
         return null;
     };
     @memset(cuts, null);
@@ -1399,7 +1429,10 @@ fn applyOperation(f: *FaultIo, storage: *Io.Operation.Storage, op: *Batched.Op, 
                     const buffers = cut.* orelse made: {
                         // A cut that cannot be held is not made: the
                         // operation moves what it would have.
-                        const made = f.gpa.create(Batched.Buffers) catch return .submitted;
+                        const made = f.gpa.create(Batched.Buffers) catch {
+                            f.notMade();
+                            return .submitted;
+                        };
                         cut.* = made;
                         break :made made;
                     };

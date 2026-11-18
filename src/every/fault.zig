@@ -273,6 +273,9 @@ fn onceOn(gpa: Allocator, ctx: anytype, fio: *FaultIo, io: Io, judged: Io, optio
     };
     defer ctx.tearDown();
     const result = ctx.run(io);
+    // A planned fault that could not be held for memory was not made: the
+    // run proves nothing of it, and passing it would count it covered.
+    if (fio.faultsNotMade() != 0) return error.OutOfMemory;
     var injected = if (faulted) |f| f.injected else null;
     if (faulted) |f| {
         if (divergence(f.clean, fio, f.injected.step, &report.excused)) |at| {

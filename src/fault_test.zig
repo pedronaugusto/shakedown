@@ -69,6 +69,19 @@ test "fail returns the error at the call it names, on slots and operations" {
     try expectFails(.dirRead, error.SystemResources, fileWork);
 }
 
+test "a planned cancel that cannot be held for memory is counted as not made, never passed over" {
+    var failing: std.testing.FailingAllocator = .init(testing.allocator, .{});
+    const fio = try FaultIo.init(failing.allocator(), testing.io, .{ .plan = &.{
+        .{ .at = .{ .nth = .{ .call = .dirStatFile, .n = 1 } }, .fault = .cancel },
+    } });
+    defer fio.deinit();
+    // From here every allocation fails: the cancel cannot be held.
+    failing.fail_index = failing.alloc_index;
+    try testing.expectEqual(@as(u32, 0), fio.faultsNotMade());
+    _ = Io.Dir.cwd().statFile(fio.io(), ".", .{}) catch |err| try testing.expect(err != error.Canceled);
+    try testing.expectEqual(@as(u32, 1), fio.faultsNotMade());
+}
+
 test "a fault outside the call's error set, or one that cannot apply, is refused" {
     const io = testing.io;
     const gpa = testing.allocator;
