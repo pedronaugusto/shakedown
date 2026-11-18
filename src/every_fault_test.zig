@@ -616,3 +616,128 @@ test "a group's await canceled in place of the call: what its members return for
     };
     try simFinished(sim.run(Work.run, .{sim.io()}));
 }
+
+/// Two tasks append a line each to `log`, each by reading it and writing it
+/// back a line longer: a task that runs between the other's read and write
+/// loses that one's line. What a run leaves depends on the order its tasks
+/// ran in, and nothing else.
+const Appends = struct {
+    /// Whether `check` holds a run without a fault to both lines.
+    strict: bool,
+    /// What each run left in `log`, in the order the runs were made.
+    logs: std.ArrayList([]u8) = .empty,
+
+    pub fn setUp(_: *Appends, fio: *FaultIo) !void {
+        try shakedown.Sim.fsOf(fio.io()).?.write("log", "");
+    }
+
+    pub fn run(_: *Appends, io: Io) !void {
+        var other = try io.concurrent(append, .{ io, "a" });
+        const ours = append(io, "b");
+        const theirs = other.await(io);
+        try ours;
+        try theirs;
+    }
+
+    fn append(io: Io, line: []const u8) !void {
+        const file = try Io.Dir.cwd().openFile(io, "log", .{ .mode = .read_write });
+        defer file.close(io);
+        var bytes: [8]u8 = undefined;
+        const len = try file.readPositional(io, &.{&bytes}, 0);
+        @memcpy(bytes[len..][0..line.len], line);
+        try file.writePositionalAll(io, bytes[0 .. len + line.len], 0);
+    }
+
+    pub fn check(a: *Appends, io: Io, result: anyerror!void, injected: ?shakedown.Injected) !void {
+        const log = try shakedown.Sim.fsOf(io).?.read(testing.allocator, "log");
+        a.logs.append(testing.allocator, log) catch |err| {
+            testing.allocator.free(log);
+            return err;
+        };
+        if (injected != null) return;
+        try result;
+        if (a.strict and log.len != 2) return error.LostLine;
+    }
+
+    pub fn tearDown(_: *Appends) void {}
+
+    fn deinit(a: *Appends) void {
+        for (a.logs.items) |log| testing.allocator.free(log);
+        a.logs.deinit(testing.allocator);
+    }
+
+    /// The sweep on a fresh simulation of `seed` for each run.
+    fn sweep(a: *Appends, seed: u64, report: *shakedown.EveryFaultReport) shakedown.EveryFaultError!shakedown.EveryFaultReport {
+        return shakedown.everyFault(testing.allocator, testing.io, a, .{
+            .alloc = false,
+            .diagnostics = report,
+            .sim = .{ .seed = seed, .schedule = .random, .yield_per_million = 500_000, .watchdog = null },
+        });
+    }
+};
+
+test "on a simulation, every run of a sweep of concurrent tasks takes its seed's order, and other seeds take other orders" {
+    var orders: std.StringHashMapUnmanaged(void) = .empty;
+    defer orders.deinit(testing.allocator);
+    var keep: Appends = .{ .strict = false };
+    defer keep.deinit();
+    for (0..32) |seed| {
+        var appends: Appends = .{ .strict = false };
+        defer appends.deinit();
+        var report: shakedown.EveryFaultReport = .{};
+        defer report.deinit();
+        var done = appends.sweep(seed, &report) catch |err| {
+            if (report.failure) |f| std.debug.print("seed {d}: {t} at {any}, first difference {any}\n{s}\n", .{ seed, f.err, f.injected, f.difference, f.trace });
+            return err;
+        };
+        defer done.deinit();
+        try testing.expect(done.runs > 1);
+        // The clean run's log, which the seed's order alone decided.
+        const clean = appends.logs.items[0];
+        try keep.logs.append(testing.allocator, try testing.allocator.dupe(u8, clean));
+        try orders.put(testing.allocator, keep.logs.items[keep.logs.items.len - 1], {});
+    }
+    // Both lines in either order, or one lost: more than one order was run.
+    try testing.expect(orders.count() > 1);
+}
+
+test "on a simulation, an order that loses a line is found by some seed, as the clean run's failure" {
+    var found = false;
+    var passed = false;
+    for (0..64) |seed| {
+        var appends: Appends = .{ .strict = true };
+        defer appends.deinit();
+        var report: shakedown.EveryFaultReport = .{};
+        defer report.deinit();
+        if (appends.sweep(seed, &report)) |done| {
+            var kept = done;
+            kept.deinit();
+            passed = true;
+        } else |err| {
+            try testing.expectEqual(error.CheckFailed, err);
+            const f = report.failure.?;
+            try testing.expectEqual(error.LostLine, f.err);
+            try testing.expectEqual(@as(?shakedown.Injected, null), f.injected);
+            found = true;
+        }
+        if (found and passed) break;
+    }
+    try testing.expect(found and passed);
+}
+
+test "on a simulation, a sweep repeats under the same seed, run for run" {
+    var first: Appends = .{ .strict = false };
+    defer first.deinit();
+    var second: Appends = .{ .strict = false };
+    defer second.deinit();
+    var reports: [2]shakedown.EveryFaultReport = .{ .{}, .{} };
+    defer for (&reports) |*r| r.deinit();
+    var a = try first.sweep(7, &reports[0]);
+    defer a.deinit();
+    var b = try second.sweep(7, &reports[1]);
+    defer b.deinit();
+    try testing.expectEqual(a.steps, b.steps);
+    try testing.expectEqual(a.runs, b.runs);
+    try testing.expectEqual(first.logs.items.len, second.logs.items.len);
+    for (first.logs.items, second.logs.items) |x, y| try testing.expectEqualStrings(x, y);
+}

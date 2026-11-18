@@ -31,6 +31,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `EveryFaultOptions.sim`: each run of an `everyFault` sweep, the clean one and every faulted one, on a fresh `Sim` of these options, the run's one fault planned as its fault part, and `setUp`, `run`, `check` and `tearDown` in its root task. Code that runs tasks concurrently is swept in the one order its seed draws, the same in every run, where on a real `Io` a faulted run could part from the clean one for the machine's order alone; other seeds take other orders. `check` gets the simulation's `Io` past its fault part (`Sim.unfaultedIo`, internal), so its calls are not steps of the run.
+- `Sim.Options.fault_part`: the fault part's trace and `io.random` seed; given, the simulation has a fault part with no faults planned too, and `Sim.faults` returns it.
+- `Sim.fsOf` (and `programsOf`, `socketsOf`) sees through a `FaultIo` over a simulation, its fault part or one a test layers over `Sim.io`: a sweep's `setUp` puts its files on the simulated disk with `Sim.fsOf(fio.io())`.
 - `Source.belowIndex(max)`: a draw in `[0, max]` as a `usize`, for an index into something in memory on every target, drawn from its caller's site as `below` is.
 - `Trace.keep` appends a record for a caller whose own work goes on whatever the trace holds: a record it cannot store, out of memory, is hashed and counted in `Trace.dropped`, and `Trace.format` ends with how many were dropped. A simulation's and a `FaultIo`'s calls record through it, where a record that could not be stored was dropped unseen.
 - `FaultIo.unnamed`: how many handles opened while paths are tracked had a path that could not be stored, out of memory. Their calls carry no path, so a plan entry that matches by path misses them; the count says so, where they were left unnamed unseen.

@@ -116,10 +116,23 @@ pub const Options = struct {
     /// Faults for every call, as `FaultIo` injects them: the outermost part
     /// of the simulation, drawing chances from its source.
     faults: []const Plan(IoCall, io_call.IoFault).Entry = &.{},
+    /// What the fault part's own trace keeps and the seed of its
+    /// `io.random`, for a caller that reads them (`everyFault`): given, the
+    /// fault part is made with no faults planned too, and `Sim.faults`
+    /// returns it.
+    fault_part: ?FaultPart = null,
     /// Simulated processes: their pipes, and the environment the test's
     /// own process passes to the programs it spawns. Programs are
     /// registered on `Sim.programs()`.
     programs: Processes.Options = .{},
+
+    pub const FaultPart = struct {
+        /// What the fault part's trace keeps (`FaultIo.Options.trace`).
+        trace: Trace(io_call.IoEvent).Mode = .off,
+        /// `io.random` and `randomSecure` from a generator seeded with
+        /// this (`FaultIo.Options.random_seed`).
+        random_seed: ?u64 = null,
+    };
 
     pub const Clock = struct {
         /// `.real` at the start, in Unix time (2026-01-01T00:00:00Z).

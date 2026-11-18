@@ -66,7 +66,7 @@ fault_context: Core.Context = undefined,
 fault_outer: ?Routing = null,
 /// Private: the source when the options name none.
 own_source: Source,
-/// Private: the fault part, when the options plan faults.
+/// Private: the fault part, when the options plan faults or ask for it.
 fio: ?*FaultIo = null,
 /// Private: the memory `allocator` hands out, once asked for.
 region: ?Region = null,
@@ -104,10 +104,11 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
         fs_.clock = &s.core.clocks[@backingInt(Core.Kept.real)];
         fs_.stepper = .{ .core = &s.core, .flush = Core.flushStep };
     }
-    if (options.faults.len > 0) {
+    if (options.faults.len > 0 or options.fault_part != null) {
         s.fault_context = .{ .core = &s.core, .inherit = true };
         const base: Io = .{ .userdata = &s.fault_context, .vtable = &calls.vtable };
-        const fio = try FaultIo.init(gpa, base, .{ .source = drawn_from });
+        const part = options.fault_part orelse Options.FaultPart{};
+        const fio = try FaultIo.init(gpa, base, .{ .source = drawn_from, .trace = part.trace, .random_seed = part.random_seed });
         errdefer fio.deinit();
         fio.tasks.on_crash = if (options.fs != null) crashOf else null;
         try fio.setPlan(options.faults);
@@ -174,6 +175,12 @@ pub fn deinit(s: *Sim) void {
 /// The `Io` to hand the code under test.
 pub fn io(s: *Sim) Io {
     if (s.fault_outer) |*outer| return outer.io();
+    return s.coreIo();
+}
+
+/// Internal: the simulation's `Io` past its fault part, for `everyFault`'s
+/// `check`, whose calls are not the run's.
+pub fn unfaultedIo(s: *Sim) Io {
     return s.coreIo();
 }
 
@@ -398,7 +405,8 @@ pub fn trace(s: *Sim) *Trace(Event) {
     return &s.core.trace;
 }
 
-/// The fault part, when `Options.faults` planned any.
+/// The fault part, when `Options.faults` planned any or `Options.fault_part`
+/// asked for it.
 pub fn faults(s: *Sim) ?*FaultIo {
     return s.fio;
 }
@@ -441,11 +449,17 @@ pub fn socketsOf(any: Io) ?Sockets {
 fn contextOf(any: Io) ?*Core.Context {
     if (any.vtable == &calls.vtable) return @ptrCast(@alignCast(any.userdata.?)); // a simulation's own vtable is handed out with a Context as userdata
     if (any.vtable == &Routing.vtable) return Routing.of(any.userdata).state.context;
+    // A `FaultIo` over a simulation (its fault part, or one a test layers
+    // over `Sim.io`) works on that simulation.
+    if (any.vtable == &FaultIo.vtable) {
+        const fio: *FaultIo = @ptrCast(@alignCast(any.userdata.?)); // FaultIo.io hands out its FaultIo as userdata
+        return contextOf(fio.base);
+    }
     return null;
 }
 
 /// The simulated disk `io` works on, when `io` is a simulation's
-/// (`Sim.io`, `Node.io`, a simulated process's): its node's disk, or null
+/// (`Sim.io`, `Node.io`, a simulated process's, a `FaultIo` over one): its node's disk, or null
 /// when that node has none. Null for any other `Io`. A seam whose raw calls
 /// go past the `Io` asks it, to make them on the simulation instead.
 pub fn fsOf(any: Io) ?*Fs {

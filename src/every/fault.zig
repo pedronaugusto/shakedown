@@ -16,6 +16,7 @@ const IoCall = io_call.IoCall;
 const IoFault = io_call.IoFault;
 const FaultIo = @import("../FaultIo.zig");
 const IoTrace = FaultIo.IoTrace;
+const Sim = @import("../Sim.zig");
 
 /// One of `count` contiguous ranges of a sweep's points, so a long
 /// operation's sweep runs as several tests, each well inside a watchdog:
@@ -69,6 +70,16 @@ pub const EveryFaultOptions = struct {
     /// clean run's steps. Every shard makes the clean run, which each
     /// faulted run is held to.
     shard: Shard = .{},
+    /// Each run, the clean one and every faulted one, on a fresh `Sim`
+    /// made with these options: the same seed, so the same schedule, and
+    /// the run's one fault planned as the simulation's fault part. `setUp`,
+    /// `run`, `check` and `tearDown` run inside the simulation's root task,
+    /// and the `base` `everyFault` is given is not used. Code that runs
+    /// tasks concurrently is then swept in one order its seed draws, the
+    /// same order every run, where on a real `Io` the order is the
+    /// machine's and a faulted run may part from the clean one for that
+    /// alone; other seeds explore other orders. Null runs on `base`.
+    sim: ?Sim.Options = null,
 };
 
 /// Why `everyFault` failed: a run failed its check (or its `setUp`), a
@@ -153,9 +164,10 @@ pub const EveryFaultReport = struct {
 pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOptions) EveryFaultError!EveryFaultReport {
     if (!options.shard.valid()) return error.CheckFailed;
     var report: EveryFaultReport = .{};
-    const clean = FaultIo.init(gpa, base, .{ .trace = .all, .random_seed = options.random_seed }) catch |err| return outOfMemory(err);
-    defer clean.deinit();
-    try once(gpa, ctx, clean, options, &report, null);
+    const clean_run = try Run.init(gpa, base, options, &report, .all, &.{});
+    defer clean_run.deinit();
+    const clean = clean_run.fio;
+    try clean_run.once(gpa, ctx, options, &report, null);
     report.steps = clean.steps().peek();
     if (report.steps > options.max_steps) return error.TooManySteps;
 
@@ -170,17 +182,71 @@ pub fn everyFault(gpa: Allocator, base: Io, ctx: anytype, options: EveryFaultOpt
         for (candidates(ctx, options, record, &faults)) |fault| {
             const injected: Injected = .{ .step = record.step, .call = record.event.call, .fault = fault };
             const mode: IoTrace.Mode = if (options.trace == .off) .{ .last = 1 } else options.trace;
-            const fio = FaultIo.init(gpa, base, .{
-                .trace = mode,
-                .random_seed = options.random_seed,
-                .plan = &.{.{ .at = .{ .step = record.step }, .fault = fault }},
-            }) catch |err| return outOfMemory(err);
-            defer fio.deinit();
-            try once(gpa, ctx, fio, options, &report, .{ .injected = injected, .clean = by_step, .clean_run = clean });
+            const run = try Run.init(gpa, base, options, &report, mode, &.{.{ .at = .{ .step = record.step }, .fault = fault }});
+            defer run.deinit();
+            try run.once(gpa, ctx, options, &report, .{ .injected = injected, .clean = by_step, .clean_run = clean });
         }
     }
     return report;
 }
+
+/// One run's `Io`: a `FaultIo` over the base, or the fault part of a fresh
+/// simulation (`EveryFaultOptions.sim`), whose root task the run is made in.
+const Run = struct {
+    fio: *FaultIo,
+    sim: ?*Sim,
+
+    fn init(gpa: Allocator, base: Io, options: EveryFaultOptions, report: *EveryFaultReport, mode: IoTrace.Mode, plan: []const FaultIo.IoPlan.Entry) EveryFaultError!Run {
+        const sim_options = options.sim orelse {
+            const fio = FaultIo.init(gpa, base, .{ .trace = mode, .random_seed = options.random_seed, .plan = plan }) catch |err| return outOfMemory(err);
+            return .{ .fio = fio, .sim = null };
+        };
+        var config = sim_options;
+        config.faults = plan;
+        config.fault_part = .{ .trace = mode, .random_seed = options.random_seed };
+        const sim = Sim.init(gpa, config) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            // A one-entry plan built from a call's own fault always applies.
+            error.FaultNotInErrorSet, error.FaultNotApplicable => unreachable, // unreachable: candidates checks every fault
+            // The simulation's own options cannot be met: no run is made.
+            error.ExecutorUnavailable, error.InvalidLink, error.InvalidSchedule => {
+                if (options.diagnostics) |d| d.* = .{ .runs = report.runs, .failure = .{ .injected = null, .err = err, .trace = "" } };
+                return error.CheckFailed;
+            },
+        };
+        return .{ .fio = sim.faults().?, .sim = sim };
+    }
+
+    fn deinit(r: Run) void {
+        if (r.sim) |sim| sim.deinit() else r.fio.deinit();
+    }
+
+    /// `once`, in the simulation's root task when there is one, where
+    /// `check` is given the simulation's `Io` past its fault part, so its
+    /// calls are not steps of the run. A run the
+    /// simulation ends otherwise (a deadlock, a stuck task, a call it does
+    /// not model) fails the whole as `CheckFailed`, named by its outcome.
+    fn once(r: Run, gpa: Allocator, ctx: anytype, options: EveryFaultOptions, report: *EveryFaultReport, faulted: ?Faulted) EveryFaultError!void {
+        const sim = r.sim orelse return onceOn(gpa, ctx, r.fio, r.fio.io(), r.fio.io(), options, report, faulted);
+        var verdict: EveryFaultError!void = {};
+        const Root = struct {
+            fn root(g: Allocator, c: @TypeOf(ctx), fio: *FaultIo, io: Io, judged: Io, o: EveryFaultOptions, into: *EveryFaultReport, f: ?Faulted, out: *(EveryFaultError!void)) void {
+                out.* = onceOn(g, c, fio, io, judged, o, into, f);
+            }
+        };
+        const err: anyerror = switch (sim.run(Root.root, .{ gpa, ctx, r.fio, sim.io(), sim.unfaultedIo(), options, report, faulted, &verdict })) {
+            .finished => return verdict,
+            .step_limit => return error.TooManySteps,
+            .failed => |err| err,
+            .deadlock => error.Deadlock,
+            .time_limit => error.TimeLimit,
+            .stuck => error.Stuck,
+            .double_close => error.DoubleClose,
+            .unmodeled => error.Unmodeled,
+        };
+        return fail(gpa, options, r.fio, report.*, .{ .injected = if (faulted) |f| f.injected else null, .err = err, .trace = "" });
+    }
+};
 
 /// The most faults tried at one step.
 const max_faults = 32;
@@ -199,14 +265,14 @@ const Faulted = struct { injected: Injected, clean: []const Entry, clean_run: *F
 /// One run: set up, run, check, tear down. `check` judges the run before
 /// `tearDown` releases what it left, and `tearDown` follows every run whose
 /// `setUp` succeeded, the failing ones included.
-fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: EveryFaultOptions, report: *EveryFaultReport, faulted: ?Faulted) EveryFaultError!void {
+fn onceOn(gpa: Allocator, ctx: anytype, fio: *FaultIo, io: Io, judged: Io, options: EveryFaultOptions, report: *EveryFaultReport, faulted: ?Faulted) EveryFaultError!void {
     report.runs += 1;
     ctx.setUp(fio) catch |err| {
         if (options.diagnostics) |d| d.* = .{ .runs = report.runs, .failure = .{ .injected = null, .err = err, .trace = "" } };
         return error.CheckFailed;
     };
     defer ctx.tearDown();
-    const result = ctx.run(fio.io());
+    const result = ctx.run(io);
     var injected = if (faulted) |f| f.injected else null;
     if (faulted) |f| {
         if (divergence(f.clean, fio, f.injected.step, &report.excused)) |at| {
@@ -214,7 +280,7 @@ fn once(gpa: Allocator, ctx: anytype, fio: *FaultIo, options: EveryFaultOptions,
         }
         if (!landed(f.clean, fio, f.injected.step)) injected = null;
     }
-    ctx.check(fio.io(), result, injected) catch |err| {
+    ctx.check(judged, result, injected) catch |err| {
         return fail(gpa, options, fio, report.*, .{ .injected = injected, .err = err, .trace = "" });
     };
 }
