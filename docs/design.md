@@ -480,3 +480,41 @@ ends: a task's last call may still name one after its process was reaped.
 A process is a memory domain of its own by contract: it shares no memory with
 its parent but through its streams, files, sockets and exit status, as a real
 process cannot.
+
+## Why these choices
+
+- **One simulated `Io`, `Sim`.** Time moves only when the test or the simulator says so, and when no task can
+  run it advances to the next timer. Files, the network, programs, the scheduler and the fault plan are parts of
+  that one `Io`, all state is the `Sim` value's (no globals), and every decision is seeded.
+- **Layers on one primitive.** Each concern (`Clock`, `FaultIo`, `Sim.Fs`, `Sim.Net`, `Sim.Programs`) is an
+  `Io` wrapper that owns a group of vtable slots and forwards the rest, built on `Layer`, which is also the one
+  way a test builds an `Io` double. A new capability is a new layer or option, never a changed signature.
+- **One entropy source.** Property inputs, schedule choices, latency, chance faults and crash outcomes all draw
+  from one `Source`, recorded as a choice tape, so shrinking an input, a fault plan and a schedule is one
+  algorithm on one tape. A `Source` can be backed by `std.testing.Smith`, so one property runs as seeded cases
+  under `zig build test` and coverage-guided under `--fuzz`, and a fuzzer's crash prints as a tape the test then
+  shrinks.
+- **Fibers where std can switch, Win32 fibers on Windows, baton-passing threads elsewhere**, with the same trace
+  for the same seed on every executor (tested): threads alone on Windows switch about 100 times slower.
+- **Strict by default**: `async_start = .any` (a task may run inline or start, never defer; only
+  `Group.async` under `.deferred` defers, as std promises) and spurious wakes at 1%. A ported test that assumes
+  an order std does not promise fails, and is fixed as the bug it is, never by loosening the defaults.
+- **Test-only.** Every package takes shakedown as a lazy, test-only dependency, and preflight's production-graph
+  check fails a production import. shakedown allocates through an explicit `gpa`, and `Sim`'s steady step loop
+  allocates nothing (a counting test).
+- **A package whose raw calls bypass `Io` keeps a seam** (airlock's `src/seam.zig`): one function-pointer compare
+  in production, a `Layer` over `FaultIo` in its tests, so its calls and the `Io`'s share one step sequence and
+  `everyFault` covers both.
+
+## What a simulated `Io` cannot reach
+
+`std.Thread.spawn` (it runs outside the simulation, in real time: such tests move to `io.concurrent`); spin
+loops on atomics (a livelock the watchdog names; the fix is an `Io.Event`); raw syscalls (they run for real:
+the seam above); memory-model reorderings and preemption between `Io` points (TSan and loom's domain;
+`yield_per_million` adds preemption at every `Io` call); and addresses (`expectDeterministic` catches
+pointer-keyed iteration). Everything that goes through the 0.17 `Io.VTable` is simulated.
+
+Out of scope: running real executables inside a simulation (nondeterministic), memory-model checking, black-box
+fault tools (FUSE, proxies, dm-flakey: they act on other processes), mock-expectation frameworks and HTTP
+mocking (a real server runs on `Sim.Net`), snapshot, coverage and mutation testing, the test runner and its
+timeouts (preflight's), and a simulation across processes.
