@@ -47,8 +47,18 @@ pub const Error = Sim.InitError || error{ OutOfMemory, Nondeterministic, CheckFa
 /// tree, `Sim.Fs.Snapshot.digest`) is counted in `repeated` and not
 /// recovered again, since recovery sees nothing but that storage. `recover`
 /// and `check` are judged once per distinct state, so they must not count
-/// on being called once per crash point.
+/// on being called once per crash point. A point whose storage is the
+/// previous point's (a call between them that changed nothing on disk or in
+/// the journal) leaves the same states, so they are not drawn again: they
+/// are counted in `repeated` as drawing them would have counted them.
 pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptions) Error!Report {
+    return (try sweepAll(gpa, ctx, options, true)).report;
+}
+
+/// `everyCrash`, and how many of the runs its points made had the previous
+/// point's storage and drew no state; with `skip` false every point draws
+/// its states (the tests' reference).
+fn sweepAll(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptions, skip: bool) Error!struct { report: Report, skipped: u32 } {
     if (options.sim.fs == null) return error.FileSystemDisabled;
     if (options.max_states == 0) return error.CheckFailed;
     if (!options.shard.valid()) return error.CheckFailed;
@@ -67,15 +77,24 @@ pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptio
             else => return error.CheckFailed,
         }
     }
-    var sweep: Sweep = .{ .gpa = gpa, .options = options, .config = config, .baseline = clean.trace().records(), .report = .{ .steps = clean.steps(), .runs = 1 } };
+    // One run of a point per lie count: the honest one, then 1 to `lying_syncs` lies.
+    const runs_per_point = @as(usize, options.lying_syncs) + 1;
+    const prior = try gpa.alloc(?Sweep.Seen, runs_per_point);
+    defer gpa.free(prior);
+    const current = try gpa.alloc(?Sweep.Seen, runs_per_point);
+    defer gpa.free(current);
+    @memset(prior, null);
+    var sweep: Sweep = .{ .gpa = gpa, .options = options, .config = config, .baseline = clean.trace().records(), .report = .{ .steps = clean.steps(), .runs = 1 }, .prior = prior, .current = current, .skip = skip };
     defer sweep.recovered.deinit(gpa);
     // The first point is before call 1; the last is after the root returned.
     const points = options.shard.range(sweep.report.steps + 1);
     for (@intCast(points.first)..@intCast(points.end)) |point| {
-        const syncs = try sweep.point(ctx, point, null);
-        for (1..@as(usize, @min(syncs, options.lying_syncs)) + 1) |lies| _ = try sweep.point(ctx, point, @intCast(syncs - lies));
+        @memset(sweep.current, null);
+        const syncs = try sweep.point(ctx, point, null, 0);
+        for (1..@as(usize, @min(syncs, options.lying_syncs)) + 1) |lies| _ = try sweep.point(ctx, point, @intCast(syncs - lies), lies);
+        std.mem.swap([]?Sweep.Seen, &sweep.prior, &sweep.current);
     }
-    return sweep.report;
+    return .{ .report = sweep.report, .skipped = sweep.skipped };
 }
 
 fn Root(comptime Ctx: type) type {
@@ -97,11 +116,22 @@ const Sweep = struct {
     baseline: []const Trace(Sim.Event).Record,
     report: Report,
     recovered: std.AutoHashMapUnmanaged(u128, void) = .empty,
+    /// What the previous point's run of each lie count left, and this point's.
+    prior: []?Seen,
+    current: []?Seen,
+    /// Runs whose storage was the previous point's, which drew no state.
+    skipped: u32 = 0,
+    /// Whether such a run draws no state.
+    skip: bool,
+
+    /// A run's storage (`Model.stateDigest`), how many states it drew, and
+    /// whether it reached `max_states`.
+    const Seen = struct { storage: u128, states: u32, bounded: bool };
 
     /// Runs the operation to `point` and recovers each image its disk may
-    /// crash to, its syncs from `lie_from` on lying. Returns how many data
-    /// or full syncs the prefix made.
-    fn point(sweep: *Sweep, ctx: anytype, at: usize, lie_from: ?u32) Error!u32 {
+    /// crash to, its syncs from `lie_from` on lying, the point's run `slot`
+    /// (its lie count). Returns how many data or full syncs the prefix made.
+    fn point(sweep: *Sweep, ctx: anytype, at: usize, lie_from: ?u32, slot: usize) Error!u32 {
         var config = sweep.config;
         config.max_steps = at;
         const stopped = try Sim.init(sweep.gpa, config);
@@ -116,16 +146,29 @@ const Sweep = struct {
         for (prefix, sweep.baseline[0..prefix.len]) |actual, expected| {
             if (!std.meta.eql(actual.event, expected.event)) return error.Nondeterministic;
         }
-        var states = try stopped.fs().crashStates(sweep.options.max_states +| 1);
-        defer states.deinit();
         // The point's states share the files none of them changed.
         var images: Sim.Fs.ImageDigests = .init(sweep.gpa);
         defer images.deinit();
+        const storage = try stopped.fs().model.stateDigest(&images);
+        const syncs = stopped.fs().model.syncs;
+        // The previous point's storage: the same crash states, each recovered
+        // or found repeated there, so each is a repeat here.
+        if (sweep.skip) if (sweep.prior[slot]) |seen| if (seen.storage == storage) {
+            sweep.report.repeated += seen.states;
+            if (seen.bounded) sweep.report.bounded += 1;
+            sweep.current[slot] = seen;
+            sweep.skipped += 1;
+            return syncs;
+        };
+        var states = try stopped.fs().crashStates(sweep.options.max_states +| 1);
+        defer states.deinit();
         var count: u32 = 0;
+        var bounded = false;
         while (try states.next()) |snap| {
             defer snap.deinit();
             if (count == sweep.options.max_states) {
                 sweep.report.bounded += 1;
+                bounded = true;
                 break;
             }
             count += 1;
@@ -146,7 +189,8 @@ const Sweep = struct {
                 return fail(sweep.gpa, sweep.options, recovery, sweep.report, injected, err);
             }
         }
-        return stopped.fs().model.syncs;
+        sweep.current[slot] = .{ .storage = storage, .states = count, .bounded = bounded };
+        return syncs;
     }
 };
 fn setup(ctx: anytype, sim: *Sim) Error!void {
@@ -169,4 +213,46 @@ fn fail(gpa: std.mem.Allocator, options: EveryCrashOptions, sim: *Sim, report: R
     diagnostics.failure = .{ .injected = injected, .err = err, .trace = trace };
     diagnostics.gpa = gpa;
     return error.CheckFailed;
+}
+
+const testing = std.testing;
+
+/// A durable replace with calls between its steps that touch no file: each
+/// point after one of them has the storage of the point before it.
+const Quiet = struct {
+    recovered: u64 = 0,
+    pub fn setUp(_: *Quiet, sim: *Sim) !void {
+        try sim.fs().write("dest", "old");
+    }
+    pub fn run(_: *Quiet, io: Io) !void {
+        const cwd = Io.Dir.cwd();
+        const file = try cwd.createFile(io, "temp", .{});
+        defer file.close(io);
+        try file.writePositionalAll(io, "new", 0);
+        for (0..4) |_| _ = Io.Clock.Timestamp.now(io, .awake);
+        try file.sync(io);
+        for (0..4) |_| _ = Io.Clock.Timestamp.now(io, .awake);
+        try cwd.rename("temp", cwd, "dest", io);
+    }
+    pub fn recover(ctx: *Quiet, _: Io) !void {
+        ctx.recovered += 1;
+    }
+    /// Every state passes: what is compared is the sweep's report, and a lying sync may leave
+    /// either file's bytes behind.
+    pub fn check(_: *Quiet, _: Io) !void {}
+};
+
+test "a crash point whose storage is the previous point's draws no state, and the report is the one drawing them gives" {
+    for ([_]u8{ 0, 2 }) |lying_syncs| {
+        const options: EveryCrashOptions = .{ .sim = .{ .watchdog = null }, .max_states = 64, .lying_syncs = lying_syncs };
+        var drawing: Quiet = .{};
+        const reference = try sweepAll(testing.allocator, &drawing, options, false);
+        try testing.expectEqual(@as(u32, 0), reference.skipped);
+        var skipping: Quiet = .{};
+        const swept = try sweepAll(testing.allocator, &skipping, options, true);
+        // The clock reads change nothing stored: at least each one's point after the first of a run of them.
+        try testing.expect(swept.skipped >= 6);
+        try testing.expectEqual(reference.report, swept.report);
+        try testing.expectEqual(drawing.recovered, skipping.recovered);
+    }
 }

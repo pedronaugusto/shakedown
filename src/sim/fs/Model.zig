@@ -1221,6 +1221,63 @@ pub const ImageDigests = struct {
         return slot.value_ptr.*;
     }
 };
+/// The whole storage state's identity as it stands: each node (kind, live and disk images,
+/// metadata on both sides, target, misdirection, medium), the live and the disk entries in
+/// their order, each pending record (what it persists, its serial and barrier, how far it has
+/// gone), the bad ranges and the counters. `crashStates` reads nothing else, so two models with
+/// one digest give the same crash states: `everyCrash` skips a point whose digest is the
+/// previous point's. Live fields are hashed too, which only skips less. A 128-bit hash; an
+/// image `images` holds is not hashed again.
+pub fn stateDigest(fs: *const Model, images: *ImageDigests) error{OutOfMemory}!u128 {
+    const s = fs.root;
+    var h: Snapshot.Digest = .{};
+    const H = struct {
+        fn of(d: *Snapshot.Digest, value: anytype) void {
+            std.hash.autoHash(&d.a, value);
+            std.hash.autoHash(&d.b, value);
+        }
+        fn bytes(d: *Snapshot.Digest, b: []const u8) void {
+            of(d, b.len);
+            d.update(b);
+        }
+        fn entries(d: *Snapshot.Digest, list: []const Entry) void {
+            of(d, list.len);
+            for (list) |e| {
+                of(d, .{ e.parent, e.inode, e.cookie });
+                bytes(d, e.name.bytes);
+            }
+        }
+    };
+    H.of(&h, .{ s.serial, s.barrier, s.cookies, s.nodes.items.len });
+    for (s.nodes.items) |n| {
+        H.of(&h, .{ n.kind, n.meta, n.disk_meta, n.misdirect, n.medium != null, n.target != null });
+        H.of(&h, .{ try images.of(n.live), try images.of(n.disk) });
+        if (n.medium) |m| H.of(&h, try images.of(m));
+        if (n.target) |t| H.bytes(&h, t.bytes);
+    }
+    H.entries(&h, s.entries.items);
+    H.entries(&h, s.disk_entries.items);
+    H.of(&h, s.pending.items.len);
+    for (s.pending.items) |r| {
+        H.of(&h, .{ r.synced, r.written, r.ordered, r.op.serial, r.op.before, std.meta.activeTag(r.op.effect) });
+        switch (r.op.effect) {
+            .write => |w| H.of(&h, .{ w.inode, w.offset, w.len, try images.of(w.image) }),
+            .length => |l| H.of(&h, .{ l.inode, try images.of(l.image) }),
+            .metadata => |m| H.of(&h, .{ m.inode, m.meta }),
+            .entries => |e| {
+                H.of(&h, .{ e.len, e.data_inode });
+                for (e.changes[0..e.len]) |c| {
+                    H.of(&h, .{ c.parent, c.inode });
+                    H.bytes(&h, c.name.bytes);
+                }
+            },
+        }
+    }
+    H.of(&h, s.unreadable.items.len);
+    for (s.unreadable.items) |u| H.of(&h, .{ u.inode, u.start, u.len });
+    return h.final();
+}
+
 pub fn snapshot(fs: *Model) error{OutOfMemory}!Snapshot {
     fs.root.refs += 1;
     return .{ .root = fs.root, .gpa = fs.gpa };

@@ -76,6 +76,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The conformance checks: a cancel that passes cancel protection is reported as `error.CancelLeaked`, where the check reached `unreachable`; the files check fails when its scratch directory cannot be removed after the checks passed, where the failure was dropped.
 - The reap test's reached flag is an aegis `Atomic` of a two-state enum, where it was a `std.atomic.Value(bool)`. Tests only.
 - `assert.invariant` where `assert.pre` was, as aegis 0.3.0 keeps one name for the always-on contract. Pins aegis breaking-0.3 (7bdb587).
+- `everyCrash` draws no crash state at a point whose storage (the fs model's whole state: images, tree, journal) is the previous point's: a call between them that changed nothing stored leaves the same states, each recovered or found repeated there. They are counted in `repeated` as drawing them would have counted them, so the report is the same; the cost is one prefix run and one digest per such point (chronicle's densest shard drew about 94 repeated states a point).
 
 ### Fixed
 

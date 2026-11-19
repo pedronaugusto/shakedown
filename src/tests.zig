@@ -37,6 +37,7 @@ test {
     _ = @import("FaultIo.zig");
     _ = @import("every/fault.zig");
     _ = @import("every.zig");
+    _ = @import("every/crash.zig");
     _ = @import("gen.zig");
     _ = @import("shrink.zig");
     _ = @import("check.zig");
