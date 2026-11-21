@@ -1,6 +1,6 @@
 //! Test inputs: fuzz corpus entries in `std.testing.Smith`'s input format,
-//! built at compile time or from a recorded tape, and text repeated to a
-//! length.
+//! built at compile time or from a recorded tape, text repeated to a
+//! length, and `rows`, which runs a check on each line of a vector file.
 //!
 //! Smith reads its input as a sequence of draws: an integer is 8
 //! little-endian bytes, an end-of-stream flag is one byte, `bytes` reads as
@@ -9,6 +9,35 @@
 //! length and truncated, a seed that silently tests nothing; these build
 //! the bytes from what the draws should be.
 const std = @import("std");
+const Untraced = @import("alloc/Untraced.zig");
+
+/// Runs `row(ctx, gpa, line)` on each line of `text` that is not empty: a
+/// vector file, each line a case. Each row has an allocator of its own,
+/// counted and without a stack trace per allocation (`alloc.Untraced.run`):
+/// a row that leaks fails, and runs again traced to name the leak. The first
+/// row that fails stops the run, and its error is returned after a warning
+/// that names its line number and text. Lines end at `\n`; a `\r` before it
+/// is part of the line.
+pub fn rows(gpa: std.mem.Allocator, text: []const u8, ctx: anytype, comptime row: fn (@TypeOf(ctx), std.mem.Allocator, []const u8) anyerror!void) anyerror!void {
+    const Row = struct {
+        ctx: @TypeOf(ctx),
+        line: []const u8,
+        fn run(r: *const @This(), a: std.mem.Allocator) anyerror!void {
+            return row(r.ctx, a, r.line);
+        }
+    };
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var number: usize = 0;
+    while (lines.next()) |line| {
+        number += 1;
+        if (line.len == 0) continue;
+        const each: Row = .{ .ctx = ctx, .line = line };
+        Untraced.run(gpa, &each, Row.run) catch |err| {
+            std.log.scoped(.shakedown).warn("corpus row {d} failed with {t}: {s}", .{ number, err, line });
+            return err;
+        };
+    }
+}
 
 /// One entry for `Smith.slice*`: a little-endian `u32` length, then the bytes.
 pub fn entry(comptime bytes: []const u8) []const u8 {
@@ -188,4 +217,49 @@ test "repeat makes any count inside the default eval branch quota" {
     try std.testing.expectEqual(@as(usize, 1 << 17), big.len);
     try std.testing.expectEqual(@as(usize, 1 << 16), std.mem.count(u8, big, "ab"));
     try std.testing.expectEqual(@as(u8, 0), big[big.len]);
+}
+
+/// Each row's text and whether it leaked, for the tests of `rows`.
+const Seen = struct {
+    lines: [8][]const u8 = undefined,
+    count: usize = 0,
+    /// The line, by its text, that leaks a block the first time it runs.
+    leaky: []const u8 = "",
+    leaked: bool = false,
+
+    fn row(s: *Seen, gpa: std.mem.Allocator, line: []const u8) anyerror!void {
+        s.lines[s.count] = line;
+        s.count += 1;
+        const copy = try gpa.dupe(u8, line);
+        if (std.mem.eql(u8, line, s.leaky) and !s.leaked) {
+            s.leaked = true;
+            return;
+        }
+        gpa.free(copy);
+        if (std.mem.eql(u8, line, "bad")) return error.BadRow;
+    }
+};
+
+test "rows runs each line that is not empty, in order, with an allocator of its own" {
+    var seen: Seen = .{};
+    try rows(std.testing.allocator, "a\n\nb c\nd\n", &seen, Seen.row);
+    try std.testing.expectEqual(@as(usize, 3), seen.count);
+    try std.testing.expectEqualStrings("a", seen.lines[0]);
+    try std.testing.expectEqualStrings("b c", seen.lines[1]);
+    try std.testing.expectEqualStrings("d", seen.lines[2]);
+}
+
+test "rows stops at the first row that fails and returns its error" {
+    var seen: Seen = .{};
+    try std.testing.expectError(error.BadRow, rows(std.testing.allocator, "a\nbad\nc", &seen, Seen.row));
+    try std.testing.expectEqual(@as(usize, 2), seen.count);
+}
+
+test "a row that leaks fails with error.Leaked, run again traced" {
+    // It leaks only the first time, so the traced run logs no leak here.
+    var seen: Seen = .{ .leaky = "b" };
+    try std.testing.expectError(error.Leaked, rows(std.testing.allocator, "a\nb\nc", &seen, Seen.row));
+    try std.testing.expectEqual(@as(usize, 3), seen.count);
+    try std.testing.expectEqualStrings("b", seen.lines[1]);
+    try std.testing.expectEqualStrings("b", seen.lines[2]);
 }

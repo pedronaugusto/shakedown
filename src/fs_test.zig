@@ -277,13 +277,14 @@ pub const CrashContext = struct {
         try file.sync(io);
         try cwd.rename("temp", cwd, "dest", io);
     }
-    pub fn recover(ctx: *CrashContext, io: Io) !void {
+    pub fn recover(ctx: *CrashContext, io: Io, gpa: std.mem.Allocator) !void {
         _ = io;
+        _ = gpa;
         ctx.recovered += 1;
     }
-    pub fn check(_: *CrashContext, io: Io) !void {
-        const bytes = try Io.Dir.cwd().readFileAlloc(io, "dest", t.allocator, .limited(32));
-        defer t.allocator.free(bytes);
+    pub fn check(_: *CrashContext, io: Io, gpa: std.mem.Allocator) !void {
+        const bytes = try Io.Dir.cwd().readFileAlloc(io, "dest", gpa, .limited(32));
+        defer gpa.free(bytes);
         try t.expect(std.mem.eql(u8, bytes, "old") or std.mem.eql(u8, bytes, "new"));
     }
 };
@@ -633,8 +634,8 @@ pub const NondeterministicCrash = struct {
         const file = try Io.Dir.cwd().createFile(io, if (ctx.calls % 2 == 1) "a" else "b", .{});
         file.close(io);
     }
-    pub fn recover(_: *NondeterministicCrash, _: Io) !void {}
-    pub fn check(_: *NondeterministicCrash, _: Io) !void {}
+    pub fn recover(_: *NondeterministicCrash, _: Io, _: std.mem.Allocator) !void {}
+    pub fn check(_: *NondeterministicCrash, _: Io, _: std.mem.Allocator) !void {}
 };
 test "Fs everyCrash rejects a nondeterministic path even when both opens succeed" {
     var ctx: NondeterministicCrash = .{};
@@ -649,10 +650,10 @@ pub const FailedRecovery = struct {
         const file = try Io.Dir.cwd().openFile(io, "dest", .{});
         file.close(io);
     }
-    pub fn recover(_: *FailedRecovery, io: Io) !void {
+    pub fn recover(_: *FailedRecovery, io: Io, _: std.mem.Allocator) !void {
         _ = try Io.Dir.cwd().statFile(io, "dest", .{});
     }
-    pub fn check(_: *FailedRecovery, _: Io) !void {
+    pub fn check(_: *FailedRecovery, _: Io, _: std.mem.Allocator) !void {
         return error.InvariantBroken;
     }
 };
@@ -665,6 +666,34 @@ test "Fs everyCrash reports the crash point and the recovery trace" {
     try t.expectEqual(1, report.failure.?.injected.?.step);
     try t.expect(report.failure.?.trace.len > 0);
 }
+pub const LeakingCheck = struct {
+    checks: u32 = 0,
+    pub fn setUp(_: *LeakingCheck, sim: *Sim) !void {
+        try sim.fs().write("dest", "old");
+    }
+    pub fn run(_: *LeakingCheck, io: Io) !void {
+        const file = try Io.Dir.cwd().openFile(io, "dest", .{});
+        file.close(io);
+    }
+    pub fn recover(_: *LeakingCheck, _: Io, _: std.mem.Allocator) !void {}
+    /// Leaks its read the first time only, so the traced run that names
+    /// the leak finds none to log here.
+    pub fn check(ctx: *LeakingCheck, io: Io, gpa: std.mem.Allocator) !void {
+        ctx.checks += 1;
+        const bytes = try Io.Dir.cwd().readFileAlloc(io, "dest", gpa, .limited(8));
+        if (ctx.checks > 1) gpa.free(bytes);
+    }
+};
+test "Fs everyCrash fails a recovery that leaks, at its crash point, after running the point again" {
+    var ctx: LeakingCheck = .{};
+    var report: shakedown.EveryFaultReport = .{};
+    try t.expectError(error.CheckFailed, shakedown.everyCrash(t.allocator, &ctx, .{ .sim = .{ .watchdog = null }, .diagnostics = &report }));
+    defer report.deinit();
+    try t.expectEqual(error.Leaked, report.failure.?.err);
+    try t.expectEqual(1, report.failure.?.injected.?.step);
+    // The first point's one state, then the same point again, traced.
+    try t.expectEqual(2, ctx.checks);
+}
 pub const TempLeft = struct {
     inner: CrashContext = .{},
     pub fn setUp(ctx: *TempLeft, sim: *Sim) !void {
@@ -673,8 +702,8 @@ pub const TempLeft = struct {
     pub fn run(ctx: *TempLeft, io: Io) !void {
         try ctx.inner.run(io);
     }
-    pub fn recover(_: *TempLeft, _: Io) !void {}
-    pub fn check(_: *TempLeft, io: Io) !void {
+    pub fn recover(_: *TempLeft, _: Io, _: std.mem.Allocator) !void {}
+    pub fn check(_: *TempLeft, io: Io, _: std.mem.Allocator) !void {
         if (Io.Dir.cwd().statFile(io, "temp", .{})) |_| return error.TempLeft else |err| switch (err) {
             error.FileNotFound => {},
             else => return err,
@@ -1346,15 +1375,15 @@ pub const Published = struct {
         try index.writePositionalAll(io, "1", 0);
         try index.sync(io);
     }
-    pub fn recover(_: *Published, _: Io) !void {}
-    pub fn check(ctx: *Published, io: Io) !void {
+    pub fn recover(_: *Published, _: Io, _: std.mem.Allocator) !void {}
+    pub fn check(ctx: *Published, io: Io, gpa: std.mem.Allocator) !void {
         if (ctx.tolerant) return;
         const cwd = Io.Dir.cwd();
-        const index = try cwd.readFileAlloc(io, "index", t.allocator, .limited(8));
-        defer t.allocator.free(index);
+        const index = try cwd.readFileAlloc(io, "index", gpa, .limited(8));
+        defer gpa.free(index);
         if (!std.mem.eql(u8, index, "1")) return;
-        const record = try cwd.readFileAlloc(io, "record", t.allocator, .limited(16));
-        defer t.allocator.free(record);
+        const record = try cwd.readFileAlloc(io, "record", gpa, .limited(16));
+        defer gpa.free(record);
         if (!std.mem.eql(u8, record, "payload")) return error.PublishedWithoutRecord;
     }
 };

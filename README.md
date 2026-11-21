@@ -160,6 +160,14 @@ in place in one run and an allocation in another, and the count moves.
 `Quarantine.Options.reuse_after` is a byte count (`aegis.units.Bytes(usize)`), not
 a page count.
 
+`alloc.Untraced` checks for leaks, double frees and corrupted blocks as
+`std.testing.allocator` does, without its stack trace per allocation. In a Debug
+build that unwinding can be most of a test's time, and a test that allocates
+often then runs close to its runner's time bound. `alloc.Untraced.run(gpa, ctx,
+body)` hands `body` one and, if the body leaks, runs it again on a traced
+allocator whose report names each leaked block, and returns `error.Leaked`.
+`everyCrash` and `corpus.rows` hand their runs these allocators.
+
 `alloc.Unwiped` is given the bytes that must not outlive their owner (a key, a
 token, a password) and scans every block as it is freed, counting the blocks that
 still held one and keeping the first with the frames of its free. It refuses
@@ -476,9 +484,14 @@ all allowed sectors and orders. Release each snapshot and the iterator with
 `deinit`. Crash materialization and iteration can return `OutOfMemory`.
 
 `everyCrash(gpa, ctx, options)` calls `ctx.setUp(sim)` and `ctx.run(io)`, stops at
-every call boundary and after return, then runs `ctx.recover(io)` and
-`ctx.check(io)` on each allowed disk image in a fresh simulation. The prefix must
-match the clean trace. `max_states` bounds images per point; the returned report's
+every call boundary and after return, then runs `ctx.recover(io, gpa)` and
+`ctx.check(io, gpa)` on each allowed disk image in a fresh simulation. The prefix must
+match the clean trace. Each run's simulation has memory of its own over `gpa`,
+counted and without a stack trace per allocation (`alloc.Untraced`), and
+`recover` and `check` are handed an allocator of the recovery's own: what they
+allocate they free. A leak fails the sweep with `error.Leaked` at its crash
+point, after the point runs again on traced allocators whose report names each
+leaked block. `max_states` bounds images per point; the returned report's
 `bounded` count says how many points exceeded it. `shard` explores one of `count`
 contiguous ranges of the points, so a long operation's sweep runs as several
 tests; a range keeps together the points that leave the same states, so shards
@@ -510,7 +523,10 @@ draws, `corpus.entries` a whole fuzz corpus of them, and `corpus.encode` a whole
 Smith input from a list of draws, all at compile time. `corpus.repeat("ab", n)`
 is `"ab"` written n times, the array product Zig 0.17 dropped: a static,
 0-terminated constant like a literal, for any n without raising the eval branch
-quota.
+quota. `corpus.rows(gpa, text, ctx, row)` runs `row(ctx, gpa, line)` on each line
+of a vector file that is not empty, each with an `alloc.Untraced` of its own: a
+row that leaks fails and runs again traced, and the first row that fails stops
+the run with a warning that names its line number.
 
 ## Simulated network
 

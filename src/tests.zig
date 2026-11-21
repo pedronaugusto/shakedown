@@ -27,6 +27,7 @@ test {
     _ = @import("alloc/Unwiped.zig");
     _ = @import("alloc/Erased.zig");
     _ = @import("alloc/LockProbe.zig");
+    _ = @import("alloc/Untraced.zig");
     _ = @import("corpus.zig");
     _ = @import("Source.zig");
     _ = @import("Steps.zig");

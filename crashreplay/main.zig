@@ -358,13 +358,13 @@ const Collect = struct {
         try c.w.run(io, work, .{});
     }
 
-    pub fn recover(_: *Collect, _: Io) !void {}
+    pub fn recover(_: *Collect, _: Io, _: std.mem.Allocator) !void {}
 
-    pub fn check(c: *Collect, io: Io) !void {
+    pub fn check(c: *Collect, io: Io, gpa: std.mem.Allocator) !void {
         const work = try Io.Dir.cwd().openDir(io, "work", .{ .iterate = true });
         defer work.close(io);
-        const state = try workloads.describe(c.gpa, io, work);
-        defer c.gpa.free(state);
+        const state = try workloads.describe(gpa, io, work);
+        defer gpa.free(state);
         if (!c.into.contains(state)) try c.into.put(c.a, try c.a.dupe(u8, state), {});
     }
 };

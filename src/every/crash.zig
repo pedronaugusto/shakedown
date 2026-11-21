@@ -4,6 +4,7 @@ const Io = std.Io;
 const Sim = @import("../Sim.zig");
 const reports = @import("fault.zig");
 const Trace = @import("../trace.zig").Trace;
+const Untraced = @import("../alloc/Untraced.zig");
 
 pub const EveryCrashOptions = struct {
     sim: Sim.Options = .{},
@@ -38,9 +39,20 @@ pub const EveryCrashOptions = struct {
 pub const Report = reports.EveryFaultReport;
 pub const Error = Sim.InitError || error{ OutOfMemory, Nondeterministic, CheckFailed, TooManySteps, FileSystemDisabled };
 
-/// ctx: setUp(ctx, sim), run(ctx, io), recover(ctx, io), check(ctx, io),
-/// optionally tearDown(ctx). A crash abandons tasks without executing defers;
-/// own application heap state in ctx and release it in tearDown.
+/// ctx: setUp(ctx, sim), run(ctx, io), recover(ctx, io, gpa),
+/// check(ctx, io, gpa), optionally tearDown(ctx). A crash abandons tasks
+/// without executing defers; own application heap state in ctx and release
+/// it in tearDown. What `run` allocates comes from `sim.allocator()`, taken
+/// in setUp.
+///
+/// Every run's simulation has memory of its own over `gpa`, counted and
+/// without a stack trace per allocation (`alloc.Untraced`): the clean run's,
+/// and each crash point's, which its recoveries share since a recovery
+/// restores the point's storage. `recover` and `check` are handed `gpa`, an
+/// allocator of the recovery's own, of the same kind: what they allocate
+/// they free. A leak in any of them fails the sweep (`error.CheckFailed`,
+/// the report's failure `error.Leaked` at its point), after the leaking run
+/// is made again on traced allocators, whose report names each leaked block.
 /// Recovery runs on a fresh scheduler with the crashed storage. The returned
 /// bounded count makes an incomplete exploration visible to the caller.
 /// A state is recovered once: one an earlier crash point left (the same
@@ -58,25 +70,46 @@ pub fn everyCrash(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptio
 /// `everyCrash`, and how many of the runs its points made had the previous
 /// point's storage and drew no state; with `skip` false every point draws
 /// its states (the tests' reference).
-fn sweepAll(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptions, skip: bool) Error!struct { report: Report, skipped: u32 } {
+const Swept = struct { report: Report, skipped: u32 };
+
+fn sweepAll(gpa: std.mem.Allocator, ctx: anytype, options: EveryCrashOptions, skip: bool) Error!Swept {
     if (options.sim.fs == null) return error.FileSystemDisabled;
     if (options.max_states == 0) return error.CheckFailed;
     if (!options.shard.valid()) return error.CheckFailed;
     var config = options.sim;
     config.max_steps = options.max_steps;
     config.trace = .all;
-    const clean = try Sim.init(gpa, config);
-    defer clean.deinit();
-    {
-        try setup(ctx, clean);
-        defer teardown(ctx);
-        switch (clean.run(Root(@TypeOf(ctx)).run, .{ clean.io(), ctx })) {
-            .finished => {},
-            .step_limit => return error.TooManySteps,
-            .failed => |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.CheckFailed,
-            else => return error.CheckFailed,
-        }
+    // The clean run's memory lasts the sweep: its trace is every point's baseline.
+    var memory: Memory = .init(gpa, false);
+    const swept = sweepFrom(gpa, memory.allocator(), ctx, options, config, skip);
+    const leaks = memory.deinit();
+    const done = try swept;
+    if (leaks == 0) return done;
+    var loud: Memory = .init(gpa, true);
+    if (cleanRun(loud.allocator(), ctx, config)) |again| again.deinit() else |err| Untraced.rerunFailed(err);
+    _ = loud.deinit();
+    return leaked(gpa, options, done.report, null);
+}
+
+/// The clean run, on `a`: the simulation it returns holds its trace.
+fn cleanRun(a: std.mem.Allocator, ctx: anytype, config: Sim.Options) Error!*Sim {
+    const clean = try Sim.init(a, config);
+    errdefer clean.deinit();
+    try setup(ctx, clean);
+    defer teardown(ctx);
+    switch (clean.run(Root(@TypeOf(ctx)).run, .{ clean.io(), ctx })) {
+        .finished => return clean,
+        .step_limit => return error.TooManySteps,
+        .failed => |err| return if (err == error.OutOfMemory) error.OutOfMemory else error.CheckFailed,
+        else => return error.CheckFailed,
     }
+}
+
+/// The sweep after a clean run on `clean_memory`; the points' memory is
+/// their own, over `gpa`.
+fn sweepFrom(gpa: std.mem.Allocator, clean_memory: std.mem.Allocator, ctx: anytype, options: EveryCrashOptions, config: Sim.Options, skip: bool) Error!Swept {
+    const clean = try cleanRun(clean_memory, ctx, config);
+    defer clean.deinit();
     // One run of a point per lie count: the honest one, then 1 to `lying_syncs` lies.
     const runs_per_point = @as(usize, options.lying_syncs) + 1;
     const prior = try gpa.alloc(?Sweep.Seen, runs_per_point);
@@ -102,11 +135,50 @@ fn Root(comptime Ctx: type) type {
         fn run(io: Io, context: Ctx) !void {
             try context.run(io);
         }
-        fn recover(io: Io, context: Ctx) !void {
-            try context.recover(io);
-            try context.check(io);
+        fn recover(io: Io, context: Ctx, gpa: std.mem.Allocator) !void {
+            try context.recover(io, gpa);
+            try context.check(io, gpa);
         }
     };
+}
+
+/// A run's memory: counted without a stack trace per allocation, or traced
+/// when a leak is being named.
+const Memory = union(enum) {
+    quiet: Untraced,
+    loud: std.heap.SafeAllocator,
+
+    fn init(backing: std.mem.Allocator, loud: bool) Memory {
+        return if (loud) .{ .loud = Untraced.traced(backing) } else .{ .quiet = .init(backing) };
+    }
+
+    /// The allocator. `m` must not move while it is in use.
+    fn allocator(m: *Memory) std.mem.Allocator {
+        return switch (m.*) {
+            .quiet => |*q| q.allocator(),
+            .loud => |*l| l.allocator(),
+        };
+    }
+
+    /// The blocks still live, freed; a traced one logs each with the stack
+    /// it was allocated from.
+    fn deinit(m: *Memory) usize {
+        return switch (m.*) {
+            .quiet => |*q| q.deinit(),
+            .loud => |*l| l.deinit(),
+        };
+    }
+};
+
+/// A sweep that leaked fails with `error.Leaked` at the leaking point,
+/// `null` for the clean run.
+fn leaked(gpa: std.mem.Allocator, options: EveryCrashOptions, report: Report, injected: ?reports.Injected) Error {
+    const diagnostics = options.diagnostics orelse return error.CheckFailed;
+    const trace = gpa.dupe(u8, "a leak: the traced run's report names each leaked block\n") catch return error.OutOfMemory;
+    diagnostics.* = report;
+    diagnostics.failure = .{ .injected = injected, .err = error.Leaked, .trace = trace };
+    diagnostics.gpa = gpa;
+    return error.CheckFailed;
 }
 
 const Sweep = struct {
@@ -131,10 +203,35 @@ const Sweep = struct {
     /// Runs the operation to `point` and recovers each image its disk may
     /// crash to, its syncs from `lie_from` on lying, the point's run `slot`
     /// (its lie count). Returns how many data or full syncs the prefix made.
+    /// The point's simulations, and each recovery's `recover` and `check`,
+    /// have memory of their own; a leak in any runs the point again traced,
+    /// every state recovered, and fails it.
     fn point(sweep: *Sweep, ctx: anytype, at: usize, lie_from: ?u32, slot: usize) Error!u32 {
+        var memory: Memory = .init(sweep.gpa, false);
+        var leaks: usize = 0;
+        const ran = sweep.pointOn(ctx, at, lie_from, slot, memory.allocator(), false, &leaks);
+        leaks += memory.deinit();
+        const syncs = try ran;
+        if (leaks == 0) return syncs;
+        var loud: Memory = .init(sweep.gpa, true);
+        var again: usize = 0;
+        if (sweep.pointOn(ctx, at, lie_from, slot, loud.allocator(), true, &again)) |_| {} else |err| Untraced.rerunFailed(err);
+        _ = loud.deinit();
+        return leaked(sweep.gpa, sweep.options, sweep.report, sweep.injectedAt(at));
+    }
+
+    /// The crash before the call at step `at + 1`, or none after the root returned.
+    fn injectedAt(sweep: *const Sweep, at: usize) ?reports.Injected {
+        return if (at < sweep.baseline.len) .{ .step = at + 1, .call = sweep.baseline[at].event.call, .fault = .crash } else null;
+    }
+
+    /// `point` on `a`, adding the recoveries' leaks to `leaks`. `loud`, to
+    /// name a leak: every state is recovered, none skipped as seen before,
+    /// on traced allocators.
+    fn pointOn(sweep: *Sweep, ctx: anytype, at: usize, lie_from: ?u32, slot: usize, a: std.mem.Allocator, loud: bool, leaks: *usize) Error!u32 {
         var config = sweep.config;
         config.max_steps = at;
-        const stopped = try Sim.init(sweep.gpa, config);
+        const stopped = try Sim.init(a, config);
         defer stopped.deinit();
         stopped.fs().model.lie_from = lie_from;
         try setup(ctx, stopped);
@@ -147,13 +244,13 @@ const Sweep = struct {
             if (!std.meta.eql(actual.event, expected.event)) return error.Nondeterministic;
         }
         // The point's states share the files none of them changed.
-        var images: Sim.Fs.ImageDigests = .init(sweep.gpa);
+        var images: Sim.Fs.ImageDigests = .init(a);
         defer images.deinit();
         const storage = try stopped.fs().model.stateDigest(&images);
         const syncs = stopped.fs().model.syncs;
         // The previous point's storage: the same crash states, each recovered
         // or found repeated there, so each is a repeat here.
-        if (sweep.skip) if (sweep.prior[slot]) |seen| if (seen.storage == storage) {
+        if (sweep.skip and !loud) if (sweep.prior[slot]) |seen| if (seen.storage == storage) {
             sweep.report.repeated += seen.states;
             if (seen.bounded) sweep.report.bounded += 1;
             sweep.current[slot] = seen;
@@ -172,21 +269,23 @@ const Sweep = struct {
                 break;
             }
             count += 1;
-            if ((try sweep.recovered.getOrPut(sweep.gpa, try snap.digest(&images))).found_existing) {
+            const digest = try snap.digest(&images);
+            if (!loud and (try sweep.recovered.getOrPut(sweep.gpa, digest)).found_existing) {
                 sweep.report.repeated += 1;
                 continue;
             }
             var recovery_options = sweep.options.sim;
             recovery_options.faults = &.{};
-            const recovery = try Sim.init(sweep.gpa, recovery_options);
+            const recovery = try Sim.init(a, recovery_options);
             defer recovery.deinit();
             recovery.fs().restore(snap);
-            const recovered = recovery.run(Root(@TypeOf(ctx)).recover, .{ recovery.io(), ctx });
+            var own: Memory = .init(sweep.gpa, loud);
+            const recovered = recovery.run(Root(@TypeOf(ctx)).recover, .{ recovery.io(), ctx, own.allocator() });
+            leaks.* += own.deinit();
             sweep.report.runs += 1;
             if (recovered != .finished) {
                 const err = if (recovered == .failed) recovered.failed else error.CheckFailed;
-                const injected: ?reports.Injected = if (at < sweep.baseline.len) .{ .step = at + 1, .call = sweep.baseline[at].event.call, .fault = .crash } else null;
-                return fail(sweep.gpa, sweep.options, recovery, sweep.report, injected, err);
+                return fail(sweep.gpa, sweep.options, recovery, sweep.report, sweep.injectedAt(at), err);
             }
         }
         sweep.current[slot] = .{ .storage = storage, .states = count, .bounded = bounded };
@@ -234,12 +333,12 @@ const Quiet = struct {
         for (0..4) |_| _ = Io.Clock.Timestamp.now(io, .awake);
         try cwd.rename("temp", cwd, "dest", io);
     }
-    pub fn recover(ctx: *Quiet, _: Io) !void {
+    pub fn recover(ctx: *Quiet, _: Io, _: std.mem.Allocator) !void {
         ctx.recovered += 1;
     }
     /// Every state passes: what is compared is the sweep's report, and a lying sync may leave
     /// either file's bytes behind.
-    pub fn check(_: *Quiet, _: Io) !void {}
+    pub fn check(_: *Quiet, _: Io, _: std.mem.Allocator) !void {}
 };
 
 test "a crash point whose storage is the previous point's draws no state, and the report is the one drawing them gives" {

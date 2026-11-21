@@ -9,6 +9,7 @@ pub const layers: []const gantry.rules.Layer = &.{
         "src/alloc/NoResize.zig",
         "src/alloc/Quarantine.zig",
         "src/alloc/Unwiped.zig",
+        "src/alloc/Untraced.zig",
         "src/corpus.zig",
         "src/bench.zig",
         "src/leak.zig",
