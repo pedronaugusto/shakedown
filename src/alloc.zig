@@ -1,7 +1,8 @@
 //! Allocators for tests: one that counts, one that never reuses an address,
 //! one that never resizes in place, one that sees frees of unwiped memory,
-//! one that sees frees of memory not erased, and one that sees calls made
-//! under a lock.
+//! one that sees frees of memory not erased, one that sees calls made
+//! under a lock, and one that checks for leaks without a stack trace per
+//! allocation.
 
 /// Counts calls, failures and bytes live, at their peak and in total.
 pub const Counting = @import("alloc/Counting.zig");
@@ -16,3 +17,6 @@ pub const Unwiped = @import("alloc/Unwiped.zig");
 pub const Erased = @import("alloc/Erased.zig");
 /// Counts the calls made while a lock is held.
 pub const LockProbe = @import("alloc/LockProbe.zig");
+/// Checks for leaks as `std.testing.allocator` does, without its stack
+/// trace per allocation; `Untraced.run` names a leak by running again traced.
+pub const Untraced = @import("alloc/Untraced.zig");
