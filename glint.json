@@ -10,9 +10,7 @@
     { "file": "src/crash.zig", "rules": ["P007"], "reason": "a SIGABRT handler's writes: only async-signal-safe calls run there, the raw write(2) of std.os.linux and libc, past std's buffered and locked writers" },
     { "file": "src/alloc/Quarantine.zig", "rules": ["P007"], "reason": "page protection through the OS: the quarantine maps, protects and unmaps the pages it hands out" },
     { "module": "src/conformance/", "rules": ["A009"], "reason": "std's file reads are the subject of the conformance checks" },
-    { "file": "src/conformance/files.zig", "rules": ["P006"], "reason": "the conformance checks call every file operation std.Io names, sync among them, on the Io under check: what they test is that Io's answer, not what reached a disk" },
-    { "file": "examples/usage.zig", "rules": ["P006"], "reason": "the usage example fails a sync through the fault-injecting Io: the sync is the fault it shows, and no data rides on it" },
-    { "file": "src/fuzz.zig", "rules": ["A009"], "reason": "the fuzzer's cache: reads what the fuzzer left, to judge the session" },
+    { "file": "src/conformance/files.zig", "rules": ["P006"], "reason": "the conformance checks call every file operation std.Io names, sync among them, on the Io under check: what they test is that Io's answer, not what reached a disk" },    { "file": "src/fuzz.zig", "rules": ["A009"], "reason": "the fuzzer's cache: reads what the fuzzer left, to judge the session" },
     { "file": "src/fuzz/main.zig", "rules": ["A009"], "reason": "the fuzz campaign's driver: runs the package's own fuzz step and reads its result" },
     { "file": "src/bench/compare.zig", "rules": ["A009"], "reason": "the benchmark comparison tool: reads the two result files named on its command line" }
   ]

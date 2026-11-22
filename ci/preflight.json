@@ -18,7 +18,9 @@
       "source": "examples/usage.zig",
       "region": "usage",
       "imports": [
-        "shakedown"
+        "shakedown",
+        "airlock",
+        "airlock_testing"
       ]
     }
   },

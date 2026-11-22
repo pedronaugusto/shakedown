@@ -1,8 +1,8 @@
 //! A retry loop with backoff, tested without waiting: the code under test
 //! sleeps on a `shakedown.Clock`, and the test moves the clock. Then an
-//! allocator that counts, a `FaultIo` that fails one sync by its path, the
-//! retry again on a `Sim`, where time jumps to each timer by itself, and a
-//! property `check` runs over a hundred cases.
+//! allocator that counts, a `FaultIo` that fails the sync of a file made
+//! durable through airlock, the retry again on a `Sim`, where time jumps to
+//! each timer by itself, and a property `check` runs over a hundred cases.
 //!
 //! `zig build examples` builds AND runs this; `zig build docs -- usage`
 //! extracts the region between the usage markers into README.md, so the
@@ -11,6 +11,8 @@
 const std = @import("std");
 const Io = std.Io;
 const shakedown = @import("shakedown");
+const airlock = @import("airlock");
+const airlock_testing = @import("airlock.testing");
 
 /// The code under test: try `attempt` up to `tries` times, sleeping one
 /// second, then two, then four between tries.
@@ -62,19 +64,23 @@ pub fn main(init: std.process.Init) !void {
     std.debug.assert(counting.peak_bytes == 100);
     std.debug.assert(counting.live_bytes == 0);
 
-    // Fail the first sync of a file whose path ends in ".lock", and count
-    // every call on the way.
+    // Fail the first sync of a file made durable through airlock, and count
+    // every call on the way. airlock's syncs go past the Io they are given;
+    // its seam over a FaultIo makes each one a step a plan can fail.
     const dir = try Io.Dir.cwd().createDirPathOpen(init.io, ".zig-cache/shakedown-example", .{});
     defer dir.close(init.io);
-    const fio = try shakedown.FaultIo.init(init.gpa, init.io, .{ .plan = &.{.{
-        .at = .{ .nth = .{ .call = .fileSync, .n = 1, .path = .{ .suffix = ".lock" } } },
-        .fault = .{ .fail = error.InputOutput },
-    }} });
+    const fio = try shakedown.FaultIo.init(init.gpa, init.io, .{ .trace = .all });
     defer fio.deinit();
-    const lock = try dir.createFile(fio.io(), "HEAD.lock", .{});
-    defer lock.close(fio.io());
-    if (lock.sync(fio.io())) |_| unreachable else |err| std.debug.assert(err == error.InputOutput);
-    std.debug.assert(fio.count(.fileSync) == 1);
+    const seam = try airlock_testing.Seam.over(init.gpa, fio, .{ .plan = &.{
+        airlock_testing.fail(airlock_testing.data_sync, 1, airlock_testing.io_error),
+    } });
+    defer seam.destroy();
+    const head = try dir.createFile(seam.io(), "HEAD", .{});
+    defer head.close(seam.io());
+    try head.writePositionalAll(seam.io(), "ref", 0);
+    if (airlock.syncFile(seam.io(), head, .{})) |_| unreachable else |err| std.debug.assert(err == error.InputOutput);
+    std.debug.assert(seam.syncs() == 1);
+    std.debug.assert(fio.count(.dirCreateFile) == 1);
 
     // The retry on a simulation: its tasks, its sleeps and its every
     // choice are the simulation's, so no test thread moves time.
