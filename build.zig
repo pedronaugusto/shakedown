@@ -267,7 +267,7 @@ pub fn dev(b: *std.Build, tools: type) void {
         // properties (the suite alone, as every binary of it has them) and
         // runs it under ThreadSanitizer, where a race in the threads
         // executor shows.
-        .hardened = .{ .fuzz_step = "unit" },
+        .hardened = .{ .fuzz_step = "unit", .tsan_step = "unit" },
         // `bay bench` runs them in ReleaseFast, by hand; never timed in CI,
         // where `bay test` runs each once.
         .bench = .{

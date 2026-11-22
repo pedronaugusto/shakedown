@@ -316,32 +316,31 @@ fn fail(gpa: std.mem.Allocator, options: EveryCrashOptions, sim: *Sim, report: R
 
 const testing = std.testing;
 
-/// A durable replace with calls between its steps that touch no file: each
-/// point after one of them has the storage of the point before it.
-const Quiet = struct {
-    recovered: u64 = 0,
-    pub fn setUp(_: *Quiet, sim: *Sim) !void {
-        try sim.fs().write("dest", "old");
-    }
-    pub fn run(_: *Quiet, io: Io) !void {
-        const cwd = Io.Dir.cwd();
-        const file = try cwd.createFile(io, "temp", .{});
-        defer file.close(io);
-        try file.writePositionalAll(io, "new", 0);
-        for (0..4) |_| _ = Io.Clock.Timestamp.now(io, .awake);
-        try file.sync(io);
-        for (0..4) |_| _ = Io.Clock.Timestamp.now(io, .awake);
-        try cwd.rename("temp", cwd, "dest", io);
-    }
-    pub fn recover(ctx: *Quiet, _: Io, _: std.mem.Allocator) !void {
-        ctx.recovered += 1;
-    }
-    /// Every state passes: what is compared is the sweep's report, and a lying sync may leave
-    /// either file's bytes behind.
-    pub fn check(_: *Quiet, _: Io, _: std.mem.Allocator) !void {}
-};
-
 test "a crash point whose storage is the previous point's draws no state, and the report is the one drawing them gives" {
+    // A durable replace with calls between its steps that touch no file: each
+    // point after one of them has the storage of the point before it.
+    const Quiet = struct {
+        recovered: u64 = 0,
+        pub fn setUp(_: *@This(), sim: *Sim) !void {
+            try sim.fs().write("dest", "old");
+        }
+        pub fn run(_: *@This(), io: Io) !void {
+            const cwd = Io.Dir.cwd();
+            const file = try cwd.createFile(io, "temp", .{});
+            defer file.close(io);
+            try file.writePositionalAll(io, "new", 0);
+            for (0..4) |_| _ = Io.Clock.Timestamp.now(io, .awake);
+            try file.sync(io);
+            for (0..4) |_| _ = Io.Clock.Timestamp.now(io, .awake);
+            try cwd.rename("temp", cwd, "dest", io);
+        }
+        pub fn recover(ctx: *@This(), _: Io, _: std.mem.Allocator) !void {
+            ctx.recovered += 1;
+        }
+        /// Every state passes: what is compared is the sweep's report, and a lying sync may leave
+        /// either file's bytes behind.
+        pub fn check(_: *@This(), _: Io, _: std.mem.Allocator) !void {}
+    };
     for ([_]u8{ 0, 2 }) |lying_syncs| {
         const options: EveryCrashOptions = .{ .sim = .{ .watchdog = null }, .max_states = 64, .lying_syncs = lying_syncs };
         var drawing: Quiet = .{};
