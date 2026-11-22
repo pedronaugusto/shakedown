@@ -238,13 +238,21 @@ pub fn dev(b: *std.Build, tools: type) void {
     // usage), so the snippet a reader copies is code CI executes.
     //=====================================================================
 
+    // The example makes a file durable through airlock, the family's door for
+    // durability, and fails its sync through airlock's seam over a FaultIo,
+    // built on this shakedown.
+    const airlock = b.dependency("airlock", .{ .target = target, .optimize = optimize });
     const example = b.addExecutable(.{
         .name = "usage",
         .root_module = b.createModule(.{
             .root_source_file = p.path("examples/usage.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "shakedown", .module = module }},
+            .imports = &.{
+                .{ .name = "shakedown", .module = module },
+                .{ .name = "airlock", .module = airlock.module("airlock") },
+                .{ .name = "airlock.testing", .module = tools.airlock.testing(airlock, module) },
+            },
         }),
     });
     const examples_step = b.step("examples", "Build and run the usage example");

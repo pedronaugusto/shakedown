@@ -40,7 +40,9 @@ patch release never breaks.
 
 [examples/usage.zig](examples/usage.zig) tests a retry loop that backs off one second, then two.
 The task sleeps on the clock, and the test lets exactly each backoff pass. A
-`FaultIo` then fails the first sync of a file whose path ends in `.lock`. The
+`FaultIo` then fails the first sync of a file made durable through
+[airlock](https://github.com/pedronaugusto/airlock), whose seam turns each of
+its raw syncs into a step of the `FaultIo`. The
 same retry then runs on a simulation, where time jumps to each timer with no
 one moving it, and `check` runs a property, that a number printed and parsed
 back is the same number, over a hundred cases.
@@ -48,6 +50,8 @@ back is the same number, over a hundred cases.
 <!-- BEGIN GENERATED zig build docs -- usage -->
 ```zig
 const shakedown = @import("shakedown");
+const airlock = @import("airlock");
+const airlock_testing = @import("airlock.testing");
 
 var clock: shakedown.Clock = .init(init.io, .{});
 const io = clock.io();
@@ -76,19 +80,23 @@ gpa.free(bytes);
 std.debug.assert(counting.peak_bytes == 100);
 std.debug.assert(counting.live_bytes == 0);
 
-// Fail the first sync of a file whose path ends in ".lock", and count
-// every call on the way.
+// Fail the first sync of a file made durable through airlock, and count
+// every call on the way. airlock's syncs go past the Io they are given;
+// its seam over a FaultIo makes each one a step a plan can fail.
 const dir = try Io.Dir.cwd().createDirPathOpen(init.io, ".zig-cache/shakedown-example", .{});
 defer dir.close(init.io);
-const fio = try shakedown.FaultIo.init(init.gpa, init.io, .{ .plan = &.{.{
-    .at = .{ .nth = .{ .call = .fileSync, .n = 1, .path = .{ .suffix = ".lock" } } },
-    .fault = .{ .fail = error.InputOutput },
-}} });
+const fio = try shakedown.FaultIo.init(init.gpa, init.io, .{ .trace = .all });
 defer fio.deinit();
-const lock = try dir.createFile(fio.io(), "HEAD.lock", .{});
-defer lock.close(fio.io());
-if (lock.sync(fio.io())) |_| unreachable else |err| std.debug.assert(err == error.InputOutput);
-std.debug.assert(fio.count(.fileSync) == 1);
+const seam = try airlock_testing.Seam.over(init.gpa, fio, .{ .plan = &.{
+    airlock_testing.fail(airlock_testing.data_sync, 1, airlock_testing.io_error),
+} });
+defer seam.destroy();
+const head = try dir.createFile(seam.io(), "HEAD", .{});
+defer head.close(seam.io());
+try head.writePositionalAll(seam.io(), "ref", 0);
+if (airlock.syncFile(seam.io(), head, .{})) |_| unreachable else |err| std.debug.assert(err == error.InputOutput);
+std.debug.assert(seam.syncs() == 1);
+std.debug.assert(fio.count(.dirCreateFile) == 1);
 
 // The retry on a simulation: its tasks, its sleeps and its every
 // choice are the simulation's, so no test thread moves time.
@@ -734,6 +742,9 @@ quarantines nothing; `Quarantine.supported` says which.
   built on. A consumer fetches it with shakedown.
 - [preflight](https://github.com/pedronaugusto/preflight) runs the source checks,
   the tests and CI: a dev dependency, which a project depending on shakedown never sees.
+- [airlock](https://github.com/pedronaugusto/airlock) makes the example's file
+  durable, and its `airlock.testing` seam, built on this shakedown, fails the
+  sync: a dev dependency too.
 
 ## Testing
 
