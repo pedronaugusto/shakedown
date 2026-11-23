@@ -48,8 +48,9 @@ pub fn stepReal(n: *Node, to: Io.Timestamp) void {
 /// passes fire. Monotonic time never goes back: `d` is not negative. The
 /// simulation's time and the other nodes' clocks do not move.
 pub fn suspendFor(n: *Node, d: Io.Duration) void {
-    const by = nanoseconds.span(d).raw();
-    aegis.assert.invariant(by >= 0, "a machine sleeps forward: monotonic time never goes back");
+    const span = nanoseconds.span(d);
+    aegis.assert.invariant(span.compare(.fromRaw(0)) != .lt, "a machine sleeps forward: monotonic time never goes back");
+    const by = span.raw();
     n.context.core.jump(n.context.node, .{ 0, by, by });
 }
 pub fn kill(n: *Node) void {
