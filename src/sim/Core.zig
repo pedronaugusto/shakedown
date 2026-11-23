@@ -1256,15 +1256,16 @@ pub fn deadline(c: *Core, timeout: Io.Timeout) Deadline {
     };
     const kept = keptOf(which) orelse {
         // The CPU clocks are frozen: a deadline not already reached never is.
-        const frozen = nanoseconds.reading(Core, c.options.clock.monotonic).raw();
-        return if ((if (relative) frozen +| raw else raw) <= frozen) .due else .never;
+        const frozen = nanoseconds.reading(Core, c.options.clock.monotonic);
+        const due: nanoseconds.Reading(Core) = if (relative) frozen.saturatingAdd(.fromRaw(raw)) else .fromRaw(raw);
+        return if (due.compare(frozen) != .gt) .due else .never;
     };
     const skew = c.skewOn(c.nodeId());
     const current = c.localAt(skew, kept, c.clocks[@backingInt(kept)]);
     const at = if (relative) current +| raw else raw;
     if (at <= current) return .due;
-    const late = nanoseconds.span(c.options.clock.late).raw();
-    const lateness: i64 = if (late > 0) @intCast(c.draw(@intCast(late))) else 0;
+    const late = nanoseconds.span(c.options.clock.late);
+    const lateness: i64 = if (late.compare(.fromRaw(0)) == .gt) @intCast(c.draw((late.convert(.nanosecond, u64, .exact) catch aegis.assert.never("a positive span of i64 nanoseconds is a u64 of them")).raw())) else 0;
     return .{ .at = .{ .clock = kept, .ns = c.globalAt(skew, kept, at) +| lateness } };
 }
 

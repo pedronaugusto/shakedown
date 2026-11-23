@@ -3,6 +3,7 @@
 //! of any clock the workload simulates. No timings are correctness gates.
 const std = @import("std");
 const builtin = @import("builtin");
+const aegis = @import("aegis");
 const Io = std.Io;
 const nanoseconds = @import("nanoseconds.zig");
 
@@ -186,8 +187,12 @@ pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer:
         }
         return;
     }
-    const resolution: i96 = nanoseconds.span(try Io.Clock.awake.resolution(io)).raw();
-    if (resolution <= 0) return error.ClockUnavailable;
+    const tick = nanoseconds.span(try Io.Clock.awake.resolution(io));
+    if (tick.compare(.fromRaw(0)) != .gt) return error.ClockUnavailable;
+    const resolution: i96 = tick.raw();
+    // A latency row's unit: a smaller multiple of the clock's resolution than a row's whole reading.
+    const latency_unit = (tick.mul(latency_resolution_multiple) catch return error.InvalidOptions).raw();
+    const resolution_ns = tick.convert(.nanosecond, u64, .exact) catch aegis.assert.never("a positive span of i64 nanoseconds is a u64 of them");
     const readable = std.math.mul(i96, resolution, options.resolution_multiple) catch return error.InvalidOptions;
     for (rows) |row| {
         if (!std.mem.startsWith(u8, row.name, options.prefix)) continue;
@@ -196,11 +201,11 @@ pub fn run(comptime WorkloadError: type, gpa: std.mem.Allocator, io: Io, writer:
         // A row that grows is read over at least `minimum`; one that cannot is
         // read at the clock's resolution alone, and a latency row's unit at a
         // smaller multiple of it.
-        const target = if (row.latency != null) resolution * latency_resolution_multiple else if (row.grow) @max(nanoseconds.span(options.minimum).raw(), readable) else readable;
+        const target = if (row.latency != null) latency_unit else if (row.grow) @max(nanoseconds.span(options.minimum).raw(), readable) else readable;
         try opening(row, context);
         const batch = try closing(WorkloadError, row, context, sample(WorkloadError, io, context, row, samples, target, options));
         const stats = try statistics(gpa, samples);
-        try write(writer, .{ .row = row.name, .unit = row.unit, .samples = samples, .best = stats.best, .median = stats.median, .p99 = stats.p99, .ops_per_second = 1e9 / stats.median, .commit = metadata.commit, .zig = metadata.zig, .cpu = metadata.cpu, .os = metadata.os, .batch = batch, .clock_resolution_ns = @intCast(resolution) });
+        try write(writer, .{ .row = row.name, .unit = row.unit, .samples = samples, .best = stats.best, .median = stats.median, .p99 = stats.p99, .ops_per_second = 1e9 / stats.median, .commit = metadata.commit, .zig = metadata.zig, .cpu = metadata.cpu, .os = metadata.os, .batch = batch, .clock_resolution_ns = resolution_ns.raw() });
         try writer.flush();
     }
 }

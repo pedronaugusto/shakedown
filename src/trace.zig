@@ -29,7 +29,8 @@ pub fn Trace(comptime Event: type) type {
         /// Private: each record's step and hashes, in `.all` and `.last`.
         entries: std.ArrayList(Entry) = .empty,
         /// Private: interned bytes.
-        strings: std.StringHashMapUnmanaged(void) = .empty,
+        /// Each interned string by its bytes, to the copy that ends in a zero.
+        strings: std.StringHashMapUnmanaged([:0]const u8) = .empty,
         arena: std.heap.ArenaAllocator,
         count: u64 = 0,
         /// Records `keep` could not store, out of memory: hashed, and
@@ -281,13 +282,14 @@ pub fn Trace(comptime Event: type) type {
 
         fn internBytes(t: *Self, bytes: []const u8) AppendError![:0]const u8 {
             const entry = try t.strings.getOrPut(t.gpa, bytes);
-            if (entry.found_existing) return entry.key_ptr.*.ptr[0..bytes.len :0];
+            if (entry.found_existing) return entry.value_ptr.*;
             errdefer t.strings.removeByPtr(entry.key_ptr);
             const copy = try t.arena.allocator().alloc(u8, bytes.len + 1);
             @memcpy(copy[0..bytes.len], bytes);
             copy[bytes.len] = 0;
             entry.key_ptr.* = copy[0..bytes.len];
-            return copy[0..bytes.len :0];
+            entry.value_ptr.* = copy[0..bytes.len :0];
+            return entry.value_ptr.*;
         }
     };
 }

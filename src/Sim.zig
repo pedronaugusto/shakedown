@@ -258,13 +258,13 @@ fn drive(s: *Sim, mode: Core.Mode, until: i64) ?Outcome {
 /// an event at a set time. The hook is a field of the caller's state, which
 /// its `run` recovers by `@fieldParentPtr` (`shakedown.Hook`).
 pub fn at(s: *Sim, t: Io.Timestamp, hook: *Hook) error{ OutOfMemory, SystemResources }!void {
-    const when = nanoseconds.reading(Core, t).raw();
+    const when = nanoseconds.reading(Core, t);
     const task = try s.core.spawn(.{ .at = hook }, &.{}, .@"1", 0, .@"1", .parked);
     task.spawned_at = @returnAddress();
-    if (when <= s.core.clocks[@backingInt(Core.Kept.awake)]) {
+    if (when.compare(.fromRaw(s.core.clocks[@backingInt(Core.Kept.awake)])) != .gt) {
         task.wait = .none;
         s.core.makeReady(task);
-    } else s.core.arm(task, .awake, when);
+    } else s.core.arm(task, .awake, when.raw());
 }
 
 /// What `settle` waits for once the faults are over.
