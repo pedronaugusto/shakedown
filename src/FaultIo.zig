@@ -196,9 +196,35 @@ pub fn deinit(f: *FaultIo) void {
     gpa.destroy(f);
 }
 
-fn acquire(f: *FaultIo) @TypeOf(f.locked).Guard {
-    return f.locked.acquireUncancelable(f.base);
+/// The lock, taken with the calling task's cancels blocked on the base
+/// until it is released: what is done under it, the trace's and the
+/// tables' allocations among it, is this `FaultIo`'s own bookkeeping and no
+/// cancelation point of the task's. A Debug allocator on Darwin captures a
+/// stack at each allocation, and std's unwinder takes its own lock as a
+/// cancelation point of the calling task and unwinds by frame pointers on
+/// the `Canceled` it gets there: a cancel pending for the task would be
+/// taken there and dropped, and the task's waits after it would never be
+/// canceled.
+fn acquire(f: *FaultIo) Bookkeeping {
+    const protection = f.tasks.protect(f.base, .blocked);
+    return .{ .guard = f.locked.acquireUncancelable(f.base), .protection = protection, .protect = f.tasks.protect };
 }
+
+/// The lock held, and the cancel protection to put back on release.
+const Bookkeeping = struct {
+    guard: aegis.BlockingGuarded(Locked).Guard,
+    protection: Io.CancelProtection,
+    protect: @FieldType(Tasks, "protect"),
+
+    fn value(b: *const Bookkeeping) *Locked {
+        return b.guard.value();
+    }
+
+    fn deinit(b: *Bookkeeping, base: Io) void {
+        b.guard.deinit(base);
+        _ = b.protect(base, b.protection);
+    }
+};
 
 /// The `Io` to hand the code under test.
 pub fn io(f: *FaultIo) Io {
@@ -1052,7 +1078,16 @@ pub const Tasks = struct {
     /// Whether the calling task's cancel protection is blocked: asked of
     /// the base, by default, and put back as it was.
     blocked: *const fn (base: Io) bool = askBase,
+    /// Sets the calling task's cancel protection around this `FaultIo`'s
+    /// own bookkeeping and returns what it was: through the base, by
+    /// default. A base that knows its tasks sets it in place, where a call
+    /// through it would be one of the task's own.
+    protect: *const fn (base: Io, new: Io.CancelProtection) Io.CancelProtection = protectOnBase,
 };
+
+fn protectOnBase(base: Io, new: Io.CancelProtection) Io.CancelProtection {
+    return base.vtable.swapCancelProtection(base.userdata, new);
+}
 
 fn threadOf(_: Io) u64 {
     return std.Thread.getCurrentId();

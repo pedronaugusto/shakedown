@@ -115,6 +115,7 @@ pub fn init(gpa: Allocator, options: Options) InitError!*Sim {
         // A cancel the fault part lands is held for the simulation's task.
         fio.tasks.id = taskOf;
         fio.tasks.blocked = blockedOf;
+        fio.tasks.protect = protectOf;
         s.fio = fio;
         s.core.fault_io = fio.io();
         s.fault_outer = .init(fio.io(), .{ .context = &s.core.context });
@@ -153,6 +154,14 @@ fn taskOf(base: Io) u64 {
 fn blockedOf(base: Io) bool {
     const c = Core.of(base.userdata);
     return if (c.current) |t| t.protection == .blocked else false;
+}
+
+/// Nothing to set for the fault part's bookkeeping: a simulated task's
+/// cancel is the simulation's, which no allocator's stack capture reaches
+/// (std's unwinder waits on its debug `Io`), and a call through the base
+/// would be one of the task's, taking a step and leaving a record.
+fn protectOf(_: Io, _: Io.CancelProtection) Io.CancelProtection {
+    return .unblocked;
 }
 
 /// Ends the simulation. Tasks still waiting are dropped where they stand,

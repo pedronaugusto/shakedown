@@ -606,6 +606,62 @@ test "recancel re-arms a cancel the plan landed" {
     try testing.expectEqual(@as(u64, 1), fio.count(.recancel));
 }
 
+/// An allocator that, as a Debug allocator on Darwin does through std's
+/// unwinder, meets a cancelation point of the calling task at each
+/// allocation, and drops the `Canceled` it gets there.
+const CancelTaking = struct {
+    child: std.mem.Allocator,
+    base: Io,
+
+    fn allocator(c: *CancelTaking) std.mem.Allocator {
+        return .{ .ptr = c, .vtable = &.{ .alloc = alloc, .resize = resize, .remap = remap, .free = free } };
+    }
+
+    fn alloc(ctx: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+        const c: *CancelTaking = @ptrCast(@alignCast(ctx));
+        c.base.checkCancel() catch {};
+        return c.child.rawAlloc(len, alignment, ret_addr);
+    }
+
+    fn resize(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) bool {
+        const c: *CancelTaking = @ptrCast(@alignCast(ctx));
+        return c.child.rawResize(memory, alignment, new_len, ret_addr);
+    }
+
+    fn remap(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+        const c: *CancelTaking = @ptrCast(@alignCast(ctx));
+        return c.child.rawRemap(memory, alignment, new_len, ret_addr);
+    }
+
+    fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+        const c: *CancelTaking = @ptrCast(@alignCast(ctx));
+        c.child.rawFree(memory, alignment, ret_addr);
+    }
+};
+
+/// Takes its group's cancel, puts it back, then makes the first call the
+/// `FaultIo` records, so the record allocates; says whether the next
+/// cancelation point still meets the cancel.
+fn recordWithCancelPending(base: Io, fio: *FaultIo, kept: *bool) void {
+    var never: Io.Event = .unset;
+    never.wait(base) catch {};
+    base.recancel();
+    _ = Io.Clock.awake.now(fio.io());
+    kept.* = if (base.checkCancel()) |_| false else |_| true;
+}
+
+test "a call's record keeps a cancel pending for the task, though an allocation it makes meets a cancelation point" {
+    var taking: CancelTaking = .{ .child = testing.allocator, .base = testing.io };
+    const fio = try FaultIo.init(taking.allocator(), testing.io, .{ .trace = .all });
+    defer fio.deinit();
+    var kept = false;
+    var group: Io.Group = .init;
+    group.concurrent(testing.io, recordWithCancelPending, .{ testing.io, fio, &kept }) catch return error.SkipZigTest;
+    group.cancel(testing.io);
+    try testing.expect(kept);
+    try testing.expectEqual(@as(usize, 1), fio.trace().records().len);
+}
+
 /// Puts two items in a queue with room for one: the first goes in, then
 /// the wait for room takes a cancel, and the put reports its progress and
 /// re-arms the cancel.
