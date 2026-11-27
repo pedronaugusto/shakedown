@@ -198,6 +198,22 @@ test "operations are faulted one by one through operate" {
     try testing.expectEqual(@as(u64, 5), fio.count(.file_read_streaming));
 }
 
+test "over std's Io.failing, which has no cancelation, a plan's faults and cancels land and the rest is the base's" {
+    const plan = [_]IoPlan.Entry{
+        .{ .at = .{ .nth = .{ .call = .dirOpenFile, .n = 1 } }, .fault = .{ .fail = error.AccessDenied } },
+        .{ .at = .{ .nth = .{ .call = .sleep, .n = 1 } }, .fault = .cancel },
+    };
+    const fio = try FaultIo.init(testing.allocator, Io.failing, .{ .plan = &plan, .trace = .all });
+    defer fio.deinit();
+    const io = fio.io();
+    const cwd = Io.Dir.cwd();
+    try testing.expectError(error.AccessDenied, cwd.openFile(io, "any", .{}));
+    try testing.expectError(error.FileNotFound, cwd.openFile(io, "any", .{}));
+    try testing.expectError(error.Canceled, io.sleep(.fromSeconds(60), .awake));
+    try io.sleep(.fromSeconds(60), .awake);
+    try testing.expectEqual(@as(usize, 4), fio.trace().records().len);
+}
+
 test "cancel lands at a cancelation point, and a concurrent call can be refused" {
     const plan = [_]IoPlan.Entry{
         .{ .at = .{ .nth = .{ .call = .sleep, .n = 1 } }, .fault = .cancel },

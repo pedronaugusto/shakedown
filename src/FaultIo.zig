@@ -1086,7 +1086,15 @@ pub const Tasks = struct {
 };
 
 fn protectOnBase(base: Io, new: Io.CancelProtection) Io.CancelProtection {
+    if (!cancelable(base)) return .unblocked;
     return base.vtable.swapCancelProtection(base.userdata, new);
+}
+
+/// Whether the base has cancelation at all. std's `Io.failing` has none: its
+/// `swapCancelProtection` and `checkCancel` are unreachable, so no cancel of
+/// its can be pending, and there is no protection to set or to ask.
+fn cancelable(base: Io) bool {
+    return base.vtable.swapCancelProtection != &Io.unreachableSwapCancelProtection;
 }
 
 fn threadOf(_: Io) u64 {
@@ -1094,6 +1102,7 @@ fn threadOf(_: Io) u64 {
 }
 
 fn askBase(base: Io) bool {
+    if (!cancelable(base)) return false;
     const was = base.vtable.swapCancelProtection(base.userdata, .blocked);
     _ = base.vtable.swapCancelProtection(base.userdata, was);
     return was == .blocked;
